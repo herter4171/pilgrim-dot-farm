@@ -11,12 +11,12 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from config import Clock, Config, RNG
-from pipelines.llm import LLM, LLMError
-from pipelines.news import NewsPipeline
-from pipelines.songs import SongPipeline
-from pipelines.voice import KokoroClient, VoicePipeline
-from store import Store
+from pilgrim.config import Clock, Config, RNG
+from pilgrim.pipelines.llm import LLM, LLMError
+from pilgrim.pipelines.news import NewsPipeline
+from pilgrim.pipelines.songs import SongPipeline
+from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
+from pilgrim.store import Store
 
 log = logging.getLogger("radio.producer")
 

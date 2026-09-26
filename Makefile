@@ -3,7 +3,7 @@ PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
 FFMPEG := $(HOME)/bin/ffmpeg
 
-.PHONY: setup venv test sim lint run seed smoke clean install-ffmpeg
+.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg
 
 # --- setup ---------------------------------------------------------------
 venv:
@@ -26,14 +26,18 @@ lint:
 	$(BIN)/mypy . --ignore-missing-imports
 
 sim:
-	PATH="$(HOME)/bin:$(PATH)" $(PY) tests/sim_run.py
+	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tests.sim_run
 
+e2e:
+	cd pilgrim/tests/e2e && npx --yes playwright test
+
+# --- run --------------------------------------------------------------
 run:
 	PATH="$(HOME)/bin:$(PATH)" LITELLM_TOKEN=$$(grep LITELLM_TOKEN .env | cut -d= -f2) \
-		$(BIN)/uvicorn server:create_app --factory --host 0.0.0.0 --port 5000
+		$(BIN)/uvicorn pilgrim.server:create_app --factory --host 0.0.0.0 --port 5000
 
 seed:
-	PATH="$(HOME)/bin:$(PATH)" LITELLM_TOKEN=$$(grep LITELLM_TOKEN .env | cut -d= -f2) $(PY) seed.py
+	PATH="$(HOME)/bin:$(PATH)" LITELLM_TOKEN=$$(grep LITELLM_TOKEN .env | cut -d= -f2) $(PY) -m pilgrim.seed
 
 smoke:
-	PATH="$(HOME)/bin:$(PATH)" $(PY) tests/smoke.py
+	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tests.smoke

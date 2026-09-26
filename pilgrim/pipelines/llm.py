@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from config import Config
+from pilgrim.config import Config
 
 log = logging.getLogger("radio.llm")
 

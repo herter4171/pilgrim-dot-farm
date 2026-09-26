@@ -20,15 +20,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import Clock, Config, RNG, ROOT, ensure_dirs, load_config
-from pipelines.llm import LLM
-from pipelines.news import NewsPipeline
-from pipelines.songs import SongPipeline
-from pipelines.voice import KokoroClient, VoicePipeline
-from producer import Producer
-from scheduler import Scheduler
-from selector import RandomSelector
-from store import Store
+from pilgrim.config import Clock, Config, RNG, ROOT, ensure_dirs, load_config
+from pilgrim.pipelines.llm import LLM
+from pilgrim.pipelines.news import NewsPipeline
+from pilgrim.pipelines.songs import SongPipeline
+from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
+from pilgrim.producer import Producer
+from pilgrim.scheduler import Scheduler
+from pilgrim.selector import RandomSelector
+from pilgrim.store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("radio.server")

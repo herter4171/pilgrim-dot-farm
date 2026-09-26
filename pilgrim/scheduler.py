@@ -11,9 +11,9 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from config import Clock, Config, RNG
-from selector import PlayoutState, RandomSelector, Selector
-from store import Store
+from pilgrim.config import Clock, Config, RNG
+from pilgrim.selector import PlayoutState, RandomSelector, Selector
+from pilgrim.store import Store
 
 log = logging.getLogger("radio.scheduler")
 

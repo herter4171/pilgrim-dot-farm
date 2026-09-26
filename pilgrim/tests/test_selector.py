@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from config import RNG
-from selector import PlayoutState, RandomSelector
+from pilgrim.config import RNG
+from pilgrim.selector import PlayoutState, RandomSelector
 
 
 def make_state(cfg, available=None, recent=None, secs=None, news_valid=True,
@@ -82,8 +82,8 @@ def test_seed_is_independent_of_python_hash_seed():
     from pathlib import Path
 
     script = """
-from config import RNG, load_config
-from selector import PlayoutState, RandomSelector
+from pilgrim.config import RNG, load_config
+from pilgrim.selector import PlayoutState, RandomSelector
 cfg = load_config()
 state = PlayoutState(cfg)
 state.available = dict.fromkeys(state.available, True)
@@ -93,7 +93,7 @@ print([selector.choose_next(state) for _ in range(100)])
 """
     programs = [subprocess.check_output(
         [sys.executable, "-c", script],
-        cwd=Path(__file__).resolve().parent.parent,
+        cwd=Path(__file__).resolve().parents[2],
         env={**os.environ, "PYTHONHASHSEED": str(seed)}, text=True,
         timeout=30,
     ) for seed in (1, 2)]

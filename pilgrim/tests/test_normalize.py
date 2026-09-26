@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from audio import normalize
+from pilgrim.audio import normalize
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None,
                                 reason="ffmpeg not on PATH")

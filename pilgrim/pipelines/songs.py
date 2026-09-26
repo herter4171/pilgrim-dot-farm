@@ -13,10 +13,10 @@ import httpx
 import numpy as np
 import soundfile as sf
 
-from audio import normalize
-from audio.qc import grade_audio
-from config import Config
-from pipelines.llm import LLM, LLMError
+from pilgrim.audio import normalize
+from pilgrim.audio.qc import grade_audio
+from pilgrim.config import Config
+from pilgrim.pipelines.llm import LLM, LLMError
 
 log = logging.getLogger("radio.songs")
 

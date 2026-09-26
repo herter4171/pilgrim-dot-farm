@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from audio.qc import (check_clipping, check_internal_dropout, check_silence,
+from pilgrim.audio.qc import (check_clipping, check_internal_dropout, check_silence,
                       check_truncation, grade_audio)
 
 SR = 24000

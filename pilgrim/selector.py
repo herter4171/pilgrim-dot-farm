@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Protocol
 
-from config import Config, RNG
+from pilgrim.config import Config, RNG
 
 # Segment types the selector chooses from.
 SEGMENTS = ["song", "dj_talk", "commercial_break", "liner", "news"]

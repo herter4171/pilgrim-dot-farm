@@ -10,8 +10,8 @@ import time
 
 import httpx
 
-from config import Config
-from pipelines.llm import LLM, LLMError
+from pilgrim.config import Config
+from pilgrim.pipelines.llm import LLM, LLMError
 
 log = logging.getLogger("radio.news")
 

@@ -15,7 +15,7 @@ from typing import Dict, Optional, Tuple
 
 import soundfile as sf
 
-from config import Config
+from pilgrim.config import Config
 
 log = logging.getLogger("radio.normalize")
 
@@ -56,7 +56,7 @@ def measure(path: Path, cfg: Config) -> Dict[str, str]:
 
 def normalize(src: Path, dst: Path, cfg: Config) -> Dict[str, object]:
     """Two-pass loudnorm, restore native rate, trim silence, encode FLAC."""
-    from config import ROOT  # noqa: F401  (contextual override support)
+    from pilgrim.config import ROOT  # noqa: F401  (contextual override support)
     sr, channels = probe(src)
     measured = measure(src, cfg)
 

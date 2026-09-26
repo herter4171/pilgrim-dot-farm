@@ -8,13 +8,15 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_TESTDIR = Path(__file__).resolve().parent        # pilgrim/tests
+_REPO = Path(__file__).resolve().parents[2]      # repo root
+sys.path.insert(0, str(_REPO))
+sys.path.insert(0, str(_TESTDIR))
 
-from config import RNG, SimClock, load_config, ensure_dirs  # noqa: E402
-from store import Store  # noqa: E402
-from scheduler import Scheduler  # noqa: E402
-from selector import RandomSelector  # noqa: E402
+from pilgrim.config import RNG, SimClock, load_config, ensure_dirs  # noqa: E402
+from pilgrim.store import Store  # noqa: E402
+from pilgrim.scheduler import Scheduler  # noqa: E402
+from pilgrim.selector import RandomSelector  # noqa: E402
 from conftest import seed_pool  # noqa: E402
 
 

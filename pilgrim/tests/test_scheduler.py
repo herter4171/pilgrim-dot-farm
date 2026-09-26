@@ -2,10 +2,10 @@
 seeded pool and assert the committed-program invariants hold."""
 from __future__ import annotations
 
-from config import RNG, SimClock
-from scheduler import Scheduler
-from selector import RandomSelector
-from store import Store
+from pilgrim.config import RNG, SimClock
+from pilgrim.scheduler import Scheduler
+from pilgrim.selector import RandomSelector
+from pilgrim.store import Store
 
 from conftest import seed_pool
 

@@ -13,13 +13,13 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("radio.seed")
 
-from config import (Clock, Config, RNG, ROOT, ensure_dirs, load_config)  # noqa: E402
-from pipelines.llm import LLM  # noqa: E402
-from pipelines.news import NewsPipeline  # noqa: E402
-from pipelines.songs import SongPipeline  # noqa: E402
-from pipelines.voice import KokoroClient, VoicePipeline  # noqa: E402
-from producer import Producer  # noqa: E402
-from store import Store  # noqa: E402
+from pilgrim.config import (Clock, Config, RNG, ROOT, ensure_dirs, load_config)  # noqa: E402
+from pilgrim.pipelines.llm import LLM  # noqa: E402
+from pilgrim.pipelines.news import NewsPipeline  # noqa: E402
+from pilgrim.pipelines.songs import SongPipeline  # noqa: E402
+from pilgrim.pipelines.voice import KokoroClient, VoicePipeline  # noqa: E402
+from pilgrim.producer import Producer  # noqa: E402
+from pilgrim.store import Store  # noqa: E402
 
 
 def _prompts(cfg: Config) -> dict:
