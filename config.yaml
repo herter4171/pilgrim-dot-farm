@@ -1,0 +1,83 @@
+# Pilgrim Dot Farm Radio — configuration (RADIO.md §12)
+# Hosts, models, voices, targets all come from here. No hardcoded addresses.
+
+station:
+  name: "Pilgrim Dot Farm"
+  port: 5000
+  rng_seed: null          # set for deterministic tests/sim
+  host: "0.0.0.0"
+
+hosts:
+  mlx_serve: http://127.0.0.1:11234
+  kokoro: http://localhost:8001
+  litellm: http://localhost:4000/v1
+  searxng: http://localhost:8888
+
+models:
+  news: qwen38
+  briefs: qwen38
+  dj_talk: qwen38
+  commercials: "Ornith-1.5-9B"
+  liners: "Ornith-1.5-9B"
+
+voices:
+  dj: am_liam
+  news: am_michael
+  commercials: af_aoede
+  liners: am_liam
+  speed: 1.0             # seconds-per-word calibrated at setup; 1.0 is Koken default
+
+playout:
+  committed_lookahead_s: 600     # keep >= this much committed audio ahead
+  window_trim_keep_s: 120        # keep this much committed history behind "now"
+  weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08}
+  max_consecutive_non_song: 2
+  news_min_spacing_s: 1200
+  news_ttl_s: 2700
+  commercial_min_spacing_s: 1800
+  song_min_spacing_s: [3600, 1800, 900]   # hard floor 1h per operator; relax stepwise
+  genre_no_repeat: 3
+
+inventory:
+  fresh_songs_ready: 2
+  briefs_queued: 3
+  commercials_min: 6
+  liners_per_bucket: 3
+  liner_buckets_s: [3, 5, 10, 15, 30]
+  dj_talk_min: 2
+
+songs:
+  # LAB: shortened target for a watchable demo (RADIO specifies 150-210 s).
+  # mlx currently ignores duration_s, so real clips run ~21.5 s regardless.
+  target_duration_s: [60, 90]
+  genres:
+    synthwave: 1
+    bluegrass: 1
+    doom metal: 1
+    bossa nova: 1
+    polka: 1
+    yacht rock: 1
+    dungeon synth: 1
+    chiptune: 1
+
+news:
+  enabled: true
+  refresh_s: 1800
+  max_searches: 3
+  budget_s: 60
+
+audio:
+  lufs: -16.0
+  true_peak_db: -1.0
+  lra: 7.0
+  edge_pad_ms: 150
+  delivery: flac
+  silence_db: -50
+
+library:
+  soft_cap_gb: 100
+  dir: library
+  web_dir: web
+  db: station.db
+  bible_dir: bible
+  prompts_dir: prompts

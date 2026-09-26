@@ -1,0 +1,199 @@
+"""station.db: inventory metadata + airplay ledger + committed program (RADIO.md §7, §11)."""
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class Store:
+    """Thin wrapper over SQLite. All writes go through a single connection per thread."""
+
+    def __init__(self, db_path: Path) -> None:
+        self.path = Path(db_path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._lock = __import__("threading").Lock()
+        self._init_schema()
+
+    def _init_schema(self) -> None:
+        with self._lock:
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    type TEXT NOT NULL,            -- song|commercial|liner|dj_talk|news|station_id|emergency
+                    media_path TEXT NOT NULL,
+                    duration_s REAL NOT NULL,
+                    title TEXT,
+                    artist TEXT,
+                    genre TEXT,
+                    sample_rate INTEGER,
+                    channels INTEGER,
+                    role TEXT,
+                    evergreen INTEGER DEFAULT 0,
+                    emergency INTEGER DEFAULT 0,
+                    fresh INTEGER DEFAULT 1,       -- 1 = unaired
+                    expires_at TEXT,
+                    gravity TEXT,                  -- serious|normal
+                    meta_json TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS program (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id INTEGER NOT NULL,
+                    type TEXT NOT NULL,
+                    duration_s REAL NOT NULL,
+                    committed_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS airplay (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id INTEGER NOT NULL,
+                    seq INTEGER NOT NULL,
+                    item_type TEXT,
+                    started_at REAL,
+                    position REAL,
+                    underrun INTEGER DEFAULT 0,
+                    recorded_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_items_type ON items(type);
+                CREATE INDEX IF NOT EXISTS idx_items_fresh ON items(fresh);
+                CREATE INDEX IF NOT EXISTS idx_program_seq ON program(seq);
+                CREATE INDEX IF NOT EXISTS idx_airplay_item ON airplay(item_id);
+                """
+            )
+            self._conn.commit()
+
+    # ------------------------------------------------------------------ items
+    def add_item(self, *, type_: str, media_path: str, duration_s: float,
+                 title: Optional[str] = None, artist: Optional[str] = None,
+                 genre: Optional[str] = None, sample_rate: Optional[int] = None,
+                 channels: Optional[int] = None, role: Optional[str] = None,
+                 evergreen: bool = False, emergency: bool = False,
+                 fresh: bool = True, expires_at: Optional[str] = None,
+                 gravity: Optional[str] = None, meta: Optional[Dict] = None) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                """INSERT INTO items
+                   (type, media_path, duration_s, title, artist, genre, sample_rate,
+                    channels, role, evergreen, emergency, fresh, expires_at, gravity,
+                    meta_json, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (type_, media_path, duration_s, title, artist, genre, sample_rate,
+                 channels, role, 1 if evergreen else 0, 1 if emergency else 0,
+                 1 if fresh else 0, expires_at, gravity,
+                 json.dumps(meta) if meta else None, _now_iso()))
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    def get_item(self, item_id: int) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            r = self._conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        return dict(r) if r else None
+
+    def list_items(self, type_: Optional[str] = None) -> List[Dict[str, Any]]:
+        q = "SELECT * FROM items"
+        args: tuple = ()
+        if type_:
+            q += " WHERE type=?"
+            args = (type_,)
+        q += " ORDER BY id"
+        with self._lock:
+            rows = self._conn.execute(q, args).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_fresh_of_type(self, type_: str) -> int:
+        with self._lock:
+            return int(self._conn.execute(
+                "SELECT COUNT(*) FROM items WHERE type=? AND fresh=1 AND emergency=0",
+                (type_,)).fetchone()[0])
+
+    def count_usable_of_type(self, type_: str) -> int:
+        """Evergreen types recycle: any non-emergency item is usable whatever its
+        fresh flag (RADIO.md §5.4 fallback chain)."""
+        with self._lock:
+            return int(self._conn.execute(
+                "SELECT COUNT(*) FROM items WHERE type=? AND emergency=0",
+                (type_,)).fetchone()[0])
+
+    def mark_aired(self, item_id: int) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE items SET fresh=0 WHERE id=?", (item_id,))
+            self._conn.commit()
+
+    def last_played_at(self, item_id: int) -> Optional[float]:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT MAX(recorded_at) FROM airplay WHERE item_id=?", (item_id,)).fetchone()
+        return r[0]
+
+    def play_count(self, item_id: int) -> int:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT COUNT(*) FROM airplay WHERE item_id=?", (item_id,)).fetchone()
+        return int(r[0])
+
+    # --------------------------------------------------------------- program
+    def append_program(self, item_id: int, type_: str, duration_s: float) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO program (item_id, type, duration_s, committed_at) VALUES (?,?,?,?)",
+                (item_id, type_, duration_s, _now_iso()))
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    def program_after(self, seq: int) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT p.seq, p.item_id, p.type AS type, p.duration_s "
+                "FROM program p WHERE p.seq>? ORDER BY p.seq", (seq,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def max_seq(self) -> Optional[int]:
+        with self._lock:
+            r = self._conn.execute("SELECT COALESCE(MAX(seq),0) FROM program").fetchone()
+        return int(r[0]) if r and r[0] else 0
+
+    def truncate_program_before(self, seq: int) -> None:
+        """Drop committed rows older than `seq` (keeps the live window bounded)."""
+        with self._lock:
+            self._conn.execute("DELETE FROM program WHERE seq<?", (seq,))
+            self._conn.commit()
+
+    def program_since(self, since_seq: int) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT p.seq, p.item_id, p.type AS type, p.duration_s "
+                "FROM program p WHERE p.seq>=? ORDER BY p.seq", (since_seq,)).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---------------------------------------------------------------- airplay
+    def record_airplay(self, item_id: int, seq: int, item_type: Optional[str],
+                       started_at: Optional[float], position: Optional[float],
+                       underrun: int = 0) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO airplay (item_id, seq, item_type, started_at, position, underrun, recorded_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (item_id, seq, item_type, started_at, position, underrun, _now_iso()))
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    def recent_airplay(self, limit: int = 200) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM airplay ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def last_air_type_sequence(self, program_slice: List[Dict[str, Any]]) -> List[str]:
+        """Map most recent committed items to their types in program order."""
+        return [p["item_type"] for p in program_slice]

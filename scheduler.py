@@ -1,0 +1,320 @@
+"""Playout scheduler (RADIO.md §5). Keeps the committed program filled >= lookahead
+ahead of the live playhead, which advances on the real clock regardless of whether
+any listener is tuned in (station always on air). Playout never blocks on rendering:
+only fully-rendered inventory enters the program.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
+
+from config import Clock, Config, RNG
+from selector import PlayoutState, RandomSelector, Selector
+from store import Store
+
+log = logging.getLogger("radio.scheduler")
+
+
+def _utc_iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso(iso: Optional[str]) -> Optional[float]:
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except Exception:
+        return None
+
+
+class Scheduler:
+    def __init__(self, cfg: Config, store: Store, selector: Selector,
+                 clock: Clock, rng: RNG) -> None:
+        self.cfg = cfg
+        self.store = store
+        self.selector = selector
+        self.clock = clock
+        self.rng = rng
+        self._start_wall = time.monotonic()
+        self._last_song_air: Dict[int, float] = {}  # item_id -> air-clock of last commit
+        self._air_clock = 0.0  # monotonic committed-program time (independent of trimming)
+        # in-memory cumulative mapping built each cycle
+        self._program_start = 0.0  # absolute start of retained program history
+        self._items: list[dict] = []
+        self._cum: list[float] = []  # absolute start times (program seconds)
+        self._total = 0.0
+        self._rebuild_program()
+
+    # ------------------------------------------------------------------ index
+    def _rebuild_program(self) -> None:
+        rows = self.store.program_since(1)
+        self._items = rows
+        self._cum = []
+        t = self._program_start
+        for r in rows:
+            self._cum.append(t)
+            t += r["duration_s"]
+        self._total = t
+
+    def position(self) -> float:
+        """Live playhead in program-seconds (advances on the real clock)."""
+        return min(self.clock.now(), self._total)
+
+    def on_air(self) -> Tuple[Optional[int], float]:
+        """Return (seq of on-air item, offset seconds into it)."""
+        pos = self.position()
+        if not self._items:
+            return None, 0.0
+        # find last item whose start <= pos
+        idx = 0
+        for i in range(len(self._items)):
+            if self._cum[i] <= pos + 1e-6:
+                idx = i
+            else:
+                break
+        return self._items[idx]["seq"], pos - self._cum[idx]
+
+    # ------------------------------------------------------------- state view
+    def build_state(self) -> PlayoutState:
+        st = PlayoutState(self.cfg)
+        # Availability follows the §5.4 fallback chain: songs/commercials/liners
+        # are evergreen and recycle (fresh OR recycled counts as available);
+        # dj_talk and news are produced fresh and deplete if unrefilled.
+        st.inventory_counts = {
+            "song": self.store.count_usable_of_type("song"),
+            "dj_talk": self.store.count_fresh_of_type("dj_talk"),
+            "commercial": self.store.count_usable_of_type("commercial"),
+            "liner": self.store.count_usable_of_type("liner"),
+        }
+        st.available = {
+            "song": st.inventory_counts["song"] > 0,
+            "dj_talk": st.inventory_counts["dj_talk"] > 0,
+            "commercial_break": st.inventory_counts["commercial"] > 0,
+            "liner": st.inventory_counts["liner"] > 0,
+            "news": self._news_valid() is not None,
+        }
+        # recent types / genres in COMMITTED order (the air order). Constraints
+        # apply to the committed sequence since that is exactly what airs.
+        recent = [r["type"] for r in self._items[-8:]]
+        st.recent_types = recent
+        st.recent_song_genres = [
+            self._genre_for(r["item_id"]) for r in self._items if r["type"] == "song"][-3:]
+        # seconds (program time) since each category last aired (committed order)
+        st.secs_since = {}
+        for cat, ctype in (("news", "news"), ("commercial_break", "commercial"), ("song", "song")):
+            st.secs_since[cat] = self._secs_since(self._total, ctype)
+        ni = self._news_valid()
+        if ni:
+            st.news_valid = True
+            st.news_gravity = ni.get("gravity") or "normal"
+        return st
+
+    def _genre_probe(self, recent_types: List[str]) -> List[Tuple[int, str]]:
+        out = []
+        for r in reversed(self._items):
+            if r["type"] == "song":
+                out.append((r["item_id"], r["type"]))
+        return out
+
+    def _genre_for(self, item_id: int) -> str:
+        it = self.store.get_item(item_id)
+        return (it.get("genre") or "") if it else ""
+
+    def _secs_since(self, pos: float, category: str) -> float:
+        """Program-time seconds between the current commit point and the end of the
+        last committed item of `category`, both measured in committed order."""
+        if not self._items:
+            return float("inf")
+        last_end = -1.0
+        for i, r in enumerate(self._items):
+            if r["type"] == category:
+                last_end = self._cum[i] + r["duration_s"]
+        return pos - last_end if last_end >= 0 else float("inf")
+
+    def _news_valid(self) -> Optional[dict]:
+        # latest not-expired bulletin not yet aired
+        for it in reversed(self.store.list_items("news")):
+            exp = _parse_iso(it.get("expires_at"))
+            if exp is not None and exp < time.time():
+                continue  # expired
+            fresh = it.get("fresh")
+            if fresh:
+                return it
+        return None
+
+    # -------------------------------------------------------------- committing
+    def commit_lookahead(self) -> None:
+        """Append committed items until coverage >= lookahead (or no inventory)."""
+        cfg = self.cfg.playout
+        lookahead = cfg.committed_lookahead_s
+        guard = 0
+        while self.coverage() < lookahead and guard < 20:
+            guard += 1
+            st = self.build_state()
+            try:
+                type_ = self.selector.choose_next(st)
+            except ValueError:
+                break  # no inventory at all; producer will refill
+            entries = self._materialize(type_)
+            if not entries:
+                # no usable inventory for that type; mark unavailable and re-draw
+                st.available[type_] = False
+                continue
+            for e in entries:
+                self._append(e)
+            self._rebuild_program()
+        self._trim()
+
+    def coverage(self) -> float:
+        pos = self.position()
+        return max(0.0, self._total - pos)
+
+    def _append(self, e: dict) -> None:
+        item_id = e["item_id"]
+        seq = self.store.append_program(item_id, e["type"], e["duration_s"])
+        self._air_clock += e["duration_s"]  # monotonic: never resets on trim
+        if e.get("consume"):
+            self.store.mark_aired(item_id)
+
+    def _trim(self) -> None:
+        """Drop committed rows fully behind the playhead (keep a little history)."""
+        keep = self.cfg.playout.window_trim_keep_s
+        pos = self.position()
+        cutoff = pos - keep
+        threshold_seq: Optional[int] = None
+        for i, r in enumerate(self._items):
+            if self._cum[i] + r["duration_s"] < cutoff:
+                threshold_seq = r["seq"]
+            else:
+                break
+        if threshold_seq is not None:
+            # truncate_program_before keeps threshold_seq itself. Preserve its
+            # absolute start so trimming cannot advance the audible playhead.
+            retained_index = next(
+                i for i, row in enumerate(self._items) if row["seq"] == threshold_seq
+            )
+            self._program_start = self._cum[retained_index]
+            self.store.truncate_program_before(threshold_seq)
+            self._rebuild_program()
+
+    def _materialize(self, type_: str) -> List[dict]:
+        cfg = self.cfg
+        st = self.build_state()
+        try:
+            if type_ == "song":
+                return self._pick_song(st)
+            if type_ == "liner":
+                return self._pick_liner(st)
+            if type_ == "dj_talk":
+                return self._pick_dj(st)
+            if type_ == "commercial_break":
+                return self._pick_commercial_break(st)
+            if type_ == "news":
+                return self._pick_news(st)
+            if type_ == "station_id":
+                return self._pick_liner(st)
+        except Exception as e:  # inventory race or constraint: skip
+            log.warning("materialize %s failed: %s", type_, e)
+        return []
+
+    # -------------------------------------------------------------- pickers
+    def _pick_song(self, st: PlayoutState) -> List[dict]:
+        """Pick a song. Hard rule: never the same song within the min spacing
+        (config song_min_spacing_s[0], default 4h; run config sets 1h for the
+        demo). Fresh (unaired) songs are always preferred. When fresh stock is
+        gone, among aired songs pick the one aired longest ago; relax spacing
+        only if the entire pool is too sparsely aired to satisfy it, and even
+        then prefer a genre not in the last few songs (soft, never blocks)."""
+        pool = [i for i in self.store.list_items("song") if not i["emergency"]]
+        if not pool:
+            return []
+        now = self._air_clock  # monotonic air-clock: where this song will start
+        min_gap = float(self.cfg.playout.song_min_spacing_s[0])
+        last = st.recent_song_genres
+
+        def key(it):
+            aired = self._last_song_air.get(it["id"], float("inf"))
+            return (it.get("genre") in last,    # soft: genre freshness
+                    0 if it["fresh"] else aired,  # fresh first, else oldest air
+                    it["id"])
+
+        fresh = [i for i in pool if i["fresh"]]
+        recycled = [i for i in pool if not i["fresh"]]
+        if fresh:
+            cand = min(fresh, key=key)
+        else:
+            spaced = [i for i in recycled if now - self._last_song_air.get(i["id"], -1e9) >= min_gap]
+            cand = min(spaced or recycled, key=key)  # relax gap only if forced
+        self._last_song_air[cand["id"]] = now
+        return [{"item_id": cand["id"], "type": "song", "duration_s": cand["duration_s"],
+                 "consume": True}]
+
+    def _pick_liner(self, st: PlayoutState) -> List[dict]:
+        items = [i for i in self.store.list_items("liner") if not i["emergency"]]
+        if not items:
+            items = [i for i in self.store.list_items("station_id") if not i["emergency"]]
+        if not items:
+            return []
+        it = self.rng.choice(items)
+        return [{"item_id": it["id"], "type": it["type"], "duration_s": it["duration_s"],
+                 "consume": True}]
+
+    def _pick_dj(self, st: PlayoutState) -> List[dict]:
+        items = [i for i in self.store.list_items("dj_talk") if i["fresh"] and not i["emergency"]]
+        if not items:
+            return []
+        it = self.rng.choice(items)
+        return [{"item_id": it["id"], "type": "dj_talk", "duration_s": it["duration_s"],
+                 "consume": True}]
+
+    def _pick_commercial_break(self, st: PlayoutState) -> List[dict]:
+        items = [i for i in self.store.list_items("commercial") if not i["emergency"]]
+        if not items:
+            return []
+        # cap break size so the non-song run limit is honored (a break = 1-2 items)
+        cap_limit = self.cfg.playout.max_consecutive_non_song
+        trailing_run = 0
+        for t in reversed(st.recent_types):
+            if t == "song":
+                break
+            trailing_run += 1
+        cap = max(1, cap_limit - trailing_run)
+        self.rng.shuffle(items)
+        n = 1 if len(items) == 1 else self.rng.randint(1, min(cap, len(items)))
+        out = []
+        for it in self.rng.choices(items, k=n):
+            out.append({"item_id": it["id"], "type": "commercial",
+                        "duration_s": it["duration_s"], "consume": True})
+        return out
+
+    def _pick_news(self, st: PlayoutState) -> List[dict]:
+        ni = self._news_valid()
+        if not ni:
+            return []
+        item_id = ni["id"]
+        # render the news bulletin via the voice pipeline at commit time is NOT allowed
+        # (playout never blocks). Producer pre-renders news into a 'news' audio item;
+        # here we just commit the pre-rendered cliplike item if it exists.
+        return [{"item_id": item_id, "type": "news", "duration_s": ni["duration_s"],
+                 "consume": True}]
+
+    # ------------------------------------------------------------------ run
+    async def run(self) -> None:
+        log.info("scheduler running: lookahead=%ss", self.cfg.playout.committed_lookahead_s)
+        while True:
+            try:
+                self.commit_lookahead()
+            except Exception as e:
+                log.exception("scheduler cycle failed: %s", e)
+            await asyncio.sleep(2.0)
+
+
+_CAT_TO_TYPE = {
+    "news": "news",
+    "commercial_break": "commercial",
+    "song": "song",
+}

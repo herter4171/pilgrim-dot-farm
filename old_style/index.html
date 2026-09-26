@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M I N I M A X  M U S I C  3  — budget synth-pop studio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="rain"></canvas>
+<header id="titlebar">
+  <div class="logo">🎹 M I N I M A X <span>MUSIC 3</span></div>
+  <div class="tagline">the budget synth-pop studio of your dreams</div>
+</header>
+
+<main id="desktop">
+
+  <!-- ============ SONG GENERATOR ============ -->
+  <section class="window" data-win="gen" style="left:40px;top:90px;width:430px;height:520px">
+    <div class="win-bar">
+      <span class="win-title">⚡ Song Generator</span>
+      <span class="win-btns">
+        <button class="w-min" title="minimize">–</button>
+        <button class="w-close" title="close">×</button>
+      </span>
+    </div>
+    <div class="win-body">
+      <label for="lyrics">L y r i c s</label>
+      <textarea id="lyrics" spellcheck="false"
+        placeholder="[verse]&#10;your words here&#10;[chorus]&#10;your hook here..."></textarea>
+      <label for="prompt">Music description</label>
+      <input id="prompt" placeholder="synthwave, upbeat, 120 bpm, female lead...">
+      <div class="row">
+        <button id="btn-gen" class="big-btn">🎧 Generate</button>
+        <span id="gen-progress" class="progress"></span>
+      </div>
+      <div id="gen-status" class="status"></div>
+      <div id="download-zone" class="hidden">
+        <button id="btn-dl" class="big-btn ok">⬇ Download track</button>
+        <div id="dl-meta" class="dl-meta"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MUSIC PLAYER ============ -->
+  <section class="window" data-win="player" style="left:520px;top:90px;width:360px;height:520px">
+    <div class="win-bar">
+      <span class="win-title">🎧 Music Player</span>
+      <span class="win-btns">
+        <button class="w-min" title="minimize">–</button>
+        <button class="w-close" title="close">×</button>
+      </span>
+    </div>
+    <div class="win-body">
+      <div id="now-playing" class="np">
+        <div id="np-art">🎵</div>
+        <div><div id="np-title">Nothing playing</div>
+             <div id="np-artist">— pick a jam below —</div></div>
+      </div>
+      <audio id="audio" controls></audio>
+      <div id="song-list" class="song-list"></div>
+    </div>
+  </section>
+
+  <!-- ============ CHAT UI ============ -->
+  <section class="window" data-win="chat" style="left:940px;top:90px;width:400px;height:520px">
+    <div class="win-bar">
+      <span class="win-title">💬 Lyrics Chat</span>
+      <span class="win-btns">
+        <button class="w-min" title="minimize">–</button>
+        <button class="w-close" title="close">×</button>
+      </span>
+    </div>
+    <div class="win-body chat">
+      <div class="chat-model-row">
+        <select id="chat-agent">
+          <option value="songwriter">✍️ Songwriter (qwen38)</option>
+          <option value="chat">💬 Chat co-writer</option>
+        </select>
+        <select id="chat-model">
+          <option value="Ornith-1.5-9B">Ornith-1.5-9B</option>
+          <option value="qwen38">qwen38</option>
+          <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+        </select>
+        <span id="skill-tag" class="skill-tag">minimax-music3-prompting</span>
+      </div>
+      <div id="chat-log" class="chat-log"></div>
+      <div class="chat-input-row">
+        <input id="chat-input" placeholder="ask for a verse about...">
+        <button id="btn-chat">➤</button>
+      </div>
+      <button id="btn-send-to-gen" class="mini-btn">⤴ send last reply to Song Generator</button>
+    </div>
+  </section>
+
+  <!-- ============ LOGS ============ -->
+  <section class="window" data-win="logs" style="left:40px;top:680px;width:720px;height:300px">
+    <div class="win-bar">
+      <span class="win-title">📜 Model Server Logs</span>
+      <span class="win-btns">
+        <button class="w-min" title="minimize">–</button>
+        <button class="w-close" title="close">×</button>
+      </span>
+    </div>
+    <div class="win-body">
+      <pre id="log-view" class="log-view"></pre>
+    </div>
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

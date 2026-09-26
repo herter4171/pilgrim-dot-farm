@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets / local config (never commit)
+.env
+.mcp.json
+
+# Agent tool state (not project deliverables)
+.llm-wiki/
+.pi/
+
+# Runtime data
+station.db
+station.db-wal
+station.db-shm
+library/
+pilgrim/library/
+
+# Generated / scratch audio
+*_song_tmp.wav
+*_render_tmp.wav
+_song_tmp.wav
+_render_tmp.wav

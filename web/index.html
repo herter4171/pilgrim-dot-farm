@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PILGRIM DOT FARM — radio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="rain"></canvas>
+<header id="titlebar">
+  <div class="logo">📻&nbsp; P I L G R I M <span>DOT FARM</span></div>
+  <div class="tagline">24/7 AI radio from the town of Thistledown</div>
+</header>
+
+<main id="desktop">
+  <section class="window" data-win="radio">
+    <div class="win-bar">
+      <span class="win-title">◉ ON AIR — Pilgrim Dot Farm</span>
+    </div>
+    <div class="win-body">
+      <div id="indicator" class="indicator idle">
+        <span class="dot"></span>
+        <span id="ind-label">idle</span>
+      </div>
+      <button id="btn-play" class="big-btn">▶&nbsp; PLAY</button>
+      <canvas id="level" width="320" height="40"></canvas>
+      <div id="offair" class="offair hidden">⚠ OFF THE AIR — production services are unreachable. Retrying…</div>
+      <div id="status" class="status"></div>
+    </div>
+  </section>
+</main>
+
+<script src="player.js"></script>
+</body>
+</html>
