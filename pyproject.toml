@@ -27,7 +27,7 @@ testpaths = ["pilgrim/tests"]
 asyncio_mode = "auto"
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 ignore_missing_imports = true
 warn_unused_ignores = false
 exclude = ["old_style"]

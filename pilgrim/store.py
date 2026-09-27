@@ -93,7 +93,9 @@ class Store:
                  1 if fresh else 0, expires_at, gravity,
                  json.dumps(meta) if meta else None, _now_iso()))
             self._conn.commit()
-            return int(cur.lastrowid)
+            rid = cur.lastrowid
+            assert rid is not None
+            return int(rid)
 
     def get_item(self, item_id: int) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -149,7 +151,9 @@ class Store:
                 "INSERT INTO program (item_id, type, duration_s, committed_at) VALUES (?,?,?,?)",
                 (item_id, type_, duration_s, _now_iso()))
             self._conn.commit()
-            return int(cur.lastrowid)
+            rid = cur.lastrowid
+            assert rid is not None
+            return int(rid)
 
     def program_after(self, seq: int) -> List[Dict[str, Any]]:
         with self._lock:
@@ -186,7 +190,9 @@ class Store:
                 "VALUES (?,?,?,?,?,?,?)",
                 (item_id, seq, item_type, started_at, position, underrun, _now_iso()))
             self._conn.commit()
-            return int(cur.lastrowid)
+            rid = cur.lastrowid
+            assert rid is not None
+            return int(rid)
 
     def recent_airplay(self, limit: int = 200) -> List[Dict[str, Any]]:
         with self._lock:

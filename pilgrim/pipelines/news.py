@@ -37,10 +37,13 @@ class NewsPipeline:
     async def produce_bulletin(self) -> dict:
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
         prompt = self.prompts.get("news")
+        if not prompt:
+            raise LLMError("news prompt template missing")
         try:
             snippets = []
             if self.cfg.news.enabled:
-                snippets = await self.search("top news headlines today")[:self.cfg.news.max_searches]
+                results = await self.search("top news headlines today")
+                snippets = results[: self.cfg.news.max_searches]
             ctx = "\n".join(snippets) if snippets else "(no search results available)"
             schema = ('Return JSON only: {"headlines": ["<h1>","<h2>","<h3>"], '
                       '"gravity": "serious"|"normal", "text": "<one combined bulletin>"}')

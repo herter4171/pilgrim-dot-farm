@@ -13,6 +13,8 @@ import httpx
 import numpy as np
 import soundfile as sf
 
+from typing import Optional
+
 from pilgrim.audio import normalize
 from pilgrim.audio.qc import grade_audio
 from pilgrim.config import Config
@@ -28,7 +30,7 @@ class SongPipeline:
         self.media_dir = media_dir or (Path(__file__).resolve().parent.parent / cfg.library.dir)
         self.prompts = prompts or {}
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=10.0))
-        self.generation_s = []  # (duration_s, wall_clock_s) rate observations
+        self.generation_s: list[tuple[float, float]] = []  # (duration_s, wall_clock_s)
 
     async def close(self) -> None:
         await self._client.aclose()

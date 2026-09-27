@@ -160,9 +160,9 @@ class Station(BaseModel):
 
 class Config(BaseModel):
     station: Station = Field(default_factory=Station)
-    hosts: Hosts = Field(default_factory=Hosts)
-    models: Models = Field(default_factory=Models)
-    voices: Voices = Field(default_factory=Voices)
+    hosts: Hosts = Field(default_factory=Hosts)  # type: ignore[arg-type]
+    models: Models = Field(default_factory=Models)  # type: ignore[arg-type]
+    voices: Voices = Field(default_factory=Voices)  # type: ignore[arg-type]
     playout: Playout = Field(default_factory=Playout)
     inventory: Inventory = Field(default_factory=Inventory)
     songs: Songs = Field(default_factory=Songs)
