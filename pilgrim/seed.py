@@ -35,7 +35,7 @@ async def seed(cfg: Config, api_key: str) -> int:
     kokoro = KokoroClient(cfg)
     voice = VoicePipeline(cfg, llm, kokoro, db, media_dir, prompts=_prompts(cfg))
     songs = SongPipeline(cfg, llm, media_dir, prompts=_prompts(cfg))
-    news = NewsPipeline(cfg, llm, prompts=_prompts(cfg))
+    news = NewsPipeline(cfg, llm, api_key=api_key, prompts=_prompts(cfg))
     prod = Producer(cfg, db, llm, kokoro, voice, songs, Clock(), prompts=_prompts(cfg),
                     media_dir=media_dir, api_key=api_key, rng=RNG(cfg.station.rng_seed),
                     news_pipeline=news)

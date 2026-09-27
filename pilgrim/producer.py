@@ -38,7 +38,7 @@ class Producer:
         self.prompts = prompts
         self.media_dir = media_dir
         self.rng = rng
-        self.news = news_pipeline or NewsPipeline(cfg, llm, prompts)
+        self.news = news_pipeline or NewsPipeline(cfg, llm, api_key=api_key, prompts=prompts)
         self._news_ok: dict | None = None
 
     # --------------------------------------------------------------- counts

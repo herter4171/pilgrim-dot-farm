@@ -22,6 +22,23 @@ def _ok(status: int) -> bool:
     return 200 <= status < 500
 
 
+def _mcp_probe(endpoint: str, key: str) -> tuple[bool, str]:
+    """Minimal MCP initialize probe: proves the endpoint + auth handshake."""
+    try:
+        # synchronous reimplementation of the handshake via httpx sync
+        with httpx.Client(timeout=_TIMEOUT, headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                **({"Authorization": f"Bearer {key}"} if key else {})}) as c:
+            r = c.post(endpoint.rstrip("/"), json={
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                           "clientInfo": {"name": "smoke", "version": "0"}}})
+            return r.status_code == 200, f"http {r.status_code}"
+    except Exception as e:  # noqa: BLE001
+        return False, e.__class__.__name__
+
+
 def probe() -> int:
     cfg = load_config()
     key = os.environ.get("LITELLM_TOKEN", "")
@@ -32,7 +49,6 @@ def probe() -> int:
              {"Authorization": f"Bearer {key}"} if key else None),
             ("kokoro", cfg.hosts.kokoro.rstrip("/") + "/health", None),
             ("mlx_serve", cfg.hosts.mlx_serve.rstrip("/") + "/v1/models", None),
-            ("searxng", cfg.hosts.searxng.rstrip("/") + "/health", None),
         ]
         for name, url, headers in checks:
             try:
@@ -44,6 +60,11 @@ def probe() -> int:
             except Exception as e:  # noqa: BLE001 - probe reports any reachability failure
                 print(f"{name:10s} {url:45s} FAIL ({e.__class__.__name__})")
                 failures.append(f"{name} {e.__class__.__name__}")
+    # searxng goes through the LiteLLM MCP endpoint (not a /health route)
+    ok, why = _mcp_probe(cfg.hosts.searxng, key)
+    print(f"{'searxng':10s} {cfg.hosts.searxng:45s} {'OK' if ok else 'FAIL'} ({why})")
+    if not ok:
+        failures.append(f"searxng {why}")
     if failures:
         print("\nSMOKE FAILURES:")
         for f in failures:

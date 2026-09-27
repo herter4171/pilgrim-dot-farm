@@ -44,7 +44,8 @@ class Station:
         self.voice = VoicePipeline(cfg, self.llm, self.kokoro, self.db, self.media_dir,
                                    prompts=_load_prompts(cfg))
         self.songs = SongPipeline(cfg, self.llm, self.media_dir, prompts=_load_prompts(cfg))
-        self.news = NewsPipeline(cfg, self.llm, prompts=_load_prompts(cfg))
+        self.news = NewsPipeline(cfg, self.llm, api_key=api_key,
+                                prompts=_load_prompts(cfg))
         self.clock = Clock()
         self.rng = RNG(cfg.station.rng_seed)
         self.selector = RandomSelector(self.rng, cfg)

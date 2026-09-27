@@ -53,28 +53,37 @@ class LLM:
     async def close(self) -> None:
         await self._client.aclose()
 
+    @staticmethod
+    def _message_text(msg: dict[str, Any]) -> str:
+        """Extract final text from an LLM message.
+
+        Reasoning models (e.g. qwen38) split output into `reasoning_content`
+        and `content`, and some providers wrap the answer in
+        `provider_specific_fields`. Prefer `content`, then fall back to a
+        provider-specific text field so a completed answer is never dropped.
+        """
+        content = msg.get("content") or ""
+        if content.strip():
+            return str(content)
+        psf = msg.get("provider_specific_fields")
+        if isinstance(psf, dict):
+            stack = [psf]
+            while stack:
+                node = stack.pop()
+                if not isinstance(node, dict):
+                    continue
+                for k, v in node.items():
+                    if k.lower() in ("content", "text", "message") and \
+                            isinstance(v, str) and v.strip():
+                        return v
+                    if isinstance(v, dict):
+                        stack.append(v)
+        return ""
+
     async def chat_json(self, model: str, system: str, user: str,
                         max_tokens: int = 800) -> dict[str, Any]:
         """Ask an LLM for a JSON object. Returns parsed, validated-by-caller dict."""
-        url = self.cfg.hosts.litellm.rstrip("/") + "/chat/completions"
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.8,
-        }
-        resp = await self._client.post(
-            url, headers={"Authorization": f"Bearer {self.api_key}"}, json=payload)
-        if resp.status_code != 200:
-            raise LLMError(f"llm http {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()
-        try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError) as e:
-            raise LLMError(f"llm bad response shape: {e}") from e
+        content = await self._complete(model, system, user, max_tokens)
         if not content or not content.strip():
             raise LLMError("llm empty content (reasoning ate the token budget?)")
         return parse_json_strict(content)
@@ -82,6 +91,10 @@ class LLM:
     async def chat_text(self, model: str, system: str, user: str,
                         max_tokens: int = 800) -> str:
         """Like chat_json but just returns the raw content string."""
+        return await self._complete(model, system, user, max_tokens)
+
+    async def _complete(self, model: str, system: str, user: str,
+                        max_tokens: int) -> str:
         url = self.cfg.hosts.litellm.rstrip("/") + "/chat/completions"
         payload = {
             "model": model,
@@ -98,6 +111,7 @@ class LLM:
             raise LLMError(f"llm http {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
         try:
-            return data["choices"][0]["message"]["content"] or ""
+            msg = data["choices"][0]["message"]
         except (KeyError, IndexError) as e:
             raise LLMError(f"llm bad response shape: {e}") from e
+        return self._message_text(msg)

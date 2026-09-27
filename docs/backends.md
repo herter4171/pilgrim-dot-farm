@@ -131,23 +131,47 @@ Observed: `"Pilgrim Dot Farm."` @ `am_liam` speed 1.0 → 2.02 s WAV,
 
 ---
 
-## 4. Playwright — `localhost:8931`
+## 5. SearXNG — via LiteLLM MCP (`http://localhost:4000/mcp`)
 
-MCP server responds and lists tools, but the browser backend currently fails at
-the network layer: `NS_ERROR_NET_RESET` (even on https://example.com) and
-`NS_ERROR_CONNECTION_REFUSED`. Cannot drive a browser yet. Likely a tunnel /
-headless-runtime issue to resolve before the client gap test (§15) is possible.
+searxng is **not** a direct HTTP service reachable at `:8888`. It is exposed
+as the `web_search-searxng_web_search` tool on the LiteLLM MCP server
+(Streamable-HTTP transport). Probed (2026-09-27):
+
+```
+POST /mcp
+  Authorization: Bearer <LITELLM_TOKEN>
+  Content-Type: application/json
+  Accept: application/json, text/event-stream
+```
+
+- `initialize` (protocolVersion `2025-03-26`) → session id in the
+  `mcp-session-id` response header; body is SSE (`event: message` / `data: {...}`).
+- `tools/call` `web_search-searxng_web_search` with `{query, limit, result_detail:
+  "compact"}` → `result.content[].text` = ranked `Title\nDescription\nURL` blocks.
+- Live search for "top news headlines today" returned real Google News results.
+
+Client: `pilgrim/pipelines/mcp.py` (`MCPSession.searxng_search`). The news
+pipeline (RADIO.md §6.4) calls it with the bearer token; any failure degrades
+to a model-written bulletin.
 
 ---
 
-## Open gaps (to resolve before depending on these in code)
+## 6. Playwright — `localhost:8931`
 
-1. **~~Kokoro TTS not reachable~~ RESOLVED** — tunnel up; verified /health,
-   /voices, /tts and the real voice ids (am_liam, am_michael, af_aoede all
-   present); 24 kHz mono confirmed.
-2. **Song duration control unconfirmed** — `duration_s` ignored on a 5 s
-   instrumental (got 21.5 s). Find the correct param, or accept model default
-   and plan inventory around it.
-3. **Playwright browser backend down** — needed for the §15 client gap test.
-4. **LLMs are reasoning models** — budget max_tokens generously and parse only
-   `content`; ship a failing-LLM discard path (already planned).
+MCP server + headed browser (Chrome on VNC display :1) confirmed working
+2026-09-27: navigated https://example.com and https://www.google.com, public
+internet egress OK, window visible on the VNC display. Systemd unit
+`playwright-mcp.service`, localhost-only, persistent profile. (Earlier
+"network isolated" note was from a pre-setup state and is resolved.)
+
+---
+
+## Open gaps (to verify before depending on these in code)
+
+1. **Song duration control** — `duration_s` ignored on a 5 s instrumental (got
+   21.5 s). Find the correct param, or accept model default and plan inventory
+   around it.
+2. **LLMs are reasoning models** — budget max_tokens generously and parse only
+   `content`; ship a failing-LLM discard path (RADIO.md §6.3/§5).
+3. **Real seed run** — `make seed` against live backends still to be
+   validated end-to-end (M10).

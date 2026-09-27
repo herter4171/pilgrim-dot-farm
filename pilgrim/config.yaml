@@ -11,7 +11,9 @@ hosts:
   mlx_serve: http://127.0.0.1:11234
   kokoro: http://localhost:8001
   litellm: http://localhost:4000/v1
-  searxng: http://localhost:8888
+  # searxng is reached through the LiteLLM MCP server (web_search-searxng tool),
+  # NOT a direct HTTP /search. This is the MCP Streamable-HTTP endpoint.
+  searxng: http://localhost:4000/mcp
 
 models:
   news: qwen38
