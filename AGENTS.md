@@ -5,6 +5,11 @@ truth.** Read the relevant section of PLAN.md before implementing anything,
 and cite the section number (e.g. "per §5.2") in commit messages and reports.
 If this file and PLAN.md disagree, PLAN.md wins; report the conflict.
 
+**Layout:** all application + test code lives under `pilgrim/` (RADIO.md §18).
+The repo root holds only repo-level files (`AGENTS.md`, `RADIO.md`, `Makefile`,
+`pyproject.toml`, `requirements.txt`, `docs/`). `make test/sim/lint/e2e` and
+`make run/seed/smoke` all resolve the `pilgrim` package paths.
+
 ---
 
 ## 1. Hard rules
@@ -12,19 +17,19 @@ If this file and PLAN.md disagree, PLAN.md wins; report the conflict.
 These are not preferences. Do not break them, even if a task seems to require it.
 If a task cannot be done without breaking one, stop and report.
 
-1. **Playout never waits on production.** Nothing in `scheduler.py` or the
+1. **Playout never waits on production.** Nothing in `pilgrim/scheduler.py` or the
    client may block on an LLM, Kokoro, or MiniMax call. Only fully rendered,
    QC-passed, normalized items enter the committed program.
 2. **Tests never call real backends.** Unit, simulation, and e2e tests use the
-   fakes in `tests/fakes/`. Real backends are for explicit smoke tests only
+   fakes in `pilgrim/tests/fakes/`. Real backends are for explicit smoke tests only
    (§6 below).
 3. **No direct `time.time()`, `datetime.now()`, `asyncio.sleep()` for
-   scheduling, or `random` in `scheduler.py`, `selectors.py`, or
-   `producer.py`.** Use the injected `Clock` and RNG. This is what makes the
+   scheduling, or `random` in `pilgrim/scheduler.py`, `pilgrim/selectors.py`, or
+   `pilgrim/producer.py`.** Use the injected `Clock` and RNG. This is what makes the
    24-hour simulation possible.
 4. **All hosts, ports, model names, weights, and targets come from
-   `config.yaml`.** No hardcoded addresses anywhere else.
-5. **Never delete or modify files in `library/`** or anything flagged
+   `pilgrim/config.yaml`.** No hardcoded addresses anywhere else.
+5. **Never delete or modify files in `pilgrim/library/`** or anything flagged
    `emergency`. Never delete `station.db`. Tests use a temp directory.
 6. **M5 song generation is expensive** (~1.6 s of compute per 1 s of audio).
    Never start real song generation except in a smoke test, and then request
@@ -70,7 +75,7 @@ note it.
 - Audio: `soundfile` + `numpy` for QC; **ffmpeg CLI** for two-pass `loudnorm`,
   silence trimming, and FLAC encoding.
 - Storage: SQLite (`station.db`) via the stdlib `sqlite3` module; media files
-  on disk under `library/`.
+  on disk under `pilgrim/library/`.
 - Web: plain HTML/CSS/JS, **no build step, no framework**.
 - Tests: pytest, pytest-asyncio; Playwright for the client gap test.
 
