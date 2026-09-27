@@ -1,0 +1,11 @@
+{
+  "name": "pilgrim-e2e",
+  "private": true,
+  "description": "Playwright client gap test for Pilgrim Dot Farm Radio (RADIO.md §15, M9)",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0"
+  }
+}
