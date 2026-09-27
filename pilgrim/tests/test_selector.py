@@ -49,6 +49,46 @@ def test_dj_not_after_dj_or_news(cfg):
             assert sel.choose_next(st) != "dj_talk"
 
 
+def test_interjection_between_songs(cfg):
+    """A song on the tail must never be followed by another song (at least one
+    interjection between songs)."""
+    sel = RandomSelector(RNG(5), cfg)
+    st = make_state(cfg, recent=["song"])  # a song just aired
+    for _ in range(200):
+        assert sel.choose_next(st) != "song"
+
+
+def test_interjection_fallback_prefers_nonsong(cfg):
+    """Even in the no-inventory fallback, a song-on-tail must pick a non-song
+    interjection whenever any non-song stock exists (no back-to-back songs)."""
+    sel = RandomSelector(RNG(8), cfg)
+    st = make_state(cfg)
+    # Only songs are available after discarding (simulating all non-song out of stock),
+    # but a liner still has stock behind it -> fallback must choose the liner.
+    st.available = {"song": True, "liner": True,
+                    "dj_talk": False, "commercial_break": False, "news": False}
+    st.recent_types = ["song"]
+    for _ in range(50):
+        assert sel.choose_next(st) != "song"
+
+    # If literally only a song has stock, the fallback still emits it (nothing else
+    # can interject); with any non-song stock present the rule must hold above.
+    st2 = make_state(cfg)
+    st2.available = {"song": True, "liner": False, "dj_talk": False,
+                     "commercial_break": False, "news": False}
+    st2.recent_types = ["song"]
+    assert sel.choose_next(st2) == "song"
+
+
+def test_song_allowed_after_interjection(cfg):
+    """Once an interjection has aired, another song may follow."""
+    sel = RandomSelector(RNG(6), cfg)
+    st = make_state(cfg, recent=["liner"])  # interjection just aired
+    # song is a valid draw again (it must appear at least once across draws)
+    seen = {sel.choose_next(st) for _ in range(200)}
+    assert "song" in seen
+
+
 def test_no_silence_raise_with_empty(cfg):
     sel = RandomSelector(RNG(4), cfg)
     st = make_state(cfg)

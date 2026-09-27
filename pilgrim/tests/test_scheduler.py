@@ -2,7 +2,7 @@
 seeded pool and assert the committed-program invariants hold."""
 from __future__ import annotations
 
-from conftest import seed_pool
+from conftest import make_item, seed_pool
 from pilgrim.config import RNG, SimClock
 from pilgrim.scheduler import Scheduler
 from pilgrim.selector import RandomSelector
@@ -61,6 +61,17 @@ def test_consecutive_non_song_constraint(cfg, tmp_env):
             assert run <= cfg.playout.max_consecutive_non_song
 
 
+def test_interjection_between_songs(cfg, tmp_env):
+    """No two songs back-to-back: there is at least one non-song between songs."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg)
+    prog = run_program(cfg, store, seed=7, hours=24)
+    seqs = [t for _, t, _, _, _ in prog]
+    for i in range(1, len(seqs)):
+        if seqs[i - 1] == "song":
+            assert seqs[i] != "song", f"adjacent songs at index {i}"
+
+
 def test_dj_never_adjacent_to_dj_or_news(cfg, tmp_env):
     _, store, _ = tmp_env
     seed_pool(store, cfg)
@@ -89,6 +100,27 @@ def test_no_song_repeat_within_an_hour(cfg, tmp_env):
                 assert t - aired >= 3600 - 1.0, f"song {item_id} re-aired {t - aired:.0f}s < 1h"
             last_air[item_id] = t
         t += dur
+
+
+def test_no_commercial_repeat_within_break(cfg, tmp_env):
+    """A commercial break must never air the same spot twice in a row — the
+    picker now samples without replacement."""
+    _, store, _ = tmp_env
+    # only two commercials, so any break drawn from them exercises repetition
+    make_item(cfg, store, "commercial", 20.0)
+    make_item(cfg, store, "commercial", 24.0)
+    seed_pool(store, cfg, n_song=40, n_liner=20, n_dj=3)  # lean non-song pool
+    prog = run_program(cfg, store, seed=3, hours=6)
+    # within each maximal run of commercials, item_ids must be unique
+    prev_type = None
+    run_ids = []
+    for _seq, typ, _dur, _g, item_id in prog:
+        if typ == "commercial":
+            if prev_type != "commercial":
+                run_ids = []
+            assert item_id not in run_ids, f"commercial {item_id} repeated in one break"
+            run_ids.append(item_id)
+        prev_type = typ
 
 
 def test_deterministic_program(cfg, tmp_env):

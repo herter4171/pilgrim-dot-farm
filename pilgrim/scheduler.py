@@ -40,6 +40,7 @@ class Scheduler:
         self.rng = rng
         self._start_wall = time.monotonic()
         self._last_song_air: dict[int, float] = {}  # item_id -> air-clock of last commit
+        self._last_comm_air: dict[int, float] = {}  # item_id -> air-clock of last commit
         self._air_clock = 0.0  # monotonic committed-program time (independent of trimming)
         # in-memory cumulative mapping built each cycle
         self._program_start = 0.0  # absolute start of retained program history
@@ -284,10 +285,19 @@ class Scheduler:
                 break
             trailing_run += 1
         cap = max(1, cap_limit - trailing_run)
-        self.rng.shuffle(items)
         n = 1 if len(items) == 1 else self.rng.randint(1, min(cap, len(items)))
+        now = self._air_clock
+        min_gap = float(self.cfg.playout.commercial_min_spacing_s)
+        # prefer spots aired longer ago than the min spacing; only reuse a
+        # recently-aired spot when the pool is too small to honor the window.
+        spaced = [i for i in items
+                  if now - self._last_comm_air.get(i["id"], -1e9) >= min_gap]
+        pool = spaced if len(spaced) >= n else items
+        # sample WITHOUT replacement: never the same spot twice in one break
+        chosen = self.rng.sample(pool, k=min(n, len(pool)))
         out = []
-        for it in self.rng.choices(items, k=n):
+        for it in chosen:
+            self._last_comm_air[it["id"]] = now
             out.append({"item_id": it["id"], "type": "commercial",
                         "duration_s": it["duration_s"], "consume": True})
         return out

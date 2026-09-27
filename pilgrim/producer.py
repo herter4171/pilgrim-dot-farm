@@ -43,16 +43,25 @@ class Producer:
 
     # --------------------------------------------------------------- counts
     def counts(self) -> dict[str, int]:
-        return {t: self.store.count_fresh_of_type(t)
-                for t in ("song", "commercial", "liner", "dj_talk", "news")}
+        # Evergreen types (song/commercial/liner/dj_talk) recycle: keep a usable
+        # low-water stock, not just unaired stock. News is expiring (never reuses).
+        return {
+            "song": self.store.count_fresh_of_type("song"),
+            "commercial": self.store.count_usable_of_type("commercial"),
+            "liner": self.store.count_usable_of_type("liner"),
+            "dj_talk": self.store.count_usable_of_type("dj_talk"),
+            "news": self.store.count_fresh_of_type("news"),
+        }
 
     # ------------------------------------------------------------- producers
     async def ensure_liners(self) -> None:
         target = self.cfg.inventory.liners_per_bucket
         liners = self.store.list_items("liner")
-        voiced = [i for i in liners if i["fresh"]]
+        # Liners recycle; count every usable (non-emergency) liner, not only
+        # unaired ones, so aired liners still satisfy the low-water target.
+        usable = [i for i in liners if not i["emergency"]]
         by_bucket: dict[int, int] = {}
-        for i in voiced:
+        for i in usable:
             for idx, (lo, hi) in enumerate(_LINER_BUCKETS):
                 if lo <= i["duration_s"] < hi:
                     by_bucket[idx] = by_bucket.get(idx, 0) + 1
@@ -70,7 +79,7 @@ class Producer:
                     return  # back off; don't hammer a failing backend
 
     async def ensure_commercials(self) -> None:
-        have = self.store.count_fresh_of_type("commercial")
+        have = self.store.count_usable_of_type("commercial")
         need = self.cfg.inventory.commercials_min - have
         if need <= 0:
             return
@@ -85,7 +94,7 @@ class Producer:
                 return
 
     async def ensure_dj(self) -> None:
-        have = self.store.count_fresh_of_type("dj_talk")
+        have = self.store.count_usable_of_type("dj_talk")
         need = self.cfg.inventory.dj_talk_min - have
         if need <= 0:
             return
@@ -111,7 +120,6 @@ class Producer:
             bulletin = await self.news.produce_bulletin()
             text = bulletin["text"]
             item = await self.voice.produce_item("news", 20.0, context=text)
-            import dateutil  # noqa (not used)
             from datetime import datetime, timedelta
             expires = datetime.now(UTC) + timedelta(seconds=self.cfg.news.refresh_s + 900)
             self._store_voice(item, "news", evergreen=False,

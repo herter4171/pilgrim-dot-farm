@@ -64,6 +64,9 @@ class RNG:
     def shuffle(self, seq: list[Any]) -> None:
         self._rng.shuffle(seq)
 
+    def sample(self, seq: list[Any], k: int = 1) -> list[Any]:
+        return self._rng.sample(seq, k)
+
     def weighted_choice(self, pairs: dict[str, float]) -> str:
         keys = list(pairs.keys())
         if not keys:
