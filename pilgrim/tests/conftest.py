@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent   # pilgrim package dir
 APP = ROOT.parent                               # repo root
 sys.path.insert(0, str(APP))
 
-from pilgrim.config import Config, SimClock, ensure_dirs, load_config  # noqa: E402
+from pilgrim.config import Config, ensure_dirs, load_config  # noqa: E402
 from pilgrim.store import Store  # noqa: E402
 
 

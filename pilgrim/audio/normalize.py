@@ -11,7 +11,6 @@ import logging
 import re
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional, Tuple
 
 import soundfile as sf
 
@@ -29,13 +28,13 @@ def _ffmpeg() -> str:
     return "ffmpeg"
 
 
-def probe(path: Path) -> Tuple[int, int]:
+def probe(path: Path) -> tuple[int, int]:
     """Return (sample_rate, channels)."""
     info = sf.info(str(path))
     return int(info.samplerate), info.channels
 
 
-def measure(path: Path, cfg: Config) -> Dict[str, str]:
+def measure(path: Path, cfg: Config) -> dict[str, str]:
     """Pass 1: measure integrated loudness params."""
     cmd = [_ffmpeg(), "-y", "-i", str(path),
            "-af", (f"loudnorm=I={cfg.audio.lufs}:TP={cfg.audio.true_peak_db}:"
@@ -51,10 +50,10 @@ def measure(path: Path, cfg: Config) -> Dict[str, str]:
     try:
         return json.loads(m.group(0))
     except json.JSONDecodeError as e:
-        raise NormalizeError(f"bad loudnorm JSON: {e}")
+        raise NormalizeError(f"bad loudnorm JSON: {e}") from e
 
 
-def normalize(src: Path, dst: Path, cfg: Config) -> Dict[str, object]:
+def normalize(src: Path, dst: Path, cfg: Config) -> dict[str, object]:
     """Two-pass loudnorm, restore native rate, trim silence, encode FLAC."""
     from pilgrim.config import ROOT  # noqa: F401  (contextual override support)
     sr, channels = probe(src)

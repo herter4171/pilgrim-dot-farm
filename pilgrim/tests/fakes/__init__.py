@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import io
 import math
-from typing import List
 
 import numpy as np
 import soundfile as sf

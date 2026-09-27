@@ -37,9 +37,12 @@ line-length = 100
 target-version = "py311"
 exclude = ["old_style"]
 src = ["pilgrim"]
-# Default modern profile. BLE001 stays on but this codebase greets every
-# backend/loop failure the same way (log-and-continue); those are marked noqa.
-select = ["E", "F", "I", "UP", "B", "SIM", "PL", "RUF", "TRY", "A"]
+
+[tool.ruff.lint]
+# Pragmatic modern profile: errors, pyflakes, import sorting, pyupgrade,
+# bugbear, and simplify. Pylint-family (PL) and builtin-shadowing (A) are a
+# poor fit for this defensive dispatch style and are deliberately excluded.
+select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.per-file-ignores]
 "pilgrim/tests/*" = ["BLE001"]

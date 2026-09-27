@@ -2,13 +2,11 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
 import numpy as np
 import pytest
 import soundfile as sf
-
 from pilgrim.audio import normalize
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None,
@@ -34,7 +32,7 @@ def test_normalize_to_flac_near_target(cfg, tmp_path):
     assert dst.suffix == ".flac"
     # verify measured loudness within tolerance of -16 LUFS
     ok = normalize.verify_loudness(dst, cfg, tol=0.6)
-    assert ok, f"expected ~-16 LUFS, got out of tolerance"
+    assert ok, "expected ~-16 LUFS, got out of tolerance"
     assert meta["sample_rate"] == SR  # native rate preserved
 
 

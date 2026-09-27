@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class Store:
@@ -31,7 +30,8 @@ class Store:
                 """
                 CREATE TABLE IF NOT EXISTS items (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    type TEXT NOT NULL,            -- song|commercial|liner|dj_talk|news|station_id|emergency
+                    -- song|commercial|liner|dj_talk|news|station_id|emergency
+                    type TEXT NOT NULL,
                     media_path TEXT NOT NULL,
                     duration_s REAL NOT NULL,
                     title TEXT,
@@ -75,12 +75,12 @@ class Store:
 
     # ------------------------------------------------------------------ items
     def add_item(self, *, type_: str, media_path: str, duration_s: float,
-                 title: Optional[str] = None, artist: Optional[str] = None,
-                 genre: Optional[str] = None, sample_rate: Optional[int] = None,
-                 channels: Optional[int] = None, role: Optional[str] = None,
+                 title: str | None = None, artist: str | None = None,
+                 genre: str | None = None, sample_rate: int | None = None,
+                 channels: int | None = None, role: str | None = None,
                  evergreen: bool = False, emergency: bool = False,
-                 fresh: bool = True, expires_at: Optional[str] = None,
-                 gravity: Optional[str] = None, meta: Optional[Dict] = None) -> int:
+                 fresh: bool = True, expires_at: str | None = None,
+                 gravity: str | None = None, meta: dict | None = None) -> int:
         with self._lock:
             cur = self._conn.execute(
                 """INSERT INTO items
@@ -97,12 +97,12 @@ class Store:
             assert rid is not None
             return int(rid)
 
-    def get_item(self, item_id: int) -> Optional[Dict[str, Any]]:
+    def get_item(self, item_id: int) -> dict[str, Any] | None:
         with self._lock:
             r = self._conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
         return dict(r) if r else None
 
-    def list_items(self, type_: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_items(self, type_: str | None = None) -> list[dict[str, Any]]:
         q = "SELECT * FROM items"
         args: tuple = ()
         if type_:
@@ -132,7 +132,7 @@ class Store:
             self._conn.execute("UPDATE items SET fresh=0 WHERE id=?", (item_id,))
             self._conn.commit()
 
-    def last_played_at(self, item_id: int) -> Optional[float]:
+    def last_played_at(self, item_id: int) -> float | None:
         with self._lock:
             r = self._conn.execute(
                 "SELECT MAX(recorded_at) FROM airplay WHERE item_id=?", (item_id,)).fetchone()
@@ -155,14 +155,14 @@ class Store:
             assert rid is not None
             return int(rid)
 
-    def program_after(self, seq: int) -> List[Dict[str, Any]]:
+    def program_after(self, seq: int) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT p.seq, p.item_id, p.type AS type, p.duration_s "
                 "FROM program p WHERE p.seq>? ORDER BY p.seq", (seq,)).fetchall()
         return [dict(r) for r in rows]
 
-    def max_seq(self) -> Optional[int]:
+    def max_seq(self) -> int | None:
         with self._lock:
             r = self._conn.execute("SELECT COALESCE(MAX(seq),0) FROM program").fetchone()
         return int(r[0]) if r and r[0] else 0
@@ -173,7 +173,7 @@ class Store:
             self._conn.execute("DELETE FROM program WHERE seq<?", (seq,))
             self._conn.commit()
 
-    def program_since(self, since_seq: int) -> List[Dict[str, Any]]:
+    def program_since(self, since_seq: int) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT p.seq, p.item_id, p.type AS type, p.duration_s "
@@ -181,25 +181,25 @@ class Store:
         return [dict(r) for r in rows]
 
     # ---------------------------------------------------------------- airplay
-    def record_airplay(self, item_id: int, seq: int, item_type: Optional[str],
-                       started_at: Optional[float], position: Optional[float],
+    def record_airplay(self, item_id: int, seq: int, item_type: str | None,
+                       started_at: float | None, position: float | None,
                        underrun: int = 0) -> int:
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO airplay (item_id, seq, item_type, started_at, position, underrun, recorded_at) "
-                "VALUES (?,?,?,?,?,?,?)",
+                ("INSERT INTO airplay (item_id, seq, item_type, started_at, position, "
+                 "underrun, recorded_at) VALUES (?,?,?,?,?,?,?)"),
                 (item_id, seq, item_type, started_at, position, underrun, _now_iso()))
             self._conn.commit()
             rid = cur.lastrowid
             assert rid is not None
             return int(rid)
 
-    def recent_airplay(self, limit: int = 200) -> List[Dict[str, Any]]:
+    def recent_airplay(self, limit: int = 200) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM airplay ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
-    def last_air_type_sequence(self, program_slice: List[Dict[str, Any]]) -> List[str]:
+    def last_air_type_sequence(self, program_slice: list[dict[str, Any]]) -> list[str]:
         """Map most recent committed items to their types in program order."""
         return [p["item_type"] for p in program_slice]

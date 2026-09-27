@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC
 from pathlib import Path
-from typing import Dict, List, Optional
 
-from pilgrim.config import Clock, Config, RNG
-from pilgrim.pipelines.llm import LLM, LLMError
+from pilgrim.config import RNG, Clock, Config
+from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.news import NewsPipeline
 from pilgrim.pipelines.songs import SongPipeline
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
@@ -26,8 +26,8 @@ _LINER_BUCKETS = [(0, 5), (5, 9), (9, 15), (15, 20), (20, 60)]
 class Producer:
     def __init__(self, cfg: Config, store: Store, llm: LLM, kokoro: KokoroClient,
                  voice: VoicePipeline, songs: SongPipeline, clock: Clock,
-                 prompts: Dict[str, str], media_dir: Path, api_key: str, rng: RNG,
-                 db=None, news_pipeline: Optional[NewsPipeline] = None):
+                 prompts: dict[str, str], media_dir: Path, api_key: str, rng: RNG,
+                 db=None, news_pipeline: NewsPipeline | None = None):
         self.cfg = cfg
         self.store = store
         self.llm = llm
@@ -39,20 +39,19 @@ class Producer:
         self.media_dir = media_dir
         self.rng = rng
         self.news = news_pipeline or NewsPipeline(cfg, llm, prompts)
-        self._news_ok: Optional[dict] = None
+        self._news_ok: dict | None = None
 
     # --------------------------------------------------------------- counts
-    def counts(self) -> Dict[str, int]:
-        return self.store.count_fresh_of_type_public() if hasattr(self.store, "count_fresh_of_type_public") else {
-            t: self.store.count_fresh_of_type(t) for t in
-            ("song", "commercial", "liner", "dj_talk", "news")}
+    def counts(self) -> dict[str, int]:
+        return {t: self.store.count_fresh_of_type(t)
+                for t in ("song", "commercial", "liner", "dj_talk", "news")}
 
     # ------------------------------------------------------------- producers
     async def ensure_liners(self) -> None:
         target = self.cfg.inventory.liners_per_bucket
         liners = self.store.list_items("liner")
         voiced = [i for i in liners if i["fresh"]]
-        by_bucket: Dict[int, int] = {}
+        by_bucket: dict[int, int] = {}
         for i in voiced:
             for idx, (lo, hi) in enumerate(_LINER_BUCKETS):
                 if lo <= i["duration_s"] < hi:
@@ -112,10 +111,9 @@ class Producer:
             bulletin = await self.news.produce_bulletin()
             text = bulletin["text"]
             item = await self.voice.produce_item("news", 20.0, context=text)
-            import datetime as dt
             import dateutil  # noqa (not used)
-            from datetime import datetime, timedelta, timezone
-            expires = datetime.now(timezone.utc) + timedelta(seconds=self.cfg.news.refresh_s + 900)
+            from datetime import datetime, timedelta
+            expires = datetime.now(UTC) + timedelta(seconds=self.cfg.news.refresh_s + 900)
             self._store_voice(item, "news", evergreen=False,
                               expires_at=expires.isoformat(), gravity=bulletin["gravity"])
             self._news_ok = bulletin
@@ -134,7 +132,7 @@ class Producer:
             return True
 
     def _store_voice(self, item: dict, type_: str, evergreen: bool = True,
-                     expires_at: Optional[str] = None, gravity: Optional[str] = None) -> None:
+                     expires_at: str | None = None, gravity: str | None = None) -> None:
         self.store.add_item(
             type_=type_, media_path=item["media_path"], duration_s=item["duration_s"],
             sample_rate=item.get("sample_rate"), channels=item.get("channels"),
@@ -184,7 +182,7 @@ class Producer:
                 await asyncio.sleep(15.0)
             await asyncio.sleep(2.0)
 
-    def _recent_genres(self) -> List[str]:
+    def _recent_genres(self) -> list[str]:
         out = []
         for it in self.store.list_items("song"):
             if it.get("genre"):

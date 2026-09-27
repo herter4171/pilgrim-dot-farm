@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-
 from pilgrim.config import RNG
 from pilgrim.selector import PlayoutState, RandomSelector
 

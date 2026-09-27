@@ -2,12 +2,11 @@
 seeded pool and assert the committed-program invariants hold."""
 from __future__ import annotations
 
+from conftest import seed_pool
 from pilgrim.config import RNG, SimClock
 from pilgrim.scheduler import Scheduler
 from pilgrim.selector import RandomSelector
 from pilgrim.store import Store
-
-from conftest import seed_pool
 
 
 def run_program(cfg, store, seed, hours=24, step=30):
@@ -35,7 +34,7 @@ def test_24h_contiguous_and_long(cfg, tmp_env):
     # contiguous, positive, ordered
     t = 0.0
     prev_end = 0.0
-    for seq, typ, dur, _g, _iid in prog:
+    for seq, _typ, dur, _g, _iid in prog:
         assert dur > 0
         assert seq > 0
         # each new item starts exactly where the prior one ended (program time)
@@ -83,7 +82,7 @@ def test_no_song_repeat_within_an_hour(cfg, tmp_env):
     # build a timeline: (start_s, item_id) for songs in program order
     last_air = {}
     t = 0.0
-    for seq, typ, dur, _g, item_id in prog:
+    for _seq, typ, dur, _g, item_id in prog:
         if typ == "song":
             aired = last_air.get(item_id)
             if aired is not None:

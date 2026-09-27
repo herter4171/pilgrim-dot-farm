@@ -11,16 +11,13 @@ import contextlib
 import logging
 import os
 import time
-from pathlib import Path
-from typing import Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
-from pilgrim.config import Clock, Config, RNG, ROOT, ensure_dirs, load_config
+from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_config
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.news import NewsPipeline
 from pilgrim.pipelines.songs import SongPipeline
@@ -94,7 +91,8 @@ class Station:
         return {
             "song": {"have": c("song"), "target": inv.fresh_songs_ready},
             "commercial": {"have": c("commercial"), "target": inv.commercials_min},
-            "liner": {"have": c("liner"), "target": inv.liners_per_bucket * len(inv.liner_buckets_s)},
+            "liner": {"have": c("liner"),
+                      "target": inv.liners_per_bucket * len(inv.liner_buckets_s)},
             "dj_talk": {"have": c("dj_talk"), "target": inv.dj_talk_min},
             "news": {"have": c("news"), "target": 1},
         }
@@ -119,7 +117,7 @@ class Station:
         }
 
     # ------------------------------------------------------------------ program
-    def program_response(self, after_seq: Optional[int]) -> dict:
+    def program_response(self, after_seq: int | None) -> dict:
         scheduler = self.scheduler
         if after_seq is None:
             seq, offset = scheduler.on_air()
@@ -156,7 +154,7 @@ def _load_prompts(cfg: Config) -> dict:
     return out
 
 
-def create_app(cfg: Optional[Config] = None) -> FastAPI:
+def create_app(cfg: Config | None = None) -> FastAPI:
     cfg = cfg or load_config()
     api_key = os.environ.get("LITELLM_TOKEN", "")
     station = Station(cfg, api_key)
@@ -178,7 +176,7 @@ def create_app(cfg: Optional[Config] = None) -> FastAPI:
         return {"ok": True, "message": "stop is a no-op in Phase 1 (station stays on air)"}
 
     @app.get("/api/station/program")
-    async def program(after_seq: Optional[int] = Query(default=None, ge=0)):
+    async def program(after_seq: int | None = Query(default=None, ge=0)):
         return station.program_response(after_seq)
 
     @app.post("/api/station/heartbeat")

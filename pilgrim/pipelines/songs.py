@@ -13,8 +13,6 @@ import httpx
 import numpy as np
 import soundfile as sf
 
-from typing import Optional
-
 from pilgrim.audio import normalize
 from pilgrim.audio.qc import grade_audio
 from pilgrim.config import Config
@@ -24,7 +22,7 @@ log = logging.getLogger("radio.songs")
 
 
 class SongPipeline:
-    def __init__(self, cfg: Config, llm: LLM, media_dir: Optional[Path] = None, prompts=None):
+    def __init__(self, cfg: Config, llm: LLM, media_dir: Path | None = None, prompts=None):
         self.cfg = cfg
         self.llm = llm
         self.media_dir = media_dir or (Path(__file__).resolve().parent.parent / cfg.library.dir)
@@ -36,7 +34,6 @@ class SongPipeline:
         await self._client.aclose()
 
     async def brief(self, previous_genres: list) -> dict:
-        import random
         prompt = self.prompts.get("song_brief")
         if not prompt:
             raise LLMError("song brief prompt template missing")

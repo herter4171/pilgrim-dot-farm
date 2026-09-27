@@ -3,9 +3,9 @@ function of (state, rng) so tests are deterministic with a seed.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Protocol
+from typing import Protocol
 
-from pilgrim.config import Config, RNG
+from pilgrim.config import RNG, Config
 
 # Segment types the selector chooses from.
 SEGMENTS = ["song", "dj_talk", "commercial_break", "liner", "news"]
@@ -25,15 +25,15 @@ class PlayoutState:
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.available: Dict[str, bool] = {s: False for s in SEGMENTS}
+        self.available: dict[str, bool] = {s: False for s in SEGMENTS}
         # counts of freshly-air-able inventory per type
-        self.inventory_counts: Dict[str, int] = {}
+        self.inventory_counts: dict[str, int] = {}
         # most recent program item types, most recent LAST
-        self.recent_types: List[str] = []
+        self.recent_types: list[str] = []
         # genres of the last N songs (most recent last)
-        self.recent_song_genres: List[str] = []
+        self.recent_song_genres: list[str] = []
         # seconds (program time) since the last item of a category aired
-        self.secs_since: Dict[str, float] = {
+        self.secs_since: dict[str, float] = {
             "news": float("inf"), "commercial_break": float("inf"), "song": float("inf")}
         self.news_valid: bool = False
         self.news_gravity: str = "normal"
@@ -76,10 +76,9 @@ class RandomSelector:
             weights.pop("dj_talk", None)
 
         # seriousness adjacency: serious bulletin -> next non-song isn't a commercial
-        if state.news_gravity == "serious":
-            if last is None or last != "song":
-                available.discard("commercial_break")
-                weights.pop("commercial_break", None)
+        if state.news_gravity == "serious" and (last is None or last != "song"):
+            available.discard("commercial_break")
+            weights.pop("commercial_break", None)
 
         if last == "song" and state.recent_song_genres:
             # genre no-repeat handled separately; nothing forcing here
@@ -103,7 +102,7 @@ class RandomSelector:
         return self.rng.weighted_choice({k: v / total for k, v in wlist.items()})
 
     @staticmethod
-    def _consecutive_non_song(recent_types: List[str]) -> int:
+    def _consecutive_non_song(recent_types: list[str]) -> int:
         n = 0
         for t in reversed(recent_types):
             if t == "song":

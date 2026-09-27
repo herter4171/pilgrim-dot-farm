@@ -1,11 +1,10 @@
 """Configuration loading, Clock and RNG abstractions (RADIO.md §12, AGENTS §4)."""
 from __future__ import annotations
 
-import json
 import random
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
@@ -18,7 +17,7 @@ ROOT = Path(__file__).resolve().parent
 # --------------------------------------------------------------------------- #
 class Clock:
     """Injected wall/sim clock. All scheduling reads elapsed seconds from here."""
-    def __init__(self, start: Optional[float] = None) -> None:
+    def __init__(self, start: float | None = None) -> None:
         self._start = start if start is not None else time.monotonic()
 
     def now(self) -> float:
@@ -47,25 +46,25 @@ class SimClock(Clock):
 
 class RNG:
     """Injected random source so runs are reproducible with a seed."""
-    def __init__(self, seed: Optional[int] = None) -> None:
+    def __init__(self, seed: int | None = None) -> None:
         self._rng = random.Random(seed)
 
     def random(self) -> float:
         return self._rng.random()
 
-    def choice(self, seq: List[Any]) -> Any:
+    def choice(self, seq: list[Any]) -> Any:
         return self._rng.choice(seq)
 
-    def choices(self, seq: List[Any], weights: Optional[List[float]] = None, k: int = 1) -> List[Any]:
+    def choices(self, seq: list[Any], weights: list[float] | None = None, k: int = 1) -> list[Any]:
         return self._rng.choices(seq, weights=weights, k=k)
 
     def randint(self, a: int, b: int) -> int:
         return self._rng.randint(a, b)
 
-    def shuffle(self, seq: List[Any]) -> None:
+    def shuffle(self, seq: list[Any]) -> None:
         self._rng.shuffle(seq)
 
-    def weighted_choice(self, pairs: Dict[str, float]) -> str:
+    def weighted_choice(self, pairs: dict[str, float]) -> str:
         keys = list(pairs.keys())
         if not keys:
             raise ValueError("empty weighted choice")
@@ -101,14 +100,14 @@ class Voices(BaseModel):
 class Playout(BaseModel):
     committed_lookahead_s: int = 600
     window_trim_keep_s: int = 120
-    weights: Dict[str, float] = Field(
+    weights: dict[str, float] = Field(
         default_factory=lambda: {"song": .55, "dj_talk": .12,
                                  "commercial_break": .15, "liner": .10, "news": .08})
     max_consecutive_non_song: int = 2
     news_min_spacing_s: int = 1200
     news_ttl_s: int = 2700
     commercial_min_spacing_s: int = 1800
-    song_min_spacing_s: List[int] = Field(default_factory=lambda: [14400, 7200, 3600])
+    song_min_spacing_s: list[int] = Field(default_factory=lambda: [14400, 7200, 3600])
     genre_no_repeat: int = 3
 
 
@@ -117,13 +116,13 @@ class Inventory(BaseModel):
     briefs_queued: int = 3
     commercials_min: int = 6
     liners_per_bucket: int = 3
-    liner_buckets_s: List[int] = Field(default_factory=lambda: [3, 5, 10, 15, 30])
+    liner_buckets_s: list[int] = Field(default_factory=lambda: [3, 5, 10, 15, 30])
     dj_talk_min: int = 2
 
 
 class Songs(BaseModel):
-    target_duration_s: List[int] = Field(default_factory=lambda: [150, 210])
-    genres: Dict[str, float] = Field(default_factory=dict)
+    target_duration_s: list[int] = Field(default_factory=lambda: [150, 210])
+    genres: dict[str, float] = Field(default_factory=dict)
 
 
 class News(BaseModel):
@@ -154,7 +153,7 @@ class Library(BaseModel):
 class Station(BaseModel):
     name: str = "Pilgrim Dot Farm"
     port: int = 5000
-    rng_seed: Optional[int] = None
+    rng_seed: int | None = None
     host: str = "0.0.0.0"
 
 
@@ -171,9 +170,9 @@ class Config(BaseModel):
     library: Library = Field(default_factory=Library)
 
 
-def load_config(path: Optional[Path] = None) -> Config:
+def load_config(path: Path | None = None) -> Config:
     path = path or (ROOT / "config.yaml")
-    raw: Dict[str, Any] = yaml.safe_load(path.read_text()) or {}
+    raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
     return Config(**raw)
 
 

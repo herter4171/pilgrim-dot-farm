@@ -8,21 +8,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from datetime import UTC, datetime
 
-from pilgrim.config import Clock, Config, RNG
-from pilgrim.selector import PlayoutState, RandomSelector, Selector
+from pilgrim.config import RNG, Clock, Config
+from pilgrim.selector import PlayoutState, Selector
 from pilgrim.store import Store
 
 log = logging.getLogger("radio.scheduler")
 
 
 def _utc_iso_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
-def _parse_iso(iso: Optional[str]) -> Optional[float]:
+def _parse_iso(iso: str | None) -> float | None:
     if not iso:
         return None
     try:
@@ -40,7 +39,7 @@ class Scheduler:
         self.clock = clock
         self.rng = rng
         self._start_wall = time.monotonic()
-        self._last_song_air: Dict[int, float] = {}  # item_id -> air-clock of last commit
+        self._last_song_air: dict[int, float] = {}  # item_id -> air-clock of last commit
         self._air_clock = 0.0  # monotonic committed-program time (independent of trimming)
         # in-memory cumulative mapping built each cycle
         self._program_start = 0.0  # absolute start of retained program history
@@ -64,7 +63,7 @@ class Scheduler:
         """Live playhead in program-seconds (advances on the real clock)."""
         return min(self.clock.now(), self._total)
 
-    def on_air(self) -> Tuple[Optional[int], float]:
+    def on_air(self) -> tuple[int | None, float]:
         """Return (seq of on-air item, offset seconds into it)."""
         pos = self.position()
         if not self._items:
@@ -113,7 +112,7 @@ class Scheduler:
             st.news_gravity = ni.get("gravity") or "normal"
         return st
 
-    def _genre_probe(self, recent_types: List[str]) -> List[Tuple[int, str]]:
+    def _genre_probe(self, recent_types: list[str]) -> list[tuple[int, str]]:
         out = []
         for r in reversed(self._items):
             if r["type"] == "song":
@@ -135,7 +134,7 @@ class Scheduler:
                 last_end = self._cum[i] + r["duration_s"]
         return pos - last_end if last_end >= 0 else float("inf")
 
-    def _news_valid(self) -> Optional[dict]:
+    def _news_valid(self) -> dict | None:
         # latest not-expired bulletin not yet aired
         for it in reversed(self.store.list_items("news")):
             exp = _parse_iso(it.get("expires_at"))
@@ -175,7 +174,7 @@ class Scheduler:
 
     def _append(self, e: dict) -> None:
         item_id = e["item_id"]
-        seq = self.store.append_program(item_id, e["type"], e["duration_s"])
+        self.store.append_program(item_id, e["type"], e["duration_s"])
         self._air_clock += e["duration_s"]  # monotonic: never resets on trim
         if e.get("consume"):
             self.store.mark_aired(item_id)
@@ -185,7 +184,7 @@ class Scheduler:
         keep = self.cfg.playout.window_trim_keep_s
         pos = self.position()
         cutoff = pos - keep
-        threshold_seq: Optional[int] = None
+        threshold_seq: int | None = None
         for i, r in enumerate(self._items):
             if self._cum[i] + r["duration_s"] < cutoff:
                 threshold_seq = r["seq"]
@@ -201,8 +200,7 @@ class Scheduler:
             self.store.truncate_program_before(threshold_seq)
             self._rebuild_program()
 
-    def _materialize(self, type_: str) -> List[dict]:
-        cfg = self.cfg
+    def _materialize(self, type_: str) -> list[dict]:
         st = self.build_state()
         try:
             if type_ == "song":
@@ -222,7 +220,7 @@ class Scheduler:
         return []
 
     # -------------------------------------------------------------- pickers
-    def _pick_song(self, st: PlayoutState) -> List[dict]:
+    def _pick_song(self, st: PlayoutState) -> list[dict]:
         """Pick a song. Hard rule: never the same song within the min spacing
         (config song_min_spacing_s[0], default 4h; run config sets 1h for the
         demo). Fresh (unaired) songs are always preferred. When fresh stock is
@@ -247,13 +245,16 @@ class Scheduler:
         if fresh:
             cand = min(fresh, key=key)
         else:
-            spaced = [i for i in recycled if now - self._last_song_air.get(i["id"], -1e9) >= min_gap]
+            spaced = [
+                i for i in recycled
+                if now - self._last_song_air.get(i["id"], -1e9) >= min_gap
+            ]
             cand = min(spaced or recycled, key=key)  # relax gap only if forced
         self._last_song_air[cand["id"]] = now
         return [{"item_id": cand["id"], "type": "song", "duration_s": cand["duration_s"],
                  "consume": True}]
 
-    def _pick_liner(self, st: PlayoutState) -> List[dict]:
+    def _pick_liner(self, st: PlayoutState) -> list[dict]:
         items = [i for i in self.store.list_items("liner") if not i["emergency"]]
         if not items:
             items = [i for i in self.store.list_items("station_id") if not i["emergency"]]
@@ -263,7 +264,7 @@ class Scheduler:
         return [{"item_id": it["id"], "type": it["type"], "duration_s": it["duration_s"],
                  "consume": True}]
 
-    def _pick_dj(self, st: PlayoutState) -> List[dict]:
+    def _pick_dj(self, st: PlayoutState) -> list[dict]:
         items = [i for i in self.store.list_items("dj_talk") if i["fresh"] and not i["emergency"]]
         if not items:
             return []
@@ -271,7 +272,7 @@ class Scheduler:
         return [{"item_id": it["id"], "type": "dj_talk", "duration_s": it["duration_s"],
                  "consume": True}]
 
-    def _pick_commercial_break(self, st: PlayoutState) -> List[dict]:
+    def _pick_commercial_break(self, st: PlayoutState) -> list[dict]:
         items = [i for i in self.store.list_items("commercial") if not i["emergency"]]
         if not items:
             return []
@@ -291,7 +292,7 @@ class Scheduler:
                         "duration_s": it["duration_s"], "consume": True})
         return out
 
-    def _pick_news(self, st: PlayoutState) -> List[dict]:
+    def _pick_news(self, st: PlayoutState) -> list[dict]:
         ni = self._news_valid()
         if not ni:
             return []

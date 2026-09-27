@@ -6,7 +6,6 @@ strictly-refreshable generic bulletin from the model so the tape never stalls.
 from __future__ import annotations
 
 import logging
-import time
 
 import httpx
 
@@ -29,7 +28,8 @@ class NewsPipeline:
                 base + "/search", params={"q": query, "format": "json"},
                 timeout=8.0)
             r.raise_for_status()
-            return [s.get("content") or s.get("title") for s in r.json().get("results", [])][:max_results]
+            results = r.json().get("results", [])
+            return [s.get("content") or s.get("title") for s in results][:max_results]
         except Exception as e:
             log.warning("searxng unavailable: %s", e)
             return []
@@ -48,7 +48,8 @@ class NewsPipeline:
             schema = ('Return JSON only: {"headlines": ["<h1>","<h2>","<h3>"], '
                       '"gravity": "serious"|"normal", "text": "<one combined bulletin>"}')
             user = (f"Write a 3-4 headline news bulletin in the station's voice, attributed "
-                    f"(\"according to...\"), never read verbatim.\n\nSearch context:\n{ctx}\n\n{schema}")
+                    f'(\"according to...\"), never read verbatim.\n\n'
+                    f"Search context:\n{ctx}\n\n{schema}")
             obj = await self.llm.chat_json(self.cfg.models.news, prompt, user, max_tokens=700)
             obj.setdefault("text", " ".join(obj.get("headlines", [])))
             obj["gravity"] = obj.get("gravity", "normal")

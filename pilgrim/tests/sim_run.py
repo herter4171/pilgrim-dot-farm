@@ -13,11 +13,11 @@ _REPO = Path(__file__).resolve().parents[2]      # repo root
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_TESTDIR))
 
-from pilgrim.config import RNG, SimClock, load_config, ensure_dirs  # noqa: E402
-from pilgrim.store import Store  # noqa: E402
+from conftest import seed_pool  # noqa: E402
+from pilgrim.config import RNG, SimClock, ensure_dirs, load_config  # noqa: E402
 from pilgrim.scheduler import Scheduler  # noqa: E402
 from pilgrim.selector import RandomSelector  # noqa: E402
-from conftest import seed_pool  # noqa: E402
+from pilgrim.store import Store  # noqa: E402
 
 
 def run(hours=24):
@@ -81,7 +81,9 @@ def run(hours=24):
     print(f"24h simulated run: {len(seen)} committed items, {sum(d for _,_,d in seen):.0f}s audio")
     print("segment mix:", dict(mix))
     print(f"minimum committed coverage: {min_coverage:.0f}s")
-    print(f"max consecutive non-song: {max_run_non_song} (limit {cfg.playout.max_consecutive_non_song})")
+    max_run_str = (f"max consecutive non-song: {max_run_non_song} "
+                   f"(limit {cfg.playout.max_consecutive_non_song})")
+    print(max_run_str)
     if fails:
         print("FAILURES:")
         for f in fails:

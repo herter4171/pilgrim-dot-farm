@@ -6,7 +6,6 @@ Pure functions over a numpy audio array + metadata. No backends here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 import numpy as np
 
@@ -14,7 +13,7 @@ import numpy as np
 @dataclass
 class QCVerdict:
     ok: bool
-    reasons: List[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
 
     def add(self, reason: str) -> None:
         self.reasons.append(reason)

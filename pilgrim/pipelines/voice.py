@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import IO, Optional
 
 import httpx
 import numpy as np
@@ -20,9 +19,9 @@ log = logging.getLogger("radio.voice")
 # Kokoro reads EVERYTHING literally: markdown, emoji, stage directions, URLs.
 _MD = re.compile(r"[*_`#~>{}\[\]()]")
 _EMOJI = re.compile(
-    "[" u"\U0001F600-\U0001F64F" u"\U0001F300-\U0001F5FF" u"\U0001F680-\U0001F6FF"
-    u"\U0001F1E0-\U0001F1FF" u"\U00002702-\U000027B0" u"\U000024C2-\U0001F251"
-    u"\U0001f900-\U0001f9ff" u"\u2600-\u27BF" u"\u2B00-\u2BFF" "]+")
+    "[" "\U0001F600-\U0001F64F" "\U0001F300-\U0001F5FF" "\U0001F680-\U0001F6FF"
+    "\U0001F1E0-\U0001F1FF" "\U00002702-\U000027B0" "\U000024C2-\U0001F251"
+    "\U0001f900-\U0001f9ff" "\u2600-\u27BF" "\u2B00-\u2BFF" "]+")
 _STAGE = re.compile(r"\([^)]*\)", re.IGNORECASE)
 _URL = re.compile(r"https?://\S+|www\.\S+")
 _TIME = re.compile(r"\b(\d{1,2}):(\d{2})\b")
@@ -104,7 +103,7 @@ class VoicePipeline:
     }
 
     def __init__(self, cfg: Config, llm: LLM, kokoro: KokoroClient,
-                 db=None, media_dir: Optional[Path] = None, prompts=None):
+                 db=None, media_dir: Path | None = None, prompts=None):
         self.cfg = cfg
         self.llm = llm
         self.kokoro = kokoro
@@ -123,7 +122,7 @@ class VoicePipeline:
         return self.cfg.voices.dj
 
     async def write_copy(self, role: str, target_s: float,
-                         context: Optional[str] = None) -> dict:
+                         context: str | None = None) -> dict:
         prompt = self.prompts.get("voice")
         if not prompt:
             raise LLMError("voice prompt template missing")
@@ -168,7 +167,7 @@ class VoicePipeline:
                 "sample_rate": meta["sample_rate"], "channels": meta["channels"]}
 
     async def produce_item(self, role: str, target_s: float,
-                           context: Optional[str] = None) -> dict:
+                           context: str | None = None) -> dict:
         copy = await self.write_copy(role, target_s, context)
         rendered = await self.render(copy, role, target_s)
         item = {

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -25,7 +25,7 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
-def parse_json_strict(text: str) -> Dict[str, Any]:
+def parse_json_strict(text: str) -> dict[str, Any]:
     """Parse model output as JSON; raise on anything invalid."""
     cleaned = _strip_code_fences(text)
     try:
@@ -37,14 +37,14 @@ def parse_json_strict(text: str) -> Dict[str, Any]:
         if start >= 0 and end > start:
             obj = json.loads(cleaned[start:end + 1])
         else:
-            raise LLMError("model returned non-JSON")
+            raise LLMError("model returned non-JSON") from None
     if not isinstance(obj, dict):
         raise LLMError("model JSON is not an object")
     return obj
 
 
 class LLM:
-    def __init__(self, cfg: Config, api_key: str, client: Optional[httpx.AsyncClient] = None) -> None:
+    def __init__(self, cfg: Config, api_key: str, client: httpx.AsyncClient | None = None) -> None:
         self.cfg = cfg
         self.api_key = api_key
         self._client = client or httpx.AsyncClient(
@@ -54,7 +54,7 @@ class LLM:
         await self._client.aclose()
 
     async def chat_json(self, model: str, system: str, user: str,
-                        max_tokens: int = 800) -> Dict[str, Any]:
+                        max_tokens: int = 800) -> dict[str, Any]:
         """Ask an LLM for a JSON object. Returns parsed, validated-by-caller dict."""
         url = self.cfg.hosts.litellm.rstrip("/") + "/chat/completions"
         payload = {
@@ -74,7 +74,7 @@ class LLM:
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError) as e:
-            raise LLMError(f"llm bad response shape: {e}")
+            raise LLMError(f"llm bad response shape: {e}") from e
         if not content or not content.strip():
             raise LLMError("llm empty content (reasoning ate the token budget?)")
         return parse_json_strict(content)
@@ -100,4 +100,4 @@ class LLM:
         try:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError) as e:
-            raise LLMError(f"llm bad response shape: {e}")
+            raise LLMError(f"llm bad response shape: {e}") from e
