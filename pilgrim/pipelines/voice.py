@@ -134,7 +134,7 @@ class VoicePipeline:
         sys_prompt = f"{prompt}\n\nRole: {self.ROLE_INFO[role][1]}. Target {target_s:.0f}s."
         user = (f"Write the copy. {schema}\n\nContext:\n{extra}"
                 if extra else f"Write the copy. {schema}")
-        obj = await self.llm.chat_json(self._model_for(role), sys_prompt, user, max_tokens=600)
+        obj = await self.llm.chat_json(self._model_for(role), sys_prompt, user)
         text = str(obj.get("text", "")).strip()
         if not text:
             raise LLMError("copy empty")

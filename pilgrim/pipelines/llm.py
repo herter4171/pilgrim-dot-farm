@@ -81,7 +81,7 @@ class LLM:
         return ""
 
     async def chat_json(self, model: str, system: str, user: str,
-                        max_tokens: int = 800) -> dict[str, Any]:
+                        max_tokens: int = 4096) -> dict[str, Any]:
         """Ask an LLM for a JSON object. Returns parsed, validated-by-caller dict."""
         content = await self._complete(model, system, user, max_tokens)
         if not content or not content.strip():
@@ -89,7 +89,7 @@ class LLM:
         return parse_json_strict(content)
 
     async def chat_text(self, model: str, system: str, user: str,
-                        max_tokens: int = 800) -> str:
+                        max_tokens: int = 4096) -> str:
         """Like chat_json but just returns the raw content string."""
         return await self._complete(model, system, user, max_tokens)
 

@@ -46,4 +46,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.per-file-ignores]
 "pilgrim/tests/*" = ["BLE001"]
+# Manual live song-gen probe: its lyric/caption strings are long by design.
+"pilgrim/tests/gen_song_test.py" = ["E501"]
 "pilgrim/*.py" = []

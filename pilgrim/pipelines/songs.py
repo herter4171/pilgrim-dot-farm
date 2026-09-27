@@ -44,7 +44,7 @@ class SongPipeline:
                   '"style_prompt": str, "lyrics": str, "target_duration_s": number}')
         user = (f"{prompt}\n\nGenres to pick from: {genres}\nAvoid genres (recently aired): "
                 f"{avoid}\nTarget duration {tmin}-{tmax}s.\n{schema}")
-        obj = await self.llm.chat_json(self.cfg.models.briefs, prompt, user, max_tokens=1200)
+        obj = await self.llm.chat_json(self.cfg.models.briefs, prompt, user)
         for k in ("title", "artist", "genre", "style_prompt"):
             obj[k] = str(obj.get(k, "")).strip()
         obj["lyrics"] = str(obj.get("lyrics", "")).strip()
