@@ -8,7 +8,6 @@ Only backend-free endpoints are exercised here.
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-
 from pilgrim.server import create_app
 
 
