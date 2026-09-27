@@ -49,8 +49,10 @@ inventory:
   dj_talk_min: 2
 
 songs:
-  # LAB: shortened target for a watchable demo (RADIO specifies 150-210 s).
-  # mlx currently ignores duration_s, so real clips run ~21.5 s regardless.
+  # RADIO §6.1 wants 150-210 s, but MiniMax Music 3 (mlx) IGNORES duration_s
+  # and emits fixed short clips: instrumentals ~20-24 s, lyric songs ~60 s max.
+  # [60, 90] empirically yields the ~60 s max from this backend; asking for 150-210 s
+  # returns ~24 s. Longer songs need a backend/model that supports them (open Q).
   target_duration_s: [60, 90]
   genres:
     synthwave: 1

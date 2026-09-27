@@ -56,6 +56,25 @@ async def seed(cfg: Config, api_key: str) -> int:
     n0 = db.count_fresh_of_type("news")
     await prod.ensure_news()
     made += db.count_fresh_of_type("news") - n0
+    log.info("seeding songs...")
+    # §13: songs are seeded too, so cold start isn't dependent on the slow
+    # background song worker. Seed at the fresh-ready target (expensive on mlx).
+    fresh_songs = db.count_fresh_of_type("song")
+    target_songs = cfg.inventory.fresh_songs_ready - fresh_songs
+    for _ in range(max(0, target_songs)):
+        try:
+            brief = await songs.brief(prod._recent_genres())
+            item = await songs.produce_song(brief)
+            db.add_item(
+                type_="song", media_path=item["media_path"],
+                duration_s=item["duration_s"], sample_rate=item.get("sample_rate"),
+                channels=item.get("channels"), title=item.get("title"),
+                artist=item.get("artist"), genre=item.get("genre"),
+                evergreen=True, fresh=True, meta=item.get("meta"))
+            made += 1
+        except Exception as e:
+            log.warning("seed song failed: %s", e)
+            break
     await llm.close()
     await kokoro.close()
     await songs.close()
