@@ -57,7 +57,6 @@ def _load_cfg() -> tuple[Config, Path]:
     tmp = Path(tempfile.mkdtemp(prefix="radio_e2e_"))
     base.library.dir = str(tmp / "library")
     base.library.db = str(tmp / "station.db")
-    base.station.port = 5000
     ensure_dirs(base)
     return base, tmp
 
@@ -134,7 +133,12 @@ def build_app() -> FastAPI:
     async def report():
         """Test-only: airplay stats for the gap assertion (§15)."""
         rows = store.recent_airplay(500)
-        seqs = [r["seq"] for r in rows if r["item_type"]]
+        # Heartbeats include periodic updates for the same clip; report starts
+        # in chronological order, collapsing only consecutive duplicates.
+        seqs: list[int] = []
+        for row in reversed(rows):
+            if row["item_type"] and (not seqs or row["seq"] != seqs[-1]):
+                seqs.append(row["seq"])
         underrun = sum(1 for r in rows if r["underrun"])
         return {"seqs": seqs, "underrun": underrun,
                 "coverage_s": sched.coverage()}

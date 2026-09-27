@@ -31,3 +31,8 @@ pilgrim/library/
 *_render_tmp.wav
 _song_tmp.wav
 _render_tmp.wav
+
+# Browser test dependencies and artifacts
+node_modules/
+test-results/
+playwright-report/
