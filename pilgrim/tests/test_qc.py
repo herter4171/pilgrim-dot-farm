@@ -47,6 +47,35 @@ def test_internal_dropout_detected():
     assert check_internal_dropout(x, SR, max_gap_s=1.0, silence_db=-50)
 
 
+def test_internal_dropout_stereo_song_does_not_crash():
+    # Songs (MiniMax) are stereo, unlike Kokoro's mono voice clips. The dropout
+    # check must not choke on a 2D array, and must find gaps only where every
+    # channel is quiet.
+    mono = _tone(5.0)
+    x = np.stack([mono, mono], axis=-1)
+    x[int(SR * 1.0): int(SR * 3.5), :] = 0  # 2.5s silence inside, both channels
+    assert check_internal_dropout(x, SR, max_gap_s=1.0, silence_db=-50)
+
+
+def test_internal_dropout_stereo_no_false_positive_when_only_one_channel_quiet():
+    mono = _tone(5.0)
+    x = np.stack([mono, mono], axis=-1)
+    x[int(SR * 1.0): int(SR * 3.5), 0] = 0  # only the left channel drops out
+    assert not check_internal_dropout(x, SR, max_gap_s=1.0, silence_db=-50)
+
+
+def test_grade_audio_stereo_song_does_not_raise():
+    # Regression: grade_audio used to raise ValueError ("truth value of an
+    # array...") for any stereo (song) clip, so every song failed QC with an
+    # uncaught exception and none ever reached inventory.
+    mono = _tone(8.0)
+    fade = np.linspace(1.0, 0.0, int(SR * 1.0)) ** 3  # decay the tail so this
+    mono[-len(fade):] *= fade                          # isn't flagged as truncated
+    x = np.stack([mono, mono], axis=-1)
+    v = grade_audio(x, SR, duration_s=8.0, min_dur=0.5, max_dur=60, kind="song")
+    assert v.ok
+
+
 def test_truncation_detected_song():
     # loud all the way to the last sample (no decay) => abrupt ending
     n = SR

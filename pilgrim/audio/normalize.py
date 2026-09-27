@@ -64,14 +64,19 @@ def normalize(src: Path, dst: Path, cfg: Config) -> dict[str, object]:
 
     silence_db = str(cfg.audio.silence_db)
     pad_ms = cfg.audio.edge_pad_ms
-    # monoaural/downmix-safe adelay: adelay supports all=1 to pad every channel
+    # Trim ONLY outer edges. The old `stop_periods=1:stop_duration=0.25` truncated
+    # the whole item at its FIRST >=250 ms quiet segment (any normal speech pause),
+    # silently discarding the remainder of a commercial/liner/song. New approach:
+    # trim leading silence, then reverse + trim leading (the original tail) + reverse.
+    # This never cuts an internal pause or stops the output early.
+    trim = f"silenceremove=start_periods=1:start_silence=0.05:start_threshold={silence_db}dB"
     af = (
         f"loudnorm=I={cfg.audio.lufs}:TP={cfg.audio.true_peak_db}:LRA={cfg.audio.lra}:"
         f"measured_I={g('input_i','-30')}:measured_TP={g('input_tp','-10')}:"
         f"measured_LRA={g('input_lra','0')}:measured_thresh={g('input_thresh','-40')}:linear=true,"
         f"aresample={sr},"
-        f"silenceremove=start_periods=1:start_silence=0.05:start_threshold={silence_db}dB:"
-        f"stop_periods=1:stop_duration=0.25:stop_threshold={silence_db}dB,"
+        f"{trim},"
+        f"areverse,{trim},areverse,"
         f"adelay={pad_ms}:all=1"
     )
     cmd = [_ffmpeg(), "-y", "-i", str(src), "-af", af,

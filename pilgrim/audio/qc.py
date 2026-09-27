@@ -47,18 +47,18 @@ def check_internal_dropout(x: np.ndarray, sr: int, max_gap_s: float,
                            silence_db: float = -50.0) -> bool:
     """True if an internal dropout (long silence run) exists longer than max_gap_s."""
     amp = np.abs(x.astype(np.float64))
+    if amp.ndim > 1:
+        amp = amp.max(axis=-1)  # multi-channel (e.g. stereo songs): quiet only if every channel is
     threshold = 10 ** ((silence_db + 20) / 20.0)  # dropout = much quieter than ambient
-    low = amp < threshold
-    # find longest run of consecutive low samples
-    longest = 0
-    cur = 0
-    for v in low:
-        if v:
-            cur += 1
-            if cur > longest:
-                longest = cur
-        else:
-            cur = 0
+    low = (amp < threshold).astype(np.int8)
+    # longest run of consecutive low samples, vectorized (a Python-level per-sample
+    # loop here previously raised on multi-channel audio, since `if v:` on a
+    # multi-element row is ambiguous — every song generation hit this and QC
+    # crashed instead of passing/failing, so no song ever reached inventory)
+    padded = np.concatenate(([0], low, [0]))
+    edges = np.diff(padded)
+    run_lengths = np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1)
+    longest = int(run_lengths.max()) if run_lengths.size else 0
     return (longest / sr) > max_gap_s
 
 
