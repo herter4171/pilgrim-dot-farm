@@ -16,6 +16,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_config
 from pilgrim.pipelines.llm import LLM
@@ -209,6 +210,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.on_event("startup")
     async def _startup():
         asyncio.create_task(_post_start(station))
+
+    # Serve the web client (RADIO.md §9, §11 GET / static UI). Mounted last so
+    # the API routes above take precedence; html=True serves index.html at "/".
+    web_dir = ROOT / cfg.library.web_dir
+    app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
 
     return app
 
