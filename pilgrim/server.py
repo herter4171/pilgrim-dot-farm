@@ -101,15 +101,14 @@ class Station:
 
     @property
     def on_air(self) -> bool:
-        return True  # placeholder; replaced by real check at request time
+        return self.scheduler.coverage() > 0
 
     async def health(self) -> dict:
         backends = await self.backend_status()
-        critical = backends["litellm"] and backends["kokoro"] and backends["mlx"]
         inv = await self.inventory_levels()
-        # on-air: critical backends reachable AND we can still cover the window
+        # Rendered audio remains playable when production backends fail (§5.4).
         return {
-            "on_air": bool(critical),
+            "on_air": self.on_air,
             "backends": backends,
             "inventory": inv,
             "committed_coverage_s": round(self.scheduler.coverage(), 1),

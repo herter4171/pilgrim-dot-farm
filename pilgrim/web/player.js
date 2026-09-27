@@ -1,7 +1,7 @@
 /* Pilgrim Dot Farm — Web Audio client (RADIO.md §9).
    AudioContext created inside PLAY (autoplay). Decodes current+next2, schedules
    sample-accurate gapless joins, proves audio flows via an AnalyserNode meter.
-   Shows OFF AIR when production services are unreachable. The station stays on
+   Production health never interrupts already buffered audio. The station stays on
    air server-side; the client just joins the committed program at "now".
 */
 (() => {
@@ -18,7 +18,25 @@
   let scheduleCursor = 0;    // index of the next item to schedule (in order)
   let nextWhen = 0;
   let playing = false;
-  let loopTimer = null, hbTimer = null, healthTimer = null;
+  let hbTimer = null;
+  let session = 0;
+
+  /* Cross-tab single-listener guard: if this page is open in more than one
+     tab/browser, we want audio ONLY when the user presses PLAY, and only from
+     the tab they most recently pressed it in. BroadcastChannel tells other
+     open tabs to stop so we never get doubled foreground+background audio. */
+  const bc = "BroadcastChannel" in window ? new BroadcastChannel("pilgrim-radio") : null;
+  const myId = (Math.random() * 1e9) | 0;
+  let myStartAt = 0;
+  if (bc) {
+    bc.onmessage = (ev) => {
+      const d = ev.data || {};
+      if (d.kind === "playing" && d.id !== myId && playing && d.at > myStartAt) {
+        setStatus("stopped:" + (d.reason || "started in another tab"));
+        stop(true);
+      }
+    };
+  }
 
   /* ---------------- UI ---------------- */
   function setState(s) { ind.className = "indicator " + s; indLabel.textContent = s; }
@@ -47,7 +65,7 @@
       const r = await fetch("/api/health");
       const h = await r.json();
       if (!h.on_air) {
-        if (playing) stop();
+        if (playing) return h;
         btn.disabled = true; offairEl.classList.remove("hidden"); setState("idle");
         setStatus(""); return h;
       }
@@ -57,13 +75,13 @@
                 `dj ${inv.dj_talk?.have||0} · cover ${Math.round(h.committed_coverage_s)}s`);
       return h;
     } catch (e) {
-      if (playing) stop();
+      if (playing) return null;
       btn.disabled = true; offairEl.classList.remove("hidden"); setState("idle");
       return null;
     }
   }
   function startHealth() {
-    healthTimer = setInterval(pollHealth, 8000);
+    setInterval(pollHealth, 8000);
     pollHealth();
   }
 
@@ -74,21 +92,21 @@
     if (!r.ok) throw new Error("program HTTP " + r.status);
     return r.json();
   }
-  async function decode(mediaId) {
+  async function decode(mediaId, audioContext) {
     const r = await fetch("/api/media/" + mediaId);
     if (!r.ok) throw new Error("media HTTP " + r.status);
-    return await ctx.decodeAudioData(await r.arrayBuffer());
+    return await audioContext.decodeAudioData(await r.arrayBuffer());
   }
 
   async function getDecoded(i) {
     const it = items[i];
     if (!it) return null;
-    if (!it.buffer) it.buffer = await decode(it.media_id).catch(() => null);
+    if (!it.buffer) it.buffer = await decode(it.media_id, ctx);
     return it.buffer;
   }
 
   /* ---------------- scheduling ---------------- */
-  function scheduleOne(i, offset) {
+  function scheduleOne(i, offset, token) {
     const it = items[i];
     const src = ctx.createBufferSource();
     src.buffer = it.buffer;
@@ -96,51 +114,81 @@
     src.connect(g); g.connect(analyser); analyser.connect(ctx.destination);
     src.start(nextWhen, offset);
     it._when = nextWhen;
+    it._offset = offset;
     const end = nextWhen + (it.buffer.duration - offset);
+    it._end = end;
     nextWhen = end;
     it._scheduled = true;
-    src.addEventListener("ended", () => sendHeartbeat(it.seq, offset));
+    src.addEventListener("ended", () => {
+      src.disconnect(); g.disconnect(); src.buffer = null;
+      it.buffer = null;
+      if (playing && token === session) advancePlayhead();
+    });
     return src;
   }
 
-  /* Keep scheduling forward: decode cursor..cursor+2, extend program near tail,
-     and schedule newly-decoded items in strict order. */
-  async function fillWindow(startOffset) {
-    while (playing) {
-      // honour the client-decoded window (current + next 2)
-      const target = cursor + 3;
-      while (items.length < target) {
-        const lastSeq = items.length ? items[items.length - 1].seq : null;
-        const p = await fetchProgram(lastSeq);
-        if (!p.items || !p.items.length) break;
-        for (const it of p.items) if (!items.some(x => x.seq === it.seq)) items.push(it);
-        if (!p.items.length) break;
-      }
-      // ensure the needed items are decoded
-      for (let i = scheduleCursor; i < Math.min(items.length, cursor + 3); i++) {
-        await getDecoded(i);
-      }
-      // schedule in strict index order up to the decoded frontier
-      while (scheduleCursor < items.length &&
-             (scheduleCursor === 0 || items[scheduleCursor - 1]._scheduled)) {
-        const it = items[scheduleCursor];
-        if (!it.buffer) break;
-        if (scheduleCursor === cursor && startOffset != null) {
-          scheduleOne(scheduleCursor, startOffset); startOffset = null;
-        } else {
-          scheduleOne(scheduleCursor, 0);
+  function advancePlayhead() {
+    while (cursor < scheduleCursor && items[cursor]._end <= ctx.currentTime) {
+      items[cursor].buffer = null;
+      cursor++;
+    }
+    const it = items[cursor];
+    if (it && it._scheduled && it._when <= ctx.currentTime && !it._started) {
+      it._started = true;
+      sendHeartbeat(it.seq, it._offset + ctx.currentTime - it._when);
+      setState("onair");
+    }
+  }
+
+  /* The audio clock advances the decode window as clips finish. Keep current
+     plus next two decoded and schedule each as soon as it is ready (§9.2). */
+  async function fillWindow(startOffset, token) {
+    while (playing && token === session) {
+      try {
+        advancePlayhead();
+        if (items.length < cursor + 3) {
+          const lastSeq = items.length ? items[items.length - 1].seq : null;
+          const p = await fetchProgram(lastSeq);
+          if (!playing || token !== session) return;
+          for (const it of p.items || []) {
+            if (!items.some(x => x.seq === it.seq)) items.push(it);
+          }
         }
-        scheduleCursor++;
+        while (scheduleCursor < Math.min(items.length, cursor + 3)) {
+          await getDecoded(scheduleCursor);
+          if (!playing || token !== session) return;
+          // A slow fetch must not schedule a source in the past. Record the
+          // underrun honestly, then resume as soon as rendered audio is ready.
+          if (nextWhen < ctx.currentTime) {
+            if (scheduleCursor > 0) sendHeartbeat(items[scheduleCursor].seq, 0, true);
+            nextWhen = ctx.currentTime + 0.05;
+          }
+          const offset = startOffset || 0;
+          if (offset < items[scheduleCursor].buffer.duration) {
+            scheduleOne(scheduleCursor, offset, token);
+          } else {
+            // A stale join offset can land just beyond a decoded file's end.
+            items[scheduleCursor]._end = ctx.currentTime;
+            items[scheduleCursor].buffer = null;
+          }
+          startOffset = null;
+          scheduleCursor++;
+          advancePlayhead();
+        }
+      } catch (e) {
+        if (!playing || token !== session) return;
+        setStatus("waiting for audio: " + e.message);
       }
-      await new Promise(r => setTimeout(r, 800));
+      if (cursor >= scheduleCursor) setState("buffering");
+      await new Promise(r => setTimeout(r, 100));
     }
   }
 
   /* ---------------- heartbeat ---------------- */
-  function sendHeartbeat(seq, position) {
+  function sendHeartbeat(seq, position, underrun = false) {
     fetch("/api/station/heartbeat", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seq, position, started_at: ctx ? ctx.currentTime : 0,
+      body: JSON.stringify({ seq, position, underrun, started_at: ctx ? ctx.currentTime : 0,
                              type: (items.find(i => i.seq === seq) || {}).type })
     }).catch(() => {});
   }
@@ -164,37 +212,41 @@
   /* ---------------- play / stop ---------------- */
   async function play() {
     if (playing) return;
-    const h = await pollHealth();
-    if (!h || !h.on_air) return;
-
+    playing = true;
+    myStartAt = Date.now();
+    const token = ++session;
     setState("buffering"); btn.textContent = "■  STOP"; btn.classList.add("stop");
-    ctx = new (window.AudioContext || window.webkitAudioContext)();
-    analyser = ctx.createAnalyser(); analyser.fftSize = 256;
 
     try {
+      // Create and resume synchronously from the click, before any network await.
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const resumed = ctx.resume();
+      analyser = ctx.createAnalyser(); analyser.fftSize = 256;
+      await resumed;
+      if (!playing || token !== session) return;
       const p = await fetchProgram(null);
+      if (!playing || token !== session) return;
       items = p.items.map(it => ({ ...it, buffer: null }));
-      cursor = 0; scheduleCursor = 0; playing = true;
-      // decode the very first item so we know something is ready
-      await getDecoded(0);
-      if (!items.length || items[0].buffer == null) {
-        setStatus("no committed audio yet — waiting…"); stop(); return;
-      }
+      cursor = 0; scheduleCursor = 0;
       nextWhen = ctx.currentTime + 0.2;
-      setState("onair");
       drawLevel();
+      if (bc) bc.postMessage({ kind: "playing", id: myId, at: myStartAt });
       hbTimer = setInterval(() => {
-        const it = items[cursor]; if (it) sendHeartbeat(it.seq, 0);
+        advancePlayhead();
+        const it = items[cursor];
+        if (it?._started) sendHeartbeat(it.seq, it._offset + ctx.currentTime - it._when);
       }, 5000);
-      fillWindow(p.start_offset_s || 0);
+      void fillWindow(p.start_offset_s || 0, token);
     } catch (e) {
+      if (token !== session) return;
       setStatus("playback error: " + e.message); stop();
     }
   }
 
-  function stop() {
+  function stop(remote = false) {
     playing = false;
-    if (loopTimer) clearInterval(loopTimer); loopTimer = null;
+    session++;
+    if (!remote && bc) bc.postMessage({ kind: "stopped", id: myId, at: Date.now() });
     if (hbTimer) clearInterval(hbTimer); hbTimer = null;
     if (raf) cancelAnimationFrame(raf); raf = null;
     if (ctx) { try { ctx.close(); } catch (e) {} ctx = null; }

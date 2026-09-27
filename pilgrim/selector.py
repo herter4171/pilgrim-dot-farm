@@ -61,6 +61,14 @@ class RandomSelector:
         if non_song_run >= cfg.max_consecutive_non_song and "song" in available:
             return "song"
 
+        # At least one interjection between songs: a song on the tail forbids
+        # another song immediately (the interjection may be a liner, dj_talk,
+        # commercial_break, or news). Only the no-inventory fallback below can
+        # ever emit a second song back-to-back (and only if nothing else exists).
+        if state.recent_types and state.recent_types[-1] == "song":
+            available.discard("song")
+            weights.pop("song", None)
+
         if not state.news_valid:
             available.discard("news")
             weights.pop("news", None)
@@ -85,8 +93,14 @@ class RandomSelector:
             pass
 
         if not available:
-            # fallback chain (scheduler handles final emergency); pick anything with stock
-            for s in ("song", "liner", "commercial_break", "dj_talk", "news"):
+            # fallback chain (scheduler handles final emergency); pick anything with stock.
+            # Honor the interjection rule here too: if the last committed is a song and any
+            # non-song interjection stock exists, take the interjection before the song.
+            # "song" is only revisited when no non-song inventory exists at all.
+            last = state.recent_types[-1] if state.recent_types else None
+            order = ("liner", "commercial_break", "dj_talk", "news", "song") \
+                if last == "song" else ("song", "liner", "commercial_break", "dj_talk", "news")
+            for s in order:
                 if state.available.get(s):
                     return s
             raise ValueError("no inventory at all")

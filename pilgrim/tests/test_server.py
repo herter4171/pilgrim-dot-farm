@@ -38,3 +38,31 @@ def test_media_unknown_item_404(tmp_env):
     app = create_app(cfg)
     c = TestClient(app)
     assert c.get("/api/media/9999").status_code == 404
+
+
+async def test_health_stays_on_air_with_rendered_audio_and_backends_down(tmp_env, monkeypatch):
+    """Production outages must not tell listeners to stop buffered playback (§5.4)."""
+    cfg, store, _ = tmp_env
+    item_id = store.add_item(type_="liner", media_path="unused.flac", duration_s=10)
+    store.append_program(item_id, "liner", 10)
+    app = create_app(cfg)
+    station = app.state.station
+
+    async def backends_down():
+        return dict.fromkeys(("litellm", "kokoro", "mlx", "searxng"), False)
+
+    monkeypatch.setattr(station, "backend_status", backends_down)
+    health = await station.health()
+    assert health["on_air"] is True
+    assert not any(health["backends"].values())
+
+
+async def test_health_off_air_without_committed_audio(tmp_env, monkeypatch):
+    cfg, _, _ = tmp_env
+    station = create_app(cfg).state.station
+
+    async def backends_up():
+        return dict.fromkeys(("litellm", "kokoro", "mlx", "searxng"), True)
+
+    monkeypatch.setattr(station, "backend_status", backends_up)
+    assert (await station.health())["on_air"] is False
