@@ -7,10 +7,13 @@ explicitness slip through just because the backend hiccupped.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pilgrim.config import Config
 from pilgrim.pipelines.llm import LLM
+
+log = logging.getLogger("radio.moderation")
 
 
 class Moderation:
@@ -28,9 +31,10 @@ class Moderation:
         user = f'{prompt}\n\nListener request to evaluate:\n"{text}"\n\n{schema}'
         try:
             obj: dict[str, Any] = await self.llm.chat_json(
-                self.cfg.requests.moderation_model, prompt, user, max_tokens=256)
+                self.cfg.requests.moderation_model, prompt, user, max_tokens=4096)
         except Exception as e:  # gate closed if the model errors
-            return False, f"moderation error: {e}"
+            log.warning("moderation failed (gate closed): %s", e)
+            return False, "couldn't reach the DJ's filter — rejected to be safe, try again"
         allowed = bool(obj.get("allowed"))
         reason = str(obj.get("reason", "")).strip()
         return allowed, (reason or ("ok" if allowed else "blocked by moderator"))[:200]

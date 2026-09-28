@@ -92,7 +92,9 @@ def test_moderation_gate_closed_on_model_error(cfg):
     m = Moderation(cfg, _Boom(), prompts={"moderation": "mod template"})
     allowed, reason = asyncio.run(m.moderate("anything at all"))
     assert not allowed  # never slips through when the gate is down
-    assert "moderation error" in reason
+    # fail-closed message must NOT leak internal error text to the user
+    assert "moderation error" not in reason
+    assert reason  # a friendly reason is shown
 
 
 def test_moderation_missing_template_rejects(cfg):
