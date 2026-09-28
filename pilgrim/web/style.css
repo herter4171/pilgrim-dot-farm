@@ -33,7 +33,35 @@ body {
 #titlebar .tagline { font-size: 11px; color: var(--dim); letter-spacing: 2px; }
 
 #desktop { position: relative; z-index: 3; flex: 1; display: flex;
-  align-items: center; justify-content: center; }
+  flex-wrap: wrap; align-content: center; align-items: center;
+  justify-content: center; gap: 20px; }
+
+.window.requests { width: 380px; }
+.win-body.requests { align-items: stretch; text-align: left; gap: 12px; }
+.req-note { font-size: 11px; color: var(--dim); line-height: 1.5; margin: 0; }
+.req-form { display: flex; gap: 8px; }
+.req-form input {
+  flex: 1; min-width: 0; font-family: inherit; padding: 10px; border-radius: 6px;
+  border: 1px solid var(--violet); background: rgba(10,1,24,.6); color: var(--text); outline: none;
+}
+.req-form input:focus { border-color: var(--cyan); }
+.req-form input::placeholder { color: var(--dim); }
+.req-form button {
+  font-family: inherit; font-weight: bold; letter-spacing: 1px; cursor: pointer;
+  color: #0a0118; background: linear-gradient(90deg, var(--cyan), var(--violet));
+  border: none; border-radius: 6px; padding: 0 18px;
+}
+.req-form button:hover { filter: brightness(1.15); }
+.req-form button:disabled { filter: grayscale(.7); cursor: not-allowed; }
+.req-err { font-size: 12px; min-height: 14px; letter-spacing: 0.5px; transition: opacity .6s; }
+.req-list-head { font-size: 11px; letter-spacing: 2px; color: var(--magenta);
+  border-bottom: 1px solid var(--violet); padding-bottom: 4px; }
+.req-queue { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column;
+  gap: 4px; max-height: 220px; overflow-y: auto; }
+.req-item { display: flex; gap: 10px; align-items: baseline; font-size: 12px; }
+.req-num { color: var(--cyan); flex: none; }
+.req-text { color: var(--text); overflow-wrap: anywhere; }
+.req-empty { font-size: 12px; color: var(--dim); }
 
 .window {
   width: 420px;

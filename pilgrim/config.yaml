@@ -70,6 +70,13 @@ news:
   max_searches: 3
   budget_s: 60
 
+# Listener request line. FIFO top-N with LLM moderation: clean/playful requests ok,
+# adult *allusion* ok, but explicit/crass/hate/illegal are rejected by the moderator.
+requests:
+  queue_cap: 10          # live queue size; the (cap+1)th oldest falls out
+  max_length: 160        # chars allowed per request
+  moderation_model: qwen38  # stricter reasoning model for the gate
+
 audio:
   lufs: -16.0
   true_peak_db: -1.0

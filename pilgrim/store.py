@@ -65,10 +65,18 @@ class Store:
                     underrun INTEGER DEFAULT 0,
                     recorded_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'queued',  -- queued|evicted|rejected|serviced
+                    reason TEXT,
+                    created_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_items_type ON items(type);
                 CREATE INDEX IF NOT EXISTS idx_items_fresh ON items(fresh);
                 CREATE INDEX IF NOT EXISTS idx_program_seq ON program(seq);
                 CREATE INDEX IF NOT EXISTS idx_airplay_item ON airplay(item_id);
+                CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
                 """
             )
             self._conn.commit()
@@ -203,3 +211,57 @@ class Store:
     def last_air_type_sequence(self, program_slice: list[dict[str, Any]]) -> list[str]:
         """Map most recent committed items to their types in program order."""
         return [p["item_type"] for p in program_slice]
+
+    # -------------------------------------------------------------- requests
+    def add_request(self, text: str, cap: int, status: str = "queued",
+                    reason: str | None = None) -> dict[str, Any]:
+        """Insert a listener request, then apply FIFO eviction. If more than
+        `cap` are queued, the oldest ones fall out (marked 'evicted'). Returns
+        the stored row."""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO requests (text, status, reason, created_at) VALUES (?,?,?,?)",
+                (text, status, reason, _now_iso()))
+            self._conn.commit()
+            rid = int(cur.lastrowid or 0)
+        self._evict_overflow(cap)
+        r = self.get_request(rid)
+        assert r is not None
+        return r
+
+    def get_request(self, request_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM requests WHERE id=?", (request_id,)).fetchone()
+        return dict(r) if r else None
+
+    def _evict_overflow(self, cap: int) -> None:
+        """FIFO: when queued requests exceed the cap, the oldest fall out
+        ('ass end' drops) so the queue always holds the latest `cap`."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id FROM requests WHERE status='queued' ORDER BY id ASC").fetchall()
+            if len(rows) > cap:
+                drop = len(rows) - cap
+                ids = [r[0] for r in rows[:drop]]
+                for i in ids:
+                    self._conn.execute(
+                        "UPDATE requests SET status='evicted', reason='fifo over cap' WHERE id=?",
+                        (i,))
+                self._conn.commit()
+
+    def queued_requests(self, cap: int | None = None) -> list[dict[str, Any]]:
+        """Live queue in FIFO order (oldest first). Rejected/evicted/serviced
+        requests are not part of the air-able queue."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM requests WHERE status='queued' ORDER BY id ASC").fetchall()
+        out = [dict(r) for r in rows]
+        return out[:cap] if cap else out
+
+    def all_requests(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Full request ledger (all statuses), newest first — for audit/history."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM requests ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]

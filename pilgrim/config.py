@@ -135,6 +135,13 @@ class News(BaseModel):
     budget_s: int = 60
 
 
+class Requests(BaseModel):
+    """Listener request line (FIFO + LLM moderation)."""
+    queue_cap: int = 10
+    max_length: int = 160
+    moderation_model: str = "qwen38"
+
+
 class Audio(BaseModel):
     lufs: float = -16.0
     true_peak_db: float = -1.0
@@ -169,6 +176,7 @@ class Config(BaseModel):
     inventory: Inventory = Field(default_factory=Inventory)
     songs: Songs = Field(default_factory=Songs)
     news: News = Field(default_factory=News)
+    requests: Requests = Field(default_factory=Requests)
     audio: Audio = Field(default_factory=Audio)
     library: Library = Field(default_factory=Library)
 

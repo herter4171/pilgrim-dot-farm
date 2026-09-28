@@ -29,8 +29,27 @@
       <div id="status" class="status"></div>
     </div>
   </section>
+
+  <section class="window requests" data-win="requests">
+    <div class="win-bar">
+      <span class="win-title">✉ REQUEST LINE</span>
+    </div>
+    <div class="win-body requests">
+      <p class="req-note">Leave a line for the DJ. Top ten go on air.<br>
+        Clean-ish: adult nuance is fine, no explicit / crass / hate / illegal.</p>
+      <div class="req-form">
+        <input id="req-input" type="text" maxlength="160" autocomplete="off"
+               placeholder="Request a tune or leave a line for Liam…">
+        <button id="req-send">Send</button>
+      </div>
+      <div id="req-err" class="req-err hidden"></div>
+      <div class="req-list-head">NOW QUEUED</div>
+      <ol id="req-queue" class="req-queue"></ol>
+    </div>
+  </section>
 </main>
 
+<script src="requests.js"></script>
 <script src="player.js"></script>
 </body>
 </html>

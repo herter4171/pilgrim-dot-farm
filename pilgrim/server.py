@@ -17,9 +17,11 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_config
 from pilgrim.pipelines.llm import LLM
+from pilgrim.pipelines.moderation import Moderation
 from pilgrim.pipelines.news import NewsPipeline
 from pilgrim.pipelines.songs import SongPipeline
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
@@ -41,6 +43,7 @@ class Station:
         self.db = Store(ROOT / cfg.library.db)
         self.llm = LLM(cfg, api_key)
         self.kokoro = KokoroClient(cfg)
+        self.moderator = Moderation(cfg, self.llm, prompts=_load_prompts(cfg))
         self.voice = VoicePipeline(cfg, self.llm, self.kokoro, self.db, self.media_dir,
                                    prompts=_load_prompts(cfg))
         self.songs = SongPipeline(cfg, self.llm, self.media_dir, prompts=_load_prompts(cfg))
@@ -148,11 +151,15 @@ class Station:
 def _load_prompts(cfg: Config) -> dict:
     pdir = ROOT / cfg.library.prompts_dir
     out = {}
-    for f in ("voice.md", "song_brief.md", "news.md"):
+    for f in ("voice.md", "song_brief.md", "news.md", "moderation.md"):
         p = pdir / f
         if p.exists():
             out[f.replace(".md", "")] = p.read_text()
     return out
+
+
+class RequestIn(BaseModel):
+    text: str = Field(..., min_length=1)
 
 
 def create_app(cfg: Config | None = None) -> FastAPI:
@@ -206,6 +213,30 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         with contextlib.suppress(Exception):
             return {"voices": await station.kokoro.voices()}
         return {"voices": []}
+
+    @app.post("/api/requests")
+    async def submit_request(payload: RequestIn):
+        text = payload.text.strip()
+        if not text or len(text) > cfg.requests.max_length:
+            raise HTTPException(422, "request empty or too long")
+        allowed, reason = await station.moderator.moderate(text)
+        status = "queued" if allowed else "rejected"
+        req = station.db.add_request(text, cap=cfg.requests.queue_cap,
+                                     status=status, reason=None if allowed else reason)
+        return {
+            "ok": allowed,
+            "rejected": not allowed,
+            "request": req,
+            "reason": None if allowed else reason,
+            "queue": station.db.queued_requests(cfg.requests.queue_cap),
+        }
+
+    @app.get("/api/requests")
+    async def list_requests():
+        return {
+            "queue": station.db.queued_requests(cfg.requests.queue_cap),
+            "cap": cfg.requests.queue_cap,
+        }
 
     @app.on_event("startup")
     async def _startup():
