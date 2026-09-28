@@ -259,6 +259,21 @@ class Store:
         out = [dict(r) for r in rows]
         return out[:cap] if cap else out
 
+    def oldest_queued_request(self) -> dict[str, Any] | None:
+        """Oldest still-queued request (the next one to be serviced on air)."""
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM requests WHERE status='queued' ORDER BY id ASC LIMIT 1").fetchone()
+        return dict(r) if r else None
+
+    def mark_serviced(self, request_id: int) -> None:
+        """Mark a request serviced (read on air) — removes it from the live queue."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET status='serviced', reason='serviced on air' WHERE id=?",
+                (request_id,))
+            self._conn.commit()
+
     def all_requests(self, limit: int = 500) -> list[dict[str, Any]]:
         """Full request ledger (all statuses), newest first — for audit/history."""
         with self._lock:

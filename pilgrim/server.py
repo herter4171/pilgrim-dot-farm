@@ -145,6 +145,7 @@ class Station:
         self._tasks.append(asyncio.create_task(self.producer.run()))
         self._tasks.append(asyncio.create_task(self.producer.news_loop()))
         self._tasks.append(asyncio.create_task(self.producer.song_loop()))
+        self._tasks.append(asyncio.create_task(self.producer.run_requests()))
         log.info("station startup complete")
 
 

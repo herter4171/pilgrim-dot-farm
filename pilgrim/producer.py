@@ -107,6 +107,25 @@ class Producer:
                 log.warning("dj talk production failed: %s", e)
                 return
 
+    async def ensure_requests(self) -> None:
+        """Service the OLDEST queued listener request on air as DJ talk, then
+        dequeue it (mark serviced) — a serviced request leaves the live queue.
+        One request per wake, rate-limited by service_interval_s so listener
+        lines are read at a natural cadence, not dumped all at once. If
+        servicing fails the request stays queued for a later retry."""
+        req = self.store.oldest_queued_request()
+        if not req:
+            return
+        context = 'Listener request on the line: "' + req["text"] + '"'
+        try:
+            item = await self.voice.produce_item("dj_talk", 18.0, context=context)
+            self._store_voice(item, "dj_talk", evergreen=True)
+            self.store.mark_serviced(req["id"])
+            log.info("serviced + dequeued request #%s (DJ %.1fs)",
+                     req["id"], item["duration_s"])
+        except Exception as e:
+            log.warning("request servicing failed (request stays queued): %s", e)
+
     async def ensure_news(self) -> None:
         if not self.cfg.news.enabled:
             return
@@ -158,6 +177,16 @@ class Producer:
             except Exception as e:
                 log.warning("producer voice cycle error: %s", e)
             await asyncio.sleep(6.0)
+
+    async def run_requests(self) -> None:
+        """Serves listener requests on air (one per interval), dequeuing each."""
+        log.info("request servicing worker started")
+        while True:
+            try:
+                await self.ensure_requests()
+            except Exception as e:
+                log.warning("request servicing cycle error: %s", e)
+            await asyncio.sleep(self.cfg.requests.service_interval_s)
 
     async def news_loop(self) -> None:
         while True:
