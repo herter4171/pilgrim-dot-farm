@@ -6,6 +6,7 @@ inline (no polling). Compute-expensive; never call outside a worker.
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 from pathlib import Path
 
@@ -54,7 +55,9 @@ class SongPipeline:
         return obj
 
     async def generate(self, brief: dict) -> dict:
-        """Synchronous mlx call. Returns dict with tmp wav + wall-clock duration."""
+        """Synchronous mlx call. Returns dict with tmp wav + wall-clock duration.
+        If `brief` carries a `seed`, it is forwarded to the backend so the exact
+        same prompt+lyrics+seed reproduces the same audio."""
         url = self.cfg.hosts.mlx_serve.rstrip("/") + "/v1/audio/music-generations"
         payload = {"prompt": brief["style_prompt"]}
         if brief.get("lyrics"):
@@ -63,6 +66,8 @@ class SongPipeline:
             payload["instrumental"] = True
         if brief.get("target_duration_s"):
             payload["duration_s"] = brief["target_duration_s"]
+        if brief.get("seed") is not None:
+            payload["seed"] = brief["seed"]
         t0 = time.monotonic()
         resp = await self._client.post(url, json=payload)
         wall = time.monotonic() - t0
@@ -73,6 +78,9 @@ class SongPipeline:
         return {"path": tmp, "wall_s": wall}
 
     async def produce_song(self, brief: dict) -> dict:
+        # Assign a seed now so the generation is reproducible: same prompt+lyrics
+        # + this seed replays the same audio on the mlx backend. Recorded in meta.
+        brief.setdefault("seed", secrets.randbits(32))
         gen = await self.generate(brief)
         self.generation_s.append((0.0, gen["wall_s"]))
         data, sr = sf.read(str(gen["path"]))
@@ -93,7 +101,15 @@ class SongPipeline:
             "sample_rate": meta["sample_rate"], "channels": meta["channels"],
             "title": brief["title"], "artist": brief["artist"], "genre": brief["genre"],
             "evergreen": True, "fresh": True,
-            "meta": {"brief": brief, "wall_s": round(gen["wall_s"], 1)},
+            "meta": {
+                "seed": brief["seed"],
+                "lyrics": brief.get("lyrics", ""),
+                "style_prompt": brief.get("style_prompt", ""),
+                "genre": brief.get("genre", ""),
+                "duration_s_target": brief.get("target_duration_s"),
+                "brief": brief,
+                "wall_s": round(gen["wall_s"], 1),
+            },
         }
 
     @property
