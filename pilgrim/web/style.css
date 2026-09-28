@@ -32,11 +32,11 @@ body {
 #titlebar .logo span { color: var(--cyan); text-shadow: 0 0 10px var(--cyan); }
 #titlebar .tagline { font-size: 11px; color: var(--dim); letter-spacing: 2px; }
 
-#desktop { position: relative; z-index: 3; flex: 1; display: flex;
-  flex-wrap: wrap; align-content: center; align-items: center;
-  justify-content: center; gap: 20px; }
+#desktop { position: relative; z-index: 3; flex: 1; min-height: 0;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: flex-start; gap: 16px; padding: 16px; overflow-y: auto; }
 
-.window.requests { width: 380px; }
+.window.requests { width: min(94vw, 440px); }
 .win-body.requests { align-items: stretch; text-align: left; gap: 12px; }
 .req-note { font-size: 11px; color: var(--dim); line-height: 1.5; margin: 0; }
 .req-form { display: flex; gap: 8px; }
@@ -64,7 +64,7 @@ body {
 .req-empty { font-size: 12px; color: var(--dim); }
 
 .window {
-  width: 420px;
+  width: min(94vw, 440px);
   background: var(--panel);
   border: 1px solid var(--violet);
   border-radius: 8px;
@@ -109,3 +109,18 @@ body {
   padding: 10px 14px; font-size: 12px; letter-spacing: 1px; text-align: center; }
 .status { font-size: 12px; color: var(--dim); min-height: 14px; letter-spacing: 1px; }
 .hidden { display: none; }
+
+/* Mobile: request line stacks below the player, sized for small screens. */
+@media (max-width: 520px) {
+  #titlebar { padding: 10px 14px; }
+  #titlebar .logo { font-size: 19px; letter-spacing: 2px; }
+  #titlebar .tagline { font-size: 10px; }
+  #desktop { padding: 12px; gap: 14px; }
+  .win-body { padding: 16px; gap: 14px; }
+  .big-btn { padding: 14px 26px; font-size: 18px; width: 100%; }
+}
+
+@media (max-width: 340px) {
+  .req-form { flex-direction: column; }
+  .req-form button { padding: 12px; }
+}
