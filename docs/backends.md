@@ -129,6 +129,13 @@ GET /tts?text=<url-encoded>&voice=am_liam&speed=1.0&format=wav
 Observed: `"Pilgrim Dot Farm."` @ `am_liam` speed 1.0 → 2.02 s WAV,
 **1 channel, 16-bit, 24000 Hz** (matches PLAN §2). 16-bit mono 24 kHz confirmed.
 
+**Length probe (OVERHAUL 2.6, 2026-09-29):** 120 words
+("The quick farmer counted forty pickles by the barn door." × 12) →
+34.2 s @ **3.51 words/s**. That is above the 3.2 w/s threshold the overhaul
+uses to flag truncation, so `KokoroClient.synth` now splits long copy on
+sentence boundaries into chunks of ≤ 200 chars, synthesizes each, and
+concatenates (same 24 kHz) before writing the WAV.
+
 ---
 
 ## 5. SearXNG — via LiteLLM MCP (`http://localhost:4000/mcp`)

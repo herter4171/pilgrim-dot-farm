@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import re
 
 import pytest
 from pilgrim.pipelines.voice import VoicePipeline
@@ -60,3 +62,42 @@ def test_normal_rate_passes_and_meta_carries_words_per_s(cfg, tmp_path):
     assert cfg.audio.min_words_per_s <= wps <= cfg.audio.max_words_per_s
     assert item["meta"]["words"] == len(LONG_COPY.split())
     assert list(tmp_path.glob("*.flac"))
+
+
+def test_chunk_text_limits_chunk_size():
+    from pilgrim.pipelines.voice import KokoroClient
+    text = ("The quick farmer counted forty pickles by the barn door. "
+            "Then he went to town and bought a new tractor. ") * 8  # ~50 char sentences * 8
+    chunks = KokoroClient._chunk_text(text, max_chars=200)
+    assert len(chunks) > 1, "long text must split into several chunks"
+    assert all(len(c) <= 200 for c in chunks)
+    # re.split drops the whitespace that follows sentence punctuation, so join
+    # reconstructs the text modulo trailing whitespace; all words must survive.
+    joined = re.sub(r"\s+", " ", " ".join(chunks)).strip()
+    orig = re.sub(r"\s+", " ", text).strip()
+    assert joined == orig
+
+
+def test_synth_long_text_sends_multiple_requests_and_concatenates(cfg):
+    import httpx
+    import soundfile as sf
+    from pilgrim.pipelines.voice import KokoroClient
+
+    request_texts: list[str] = []
+
+    def handler(request):
+        request_texts.append(request.url.params["text"])
+        return httpx.Response(200, content=tone_wav(0.5))
+
+    transport = httpx.MockTransport(handler)
+    kc = KokoroClient(cfg)
+    kc._client = httpx.AsyncClient(transport=transport, timeout=10)
+
+    long_text = "word. " * 120  # far more than 200 chars, no real sentences
+    wav = asyncio.run(kc.synth(long_text, "am_liam"))
+    assert len(request_texts) > 1, "long text must be sent as several requests"
+    assert all(len(t) <= 200 for t in request_texts)
+    x, sr = sf.read(io.BytesIO(wav))
+    n = len(x) / sr
+    assert abs(n - 0.5 * len(request_texts)) < 0.01  # chunks concatenated
+    asyncio.run(kc.close())

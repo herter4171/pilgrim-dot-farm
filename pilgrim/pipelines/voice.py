@@ -1,6 +1,7 @@
 """Voice pipeline (RADIO.md §6.3, §5.3): copy -> TTS cleanup -> Kokoro -> QC -> normalize."""
 from __future__ import annotations
 
+import io
 import logging
 import re
 from pathlib import Path
@@ -85,12 +86,64 @@ class KokoroClient:
         r.raise_for_status()
         return r.json()
 
+    @staticmethod
+    def _chunk_text(text: str, max_chars: int = 200) -> list[str]:
+        """Split on sentence boundaries into chunks of <= max_chars (OVERHAUL
+        2.6): Kokoro truncates long text (probe: 120 words @ 3.51 w/s vs a
+        natural ~2.6-3.2), so long copy is synthesized per-chunk and joined."""
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        chunks: list[str] = []
+        cur = ""
+        for s in sentences:
+            if not s:
+                continue
+            if len(s) > max_chars:
+                # hard-split an over-long sentence on word boundaries
+                piece, plen = "", 0
+                for w in s.split():
+                    nlen = len(w) if not piece else plen + 1 + len(w)
+                    if piece and nlen > max_chars:
+                        chunks.append(piece)
+                        piece, plen = w, len(w)
+                    else:
+                        piece = w if not piece else f"{piece} {w}"
+                        plen = len(piece)
+                if piece:
+                    chunks.append(piece)
+                continue
+            if cur and len(cur) + 1 + len(s) > max_chars:
+                chunks.append(cur)
+                cur = s
+            else:
+                cur = s if not cur else f"{cur} {s}"
+        if cur:
+            chunks.append(cur)
+        return chunks
+
     async def synth(self, text: str, voice: str, speed: float = 1.0) -> bytes:
-        r = await self._client.get(
-            self.cfg.hosts.kokoro.rstrip("/") + "/tts",
-            params={"text": text, "voice": voice, "speed": str(speed), "format": "wav"})
-        r.raise_for_status()
-        return r.content
+        """Synthesize text to a WAV. Long text is chunked by sentence (<=200
+        chars) and the per-chunk WAVs are concatenated so nothing is truncated."""
+        chunks = self._chunk_text(text)
+        wavs: list[bytes] = []
+        for chunk in chunks:
+            r = await self._client.get(
+                self.cfg.hosts.kokoro.rstrip("/") + "/tts",
+                params={"text": chunk, "voice": voice, "speed": str(speed),
+                        "format": "wav"})
+            r.raise_for_status()
+            wavs.append(r.content)
+        if len(wavs) == 1:
+            return wavs[0]
+        # concatenate at the (single) sample rate
+        pieces: list[np.ndarray] = []
+        sr = 0
+        for w in wavs:
+            d, s = sf.read(io.BytesIO(w))
+            pieces.append(np.asarray(d, dtype=np.float32))
+            sr = int(s)
+        buf = io.BytesIO()
+        sf.write(buf, np.concatenate(pieces), sr, format="WAV")
+        return buf.getvalue()
 
 
 class VoicePipeline:
