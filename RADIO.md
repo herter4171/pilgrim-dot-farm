@@ -278,7 +278,10 @@ Every item passes before entering inventory:
 - **Silence detection:** reject items that are mostly silent or contain
   internal dropouts > 2 s (songs) / 1 s (voice).
 - **Clipping** check.
-- **Truncation** check for songs (abrupt ending without decay).
+- **Abrupt ending** check for songs: the last ~0.5 s is compared to the
+  track's *median* 1-s level (body-relative, OVERHAUL 3.2). This is
+  **recorded** (`verdict.abrupt_end`, `meta.abrupt_end`) but **never fails**
+  the song — the producer applies a fade-out instead.
 - **Copy checks** for voice: length, banned content, TTS-hostile characters
   (post-cleanup).
 
@@ -290,6 +293,10 @@ Failures are logged with reason and discarded; the producer refills.
   `loudnorm`, two-pass).
 - Trim leading/trailing silence below −50 dBFS, leaving a consistent pad
   (~150 ms), so joins sound like a station rather than dead air or collisions.
+- `normalize(src, dst, cfg, fade_out_s)`: when > 0, the tail chain runs
+  `areverse,trim,fade-in,areverse` (a fade-in on reversed audio is a fade-out
+  on the original). The producer uses this (`songs.abrupt_fade_s`, default
+  2.5 s) for songs with hard endings.
 - Keep each file at its **native sample rate**; the browser's AudioContext
   resamples on decode.
 - Deliver as **FLAC**. It's lossless, roughly half the size of WAV, and has no
@@ -411,6 +418,7 @@ inventory:
 
 songs:
   min_duration_s: 20         # sanity floor; no duration is requested from the model
+  abrupt_fade_s: 2.5         # fade-out applied to songs with hard endings
   genres: {synthwave: 1, bluegrass: 1, doom metal: 1, bossa nova: 1, polka: 1, ...}
 
 news:

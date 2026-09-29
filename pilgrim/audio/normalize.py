@@ -53,8 +53,13 @@ def measure(path: Path, cfg: Config) -> dict[str, str]:
         raise NormalizeError(f"bad loudnorm JSON: {e}") from e
 
 
-def normalize(src: Path, dst: Path, cfg: Config) -> dict[str, object]:
-    """Two-pass loudnorm, restore native rate, trim silence, encode FLAC."""
+def normalize(src: Path, dst: Path, cfg: Config, fade_out_s: float = 0.0) -> dict[str, object]:
+    """Two-pass loudnorm, restore native rate, trim silence, encode FLAC.
+
+    When fade_out_s > 0 the tail chain becomes areverse,{trim},fade-in,areverse:
+    a fade-IN on reversed audio is a fade-OUT on the original, so no EU duration
+    is needed (OVERHAUL 3.2, soft landing for songs with hard endings).
+    """
     from pilgrim.config import ROOT  # noqa: F401  (contextual override support)
     sr, channels = probe(src)
     measured = measure(src, cfg)
@@ -70,13 +75,15 @@ def normalize(src: Path, dst: Path, cfg: Config) -> dict[str, object]:
     # trim leading silence, then reverse + trim leading (the original tail) + reverse.
     # This never cuts an internal pause or stops the output early.
     trim = f"silenceremove=start_periods=1:start_silence=0.05:start_threshold={silence_db}dB"
+    tail = (f"areverse,{trim},areverse" if fade_out_s <= 0
+            else f"areverse,{trim},afade=t=in:d={fade_out_s},areverse")
     af = (
         f"loudnorm=I={cfg.audio.lufs}:TP={cfg.audio.true_peak_db}:LRA={cfg.audio.lra}:"
         f"measured_I={g('input_i','-30')}:measured_TP={g('input_tp','-10')}:"
         f"measured_LRA={g('input_lra','0')}:measured_thresh={g('input_thresh','-40')}:linear=true,"
         f"aresample={sr},"
         f"{trim},"
-        f"areverse,{trim},areverse,"
+        f"{tail},"
         f"adelay={pad_ms}:all=1"
     )
     cmd = [_ffmpeg(), "-y", "-i", str(src), "-af", af,

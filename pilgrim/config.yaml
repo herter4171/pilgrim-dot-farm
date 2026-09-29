@@ -51,6 +51,7 @@ inventory:
 songs:
   # No duration request — the music model decides the running time (OVERHAUL 3.1).
   min_duration_s: 20    # sanity floor for songs (OVERHAUL 3.2)
+  abrupt_fade_s: 2.5    # fade-out for songs with hard endings (OVERHAUL 3.2)
   genres:
     synthwave: 1
     bluegrass: 1

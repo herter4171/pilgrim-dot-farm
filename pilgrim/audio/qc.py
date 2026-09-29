@@ -14,6 +14,7 @@ import numpy as np
 class QCVerdict:
     ok: bool
     reasons: list[str] = field(default_factory=list)
+    abrupt_end: bool = False  # song ends on loud energy (OVERHAUL 3.2): recorded, not fatal
 
     def add(self, reason: str) -> None:
         self.reasons.append(reason)
@@ -62,18 +63,24 @@ def check_internal_dropout(x: np.ndarray, sr: int, max_gap_s: float,
     return (longest / sr) > max_gap_s
 
 
-def check_truncation(x: np.ndarray, sr: int, tail_s: float = 0.5,
-                     ratio: float = 0.3) -> bool:
-    """True if the song ends on loud energy (abrupt cutoff, no decay)."""
-    n_tail = int(sr * tail_s)
-    if x.shape[0] < n_tail:
-        return False
-    tail = x[-n_tail:].astype(np.float64)
-    tail_rms = float(np.sqrt(np.mean(tail ** 2)))
-    peak = float(np.max(np.abs(x)))
-    if peak <= 0:
-        return False
-    return tail_rms > ratio * peak
+def tail_level_db(x: np.ndarray, sr: int, tail_s: float = 0.5) -> float:
+    """Tail RMS relative to the median 1-s RMS of the track, in dB (OVERHAUL 3.2).
+    A song that still runs at full level in its last half-second is loud relative
+    to its own body — compare against the MEDIAN 1-s frame, not the global peak,
+    so a soft ballad with one chord peak isn't flagged as truncated."""
+    mono = x.mean(axis=1) if x.ndim > 1 else x
+    n = len(mono) // sr
+    if n < 3:
+        return -99.0
+    frames = mono[: n * sr].reshape(n, sr).astype(np.float64)
+    body = float(np.median(np.sqrt(np.mean(frames ** 2, axis=1)))) or 1e-9
+    tail = mono[-int(sr * tail_s):].astype(np.float64)
+    return 20 * np.log10(float(np.sqrt(np.mean(tail ** 2))) / body + 1e-12)
+
+
+def check_truncation(x: np.ndarray, sr: int, threshold_db: float = -6.0) -> bool:
+    """True if the last ~0.5 s stays within 6 dB of the track's median level."""
+    return tail_level_db(x, sr) > threshold_db
 
 
 def grade_audio(x: np.ndarray, sr: int, *, duration_s: float,
@@ -89,6 +96,8 @@ def grade_audio(x: np.ndarray, sr: int, *, duration_s: float,
         v.add("clipped")
     if check_internal_dropout(x, sr, max_gap_s, silence_db):
         v.add(f"internal dropout >{max_gap_s}s")
-    if kind == "song" and check_truncation(x, sr):
-        v.add("abrupt/truncated ending")
+    if kind == "song":
+        # Record an abrupt ending but NEVER fail the song for it (OVERHAUL 3.2):
+        # the producer fades the last seconds instead of throwing the track away.
+        v.abrupt_end = check_truncation(x, sr)
     return v

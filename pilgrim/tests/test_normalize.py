@@ -67,3 +67,25 @@ def test_normalize_preserves_second_half_after_internal_pause(cfg, tmp_path):
     half = data.shape[0] // 2
     assert float(np.max(np.abs(data[half:]))) > 0.05, "second half was truncated away"
     assert meta["duration_s"] >= (n0 + n_pause + n0) / SR - 0.2  # most of both tones kept
+
+
+def test_fade_out_softens_abrupt_ending(cfg, tmp_path):
+    """OVERHAUL 3.2: a 20 s constant-level tone normalized with fade_out_s=2.5
+    must end ~12 dB below its own median level (a proper fade-out, not a hard
+    cutoff)."""
+    dur = 20.0
+    n = int(SR * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    x = (0.4 * np.sin(2 * np.pi * 330 * t)).astype(np.float32)
+    src = tmp_path / "abrupt_in.wav"
+    dst = tmp_path / "abrupt_out.flac"
+    sf.write(str(src), x, SR)
+    normalize.normalize(src, dst, cfg, fade_out_s=2.5)
+    data, _ = sf.read(str(dst))
+    mono = data.mean(axis=1) if data.ndim > 1 else data
+    nframes = len(mono) // SR
+    frames = mono[: nframes * SR].reshape(nframes, SR).astype(np.float64)
+    median = float(np.median(np.sqrt(np.mean(frames ** 2, axis=1)))) or 1e-9
+    tail = mono[-int(SR * 0.5):].astype(np.float64)
+    tail_db = 20 * np.log10(float(np.sqrt(np.mean(tail ** 2))) / median + 1e-12)
+    assert tail_db <= -12.0

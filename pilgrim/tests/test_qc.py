@@ -76,8 +76,31 @@ def test_grade_audio_stereo_song_does_not_raise():
     assert v.ok
 
 
-def test_truncation_detected_song():
-    # loud all the way to the last sample (no decay) => abrupt ending
-    n = SR
-    x = np.full(n, 0.5, dtype=np.float32)
+def test_truncation_detected_song_but_not_fatal():
+    # loud all the way to the last sample (no decay) => abrupt ending recorded,
+    # but the verdict stays passing (OVERHAUL 3.2: producer fades it).
+    x = _tone(5.0)  # long enough for the 1-s-frame median (n>=3)
+    x[:] = 0.5      # constant level to the very last sample
     assert check_truncation(x, SR)
+    v = grade_audio(x, SR, duration_s=5.0, min_dur=0.5, max_dur=60, kind="song")
+    assert v.ok
+    assert v.abrupt_end
+
+
+def test_faded_ending_not_truncated():
+    # a tone with a 2 s linear fade to zero must NOT be flagged as abrupt
+    x = _tone(8.0)
+    fade = np.linspace(1.0, 0.0, int(SR * 2.0))
+    x[-len(fade):] *= fade
+    assert not check_truncation(x, SR)
+    v = grade_audio(x, SR, duration_s=8.0, min_dur=0.5, max_dur=60, kind="song")
+    assert v.ok
+    assert not v.abrupt_end
+
+
+def test_short_song_rejected_on_duration():
+    # 10 s is below the config sanity floor (20 s): rejected for duration
+    x = _tone(10.0)
+    v = grade_audio(x, SR, duration_s=10.0, min_dur=20.0, max_dur=600, kind="song")
+    assert not v.ok
+    assert "duration" in " ".join(v.reasons)
