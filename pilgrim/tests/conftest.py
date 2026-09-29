@@ -29,6 +29,8 @@ def tmp_env(tmp_path, base_config):
     cfg = base_config.model_copy(deep=True)
     cfg.library.dir = str(tmp_path / "library")
     cfg.library.db = str(tmp_path / "station.db")
+    # keep test runs out of pilgrim/logs/ so the live JSON log stays clean (5.3)
+    cfg.logging.dir = str(tmp_path / "logs")
     ensure_dirs(cfg)
     store = Store(tmp_path / "station.db")
     yield cfg, store, tmp_path
