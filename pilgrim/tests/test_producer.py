@@ -4,7 +4,7 @@ only — no real backends."""
 from __future__ import annotations
 
 from conftest import make_item
-from pilgrim.config import RNG
+from pilgrim.config import RNG, SimClock
 from pilgrim.producer import Producer
 
 
@@ -35,7 +35,7 @@ def make_producer(cfg, store, voice: FakeVoice) -> Producer:
     from typing import Any
     sink: Any = _Sink()
     voice_any: Any = voice
-    clock: Any = None
+    clock: Any = SimClock()
     return Producer(
         cfg, store, llm=sink, kokoro=sink, voice=voice_any, songs=sink,
         clock=clock, prompts={}, media_dir=cfg.library.dir, api_key="",
@@ -186,7 +186,7 @@ def make_song_producer(cfg, store, voice, songs):
     from typing import Any
     sink: Any = _SongSink()
     return Producer(cfg, store, llm=sink, kokoro=sink, voice=voice, songs=songs,
-                    clock=None, prompts={}, media_dir=cfg.library.dir, api_key="",
+                    clock=SimClock(), prompts={}, media_dir=cfg.library.dir, api_key="",
                     rng=RNG(1), news_pipeline=sink)
 
 

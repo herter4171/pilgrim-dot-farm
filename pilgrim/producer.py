@@ -126,9 +126,11 @@ class Producer:
             pass  # never block DJ production on the time
         context = "\n".join(context_parts)
         # DJ clips that mention the time expire, so a stale 'just after ten'
-        # never airs hours later (5.3).
-        expires = (datetime.now(UTC) + timedelta(seconds=self.cfg.talk.time_mention_ttl_s)
-                   ).isoformat()
+        # never airs hours later (5.3). Based on the injected clock so tests on
+        # SimClock and production agree about what 'now' is.
+        wall = self.clock.wall()
+        expires = (datetime.fromtimestamp(wall, UTC) + timedelta(
+            seconds=self.cfg.talk.time_mention_ttl_s)).isoformat()
         for _ in range(max(0, need)):
             try:
                 item = await self.voice.produce_item("dj_talk", 18.0, context=context)
