@@ -18,7 +18,7 @@
     if (msg) setTimeout(() => { errEl.classList.add("hidden"); }, 5000);
   }
 
-  function render(queue) {
+  function render(queue, recent) {
     lastQueue = queue || [];
     queueEl.textContent = "";
     if (!lastQueue.length) {
@@ -26,18 +26,42 @@
       li.className = "req-empty";
       li.textContent = "— no requests yet —";
       queueEl.appendChild(li);
-      return;
+    } else {
+      lastQueue.forEach((r, i) => {
+        const li = document.createElement("li");
+        li.className = "req-item";
+        const n = document.createElement("span");
+        n.className = "req-num"; n.textContent = "#" + (i + 1);
+        const t = document.createElement("span");
+        t.className = "req-text"; t.textContent = r.text;  // textContent = no HTML injection
+        const s = document.createElement("span");
+        s.className = "req-status";
+        s.textContent = ({ queued: "in line", producing: "being written", ready: "up next" })[r.status] || "";
+        li.appendChild(n); li.appendChild(t); li.appendChild(s);
+        queueEl.appendChild(li);
+      });
     }
-    lastQueue.forEach((r, i) => {
+    // "recently played for you" — request text -> song title/artist
+    const recentEl = $("req-recent");
+    if (!recentEl) return;
+    recentEl.textContent = "";
+    (recent || []).forEach((r) => {
       const li = document.createElement("li");
-      li.className = "req-item";
-      const n = document.createElement("span");
-      n.className = "req-num"; n.textContent = "#" + (i + 1);
+      li.className = "req-recent-item";
       const t = document.createElement("span");
-      t.className = "req-text"; t.textContent = r.text;  // textContent = no HTML injection
-      li.appendChild(n); li.appendChild(t);
-      queueEl.appendChild(li);
+      t.className = "req-recent-text"; t.textContent = r.text;
+      const s = document.createElement("span");
+      s.className = "req-recent-song";
+      s.textContent = r.song_title ? ("→ " + r.song_title + (r.song_artist ? " · " + r.song_artist : "")) : "";
+      li.appendChild(t); li.appendChild(s);
+      recentEl.appendChild(li);
     });
+    if (!recentEl.childElementCount) {
+      const li = document.createElement("li");
+      li.className = "req-empty";
+      li.textContent = "— nothing played for you yet —";
+      recentEl.appendChild(li);
+    }
   }
 
   async function refresh() {
@@ -45,7 +69,7 @@
       const r = await fetch("/api/requests");
       if (!r.ok) return;
       const d = await r.json();
-      render(d.queue);
+      render(d.queue, d.recent);
     } catch (e) { /* station down: keep last known queue */ }
   }
 
@@ -70,7 +94,7 @@
         showErr("Head's up: " + (d.reason || "that didn't pass the DJ's taste filter."));
         input.select();
       }
-      render(d.queue || lastQueue);
+      render(d.queue || lastQueue, d.recent);
     } catch (e) {
       showErr("Couldn't reach the station. Try again.");
     } finally {

@@ -257,9 +257,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             log.info("request.moderated", extra={
                 "request_id": req["id"], "allowed": False, "reason": pref,
                 "prefilter": True, "duration_ms": 0})
+            board = station.db.request_board(cfg.requests.queue_cap)
             return {
                 "ok": False, "rejected": True, "request": req, "reason": pref,
-                "queue": station.db.queued_requests(cfg.requests.queue_cap),
+                "queue": board["queue"], "recent": board["recent"],
+                "cap": cfg.requests.queue_cap,
             }
         allowed, reason = await station.moderator.moderate(text)
         status = "queued" if allowed else "rejected"
@@ -270,20 +272,21 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             "request_id": req["id"], "allowed": allowed, "reason": reason,
             "prefilter": False,
             "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
+        board = station.db.request_board(cfg.requests.queue_cap)
         return {
             "ok": allowed,
             "rejected": not allowed,
             "request": req,
             "reason": None if allowed else reason,
-            "queue": station.db.queued_requests(cfg.requests.queue_cap),
+            "queue": board["queue"],
+            "recent": board["recent"],
+            "cap": cfg.requests.queue_cap,
         }
 
     @app.get("/api/requests")
     async def list_requests():
-        return {
-            "queue": station.db.queued_requests(cfg.requests.queue_cap),
-            "cap": cfg.requests.queue_cap,
-        }
+        board = station.db.request_board(cfg.requests.queue_cap)
+        return {**board, "cap": cfg.requests.queue_cap}
 
     @app.on_event("startup")
     async def _startup():

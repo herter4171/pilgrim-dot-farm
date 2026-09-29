@@ -82,3 +82,26 @@ def test_rate_limited_after_fourth_request(tmp_env):
     assert codes[:3] == [200, 200, 200]
     assert codes[3] == 429
     assert calls["n"] <= 3
+
+
+def test_request_board_in_api(tmp_env):
+    """OVERHAUL 4.8: a `ready` request appears in the queue with status; an
+    aired one appears in `recent` with its song title."""
+    from fastapi.testclient import TestClient
+    from pilgrim.server import create_app
+
+    cfg, store, _ = tmp_env
+    app = create_app(cfg)
+
+    req = store.add_request("play for mittens", cap=10)
+    song_id = store.add_item(type_="song", media_path="/m.flac", duration_s=45.0,
+                             title="Mittens at the Barn", artist="The Barn Cats")
+    store.mark_request_ready(req["id"], song_id, None)
+    c = TestClient(app)
+    d = c.get("/api/requests").json()
+    assert any(q["id"] == req["id"] and q["status"] == "ready" for q in d["queue"])
+
+    store.mark_request_aired(req["id"])
+    d = c.get("/api/requests").json()
+    rec = next((r for r in d["recent"] if r["id"] == req["id"]), None)
+    assert rec is not None and rec["song_title"] == "Mittens at the Barn"

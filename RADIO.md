@@ -377,6 +377,8 @@ voice, measured at setup.
 | POST | `/api/station/heartbeat` | `{seq, media_id, position, type}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events |
 | GET | `/api/media/<id>` | FLAC file |
 | GET | `/api/health` | Backend status, inventory levels vs. targets, song generation rate |
+| POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
+| GET | `/api/requests` | Request board: `{queue: [{status}], recent: [{text, song_title, song_artist}], cap}` — queue = queued+producing+ready, oldest first; recent = last 5 aired (OVERHAUL 4.8) |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
 
 ---
