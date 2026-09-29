@@ -186,10 +186,11 @@
 
   /* ---------------- heartbeat ---------------- */
   function sendHeartbeat(seq, position, underrun = false) {
+    const it = items.find(i => i.seq === seq) || {};
     fetch("/api/station/heartbeat", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seq, position, underrun, started_at: ctx ? ctx.currentTime : 0,
-                             type: (items.find(i => i.seq === seq) || {}).type })
+      body: JSON.stringify({ seq, media_id: it.media_id, position, underrun,
+                             started_at: ctx ? ctx.currentTime : 0, type: it.type })
     }).catch(() => {});
   }
 

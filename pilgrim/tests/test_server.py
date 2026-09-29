@@ -69,3 +69,17 @@ async def test_health_off_air_without_committed_audio(tmp_env, monkeypatch):
 
     monkeypatch.setattr(station, "backend_status", backends_up)
     assert (await station.health())["on_air"] is False
+
+
+def test_heartbeat_records_media_id_not_seq(tmp_env):
+    """OVERHAUL 2.5: the airplay ledger item_id is the inventory media_id, not
+    the program seq. TestClient WITHOUT `with` so no background tasks run."""
+    cfg, _, _ = tmp_env
+    app = create_app(cfg)
+    c = TestClient(app)
+    r = c.post("/api/station/heartbeat",
+               json={"seq": 5, "media_id": 42, "type": "song"})
+    assert r.status_code == 200
+    row = app.state.station.db.recent_airplay(1)[0]
+    assert row["item_id"] == 42
+    assert row["seq"] == 5

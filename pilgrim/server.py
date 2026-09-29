@@ -193,9 +193,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/api/station/heartbeat")
     async def heartbeat(payload: dict):
+        # item_id comes from the client as media_id (the inventory id); seq is
+        # the program position (OVERHAUL 2.5 — they used to be conflated).
         station.db.record_airplay(
-            item_id=int(payload.get("seq", 0) or 0),
-            seq=int(payload.get("seq", 0) or 0),
+            item_id=int(payload.get("media_id") or 0),
+            seq=int(payload.get("seq") or 0),
             item_type=payload.get("type"),
             started_at=payload.get("started_at"),
             position=payload.get("position"),

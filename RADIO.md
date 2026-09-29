@@ -360,7 +360,7 @@ voice, measured at setup.
 | POST | `/api/station/start` | Start playout session |
 | POST | `/api/station/stop` | Stop playout session |
 | GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, type, duration_s}` |
-| POST | `/api/station/heartbeat` | `{seq, position}`; records airplay and playhead; also accepts `underrun` events |
+| POST | `/api/station/heartbeat` | `{seq, media_id, position, type}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events |
 | GET | `/api/media/<id>` | FLAC file |
 | GET | `/api/health` | Backend status, inventory levels vs. targets, song generation rate |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
