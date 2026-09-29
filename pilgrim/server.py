@@ -24,6 +24,7 @@ from pilgrim.logging_setup import setup_logging
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.moderation import Moderation
 from pilgrim.pipelines.news import NewsPipeline
+from pilgrim.pipelines.request_filter import prefilter
 from pilgrim.pipelines.songs import SongPipeline
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
 from pilgrim.producer import Producer
@@ -226,6 +227,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if not text or len(text) > cfg.requests.max_length:
             raise HTTPException(422, "request empty or too long")
         t0 = time.monotonic()
+        # Deterministic pre-filter first: URLs/contact info never reach the LLM (4.1).
+        pref = prefilter(text)
+        if pref:
+            req = station.db.add_request(text, cap=cfg.requests.queue_cap,
+                                         status="rejected", reason=pref)
+            log.info("request.received", extra={"request_id": req["id"],
+                                                  "len": len(text), "prefilter": True})
+            log.info("request.moderated", extra={
+                "request_id": req["id"], "allowed": False, "reason": pref,
+                "prefilter": True, "duration_ms": 0})
+            return {
+                "ok": False, "rejected": True, "request": req, "reason": pref,
+                "queue": station.db.queued_requests(cfg.requests.queue_cap),
+            }
         allowed, reason = await station.moderator.moderate(text)
         status = "queued" if allowed else "rejected"
         req = station.db.add_request(text, cap=cfg.requests.queue_cap,
