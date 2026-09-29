@@ -458,6 +458,13 @@ stereo song. At continuous generation that's several GB per day. Phase 1 uses
 `library.soft_cap_gb` to throttle generation once the pool is large; pruning
 policy is Phase 3.
 
+The `items` table carries a `retired` flag (default 0) — a soft-delete used to
+pull truncated/unusable inventory out of playout and production while keeping
+the row for history and the file on disk. `get_item` still returns retired
+rows (media endpoint + history); `list_items` and the count helpers exclude
+them. The flag is set by `python -m pilgrim.tools.audit_library` (OVERHAUL 2.2)
+or `store.retire_item(id, reason)` (reason merged into `meta_json`).
+
 ---
 
 ## 15. Testing

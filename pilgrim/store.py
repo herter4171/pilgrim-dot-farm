@@ -79,6 +79,11 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
                 """
             )
+            # idempotent migration (OVERHAUL 2.2): retire truncated inventory
+            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(items)")}
+            if "retired" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE items ADD COLUMN retired INTEGER DEFAULT 0")
             self._conn.commit()
 
     # ------------------------------------------------------------------ items
@@ -111,10 +116,10 @@ class Store:
         return dict(r) if r else None
 
     def list_items(self, type_: str | None = None) -> list[dict[str, Any]]:
-        q = "SELECT * FROM items"
+        q = "SELECT * FROM items WHERE retired=0"
         args: tuple = ()
         if type_:
-            q += " WHERE type=?"
+            q += " AND type=?"
             args = (type_,)
         q += " ORDER BY id"
         with self._lock:
@@ -124,16 +129,34 @@ class Store:
     def count_fresh_of_type(self, type_: str) -> int:
         with self._lock:
             return int(self._conn.execute(
-                "SELECT COUNT(*) FROM items WHERE type=? AND fresh=1 AND emergency=0",
+                "SELECT COUNT(*) FROM items WHERE type=? AND fresh=1 AND emergency=0 "
+                "AND retired=0",
                 (type_,)).fetchone()[0])
 
     def count_usable_of_type(self, type_: str) -> int:
         """Evergreen types recycle: any non-emergency item is usable whatever its
-        fresh flag (RADIO.md §5.4 fallback chain)."""
+        fresh flag (RADIO.md §5.4 fallback chain).
+        """
         with self._lock:
             return int(self._conn.execute(
-                "SELECT COUNT(*) FROM items WHERE type=? AND emergency=0",
+                "SELECT COUNT(*) FROM items WHERE type=? AND emergency=0 AND retired=0",
                 (type_,)).fetchone()[0])
+
+    def retire_item(self, item_id: int, reason: str) -> None:
+        """Flag an item retired (excluded from playout + production) with the
+        reason merged into its meta. Rows stay for history; files stay on disk.
+        """
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+            if not r:
+                return
+            meta = json.loads(r["meta_json"]) if r["meta_json"] else {}
+            meta["retired_reason"] = reason
+            self._conn.execute(
+                "UPDATE items SET retired=1, meta_json=? WHERE id=?",
+                (json.dumps(meta), item_id))
+            self._conn.commit()
 
     def mark_aired(self, item_id: int) -> None:
         with self._lock:

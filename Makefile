@@ -3,7 +3,7 @@ PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
 FFMPEG := $(HOME)/bin/ffmpeg
 
-.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs
+.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply
 
 # --- setup ---------------------------------------------------------------
 venv:
@@ -38,6 +38,12 @@ run:
 
 logs:
 	tail -f pilgrim/logs/station.log
+
+audit:
+	$(PY) -m pilgrim.tools.audit_library
+
+audit-apply:
+	$(PY) -m pilgrim.tools.audit_library --apply
 
 seed:
 	PATH="$(HOME)/bin:$(PATH)" LITELLM_TOKEN=$$(grep LITELLM_TOKEN .env | cut -d= -f2) $(PY) -m pilgrim.seed
