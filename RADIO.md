@@ -481,6 +481,12 @@ rows (media endpoint + history); `list_items` and the count helpers exclude
 them. The flag is set by `python -m pilgrim.tools.audit_library` (OVERHAUL 2.2)
 or `store.retire_item(id, reason)` (reason merged into `meta_json`).
 
+The `requests` table carries lifecycle columns (`attempts`, `song_item_id`,
+`intro_item_id`, `updated_at`) and statuses `queued -> producing -> ready ->
+aired`, plus `rejected`, `evicted`, `failed` (legacy `serviced` reads as
+`aired`; OVERHAUL 4.4). Only `queued` rows are ever FIFO-evicted; a crash
+mid-generation is reset `producing -> queued` on station start.
+
 ---
 
 ## 15. Testing

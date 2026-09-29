@@ -177,3 +177,89 @@ def test_moderation_fails_closed_after_retry(cfg):
     assert allowed is False
     assert len(llm.calls) == 2
     assert "couldn't reach" in reason
+
+
+# --------------------------------------------------------------------------- #
+# OVERHAUL 4.4 — request lifecycle: queued -> producing -> ready -> aired.
+# --------------------------------------------------------------------------- #
+
+def test_lifecycle_transitions(cfg):
+    s = _store()
+    r = s.add_request("play for mittens", cap=10)
+    rid = r["id"]
+    s.mark_request_producing(rid)
+    assert s.get_request(rid)["status"] == "producing"
+    s.mark_request_ready(rid, song_item_id=77, intro_item_id=88)
+    row = s.get_request(rid)
+    assert row["status"] == "ready"
+    assert row["song_item_id"] == 77 and row["intro_item_id"] == 88
+    assert s.ready_request_songs()[0]["id"] == rid
+    s.mark_request_aired(rid)
+    assert s.get_request(rid)["status"] == "aired"
+
+
+def test_failed_attempts_reach_failed_and_clear_head_of_line(cfg):
+    s = _store()
+    a = s.add_request("first", cap=10)
+    b = s.add_request("second", cap=10)
+    # first fails 3 times -> failed; the next-to-produce moves to b
+    for _ in range(3):
+        n = s.request_failed_attempt(a["id"], max_attempts=3)
+    assert n == 3
+    assert s.get_request(a["id"])["status"] == "failed"
+    assert s.next_request_to_produce()["id"] == b["id"]  # no head-of-line block
+
+
+def test_producing_resets_to_queued_on_start(cfg):
+    s = _store()
+    r = s.add_request("mid-generation crash", cap=10)
+    s.mark_request_producing(r["id"])
+    s.reset_producing_to_queued()
+    assert s.get_request(r["id"])["status"] == "queued"
+
+
+def test_eviction_never_touches_producing_or_ready(cfg):
+    s = _store()
+    # fill 10 queued
+    ids = []
+    for i in range(10):
+        ids.append(s.add_request(f"q{i}", cap=10)["id"])
+    # one producing + one ready (out of the evictable set)
+    s.mark_request_producing(s.add_request("producing", cap=1)["id"])
+    s.mark_request_ready(s.add_request("ready", cap=1)["id"], song_item_id=5)
+    # adding one more queued evicts an old QUEUED row, never producing/ready
+    s.add_request("newest", cap=10)
+    states = {r["status"] for r in s.all_requests()}
+    assert "producing" in states and "ready" in states
+    assert s.ready_request_songs()  # the ready one is still there
+    evicted = [r for r in s.all_requests() if r["status"] == "evicted"]
+    assert all(ev["text"].startswith("q") for ev in evicted)
+
+
+def test_request_board_queue_and_recent(cfg):
+    s = _store()
+    a = s.add_request("play mittens a song", cap=10)
+    s.mark_request_producing(a["id"])
+    b = s.add_request("alien abductions", cap=10)
+    s.mark_request_ready(b["id"], song_item_id=42)
+    # an aired one with a song title joined from items
+    c = s.add_request("dedicate to night shift", cap=10)
+    song_id = _store_add_song(s)
+    s.mark_request_ready(c["id"], song_item_id=song_id)
+    s.mark_request_aired(c["id"])
+    board = s.request_board(cap=10)
+    q = board["queue"]
+    assert [x["id"] for x in q] == [a["id"], b["id"]]  # producing + ready, oldest first
+    assert q[0]["status"] == "producing" and q[1]["status"] == "ready"
+    recent = board["recent"]
+    assert any(r["id"] == c["id"] and r["song_title"] for r in recent)
+
+
+def _store_add_song(s):
+    """Add an items row and return its id (for request_board join)."""
+    with s._lock:
+        cur = s._conn.execute(
+            "INSERT INTO items (type, media_path, duration_s, title, artist, created_at) "
+            "VALUES ('song','/x.flac',60,'Night Shift','The Night Owls', datetime('now'))")
+        s._conn.commit()
+        return int(cur.lastrowid)

@@ -43,6 +43,7 @@ class Station:
         ensure_dirs(cfg)
         self.media_dir = ROOT / cfg.library.dir
         self.db = Store(ROOT / cfg.library.db)
+        self.db.reset_producing_to_queued()  # crash mid-generation mustn't strand (4.4)
         self.llm = LLM(cfg, api_key)
         self.kokoro = KokoroClient(cfg)
         self.moderator = Moderation(cfg, self.llm, prompts=_load_prompts(cfg))

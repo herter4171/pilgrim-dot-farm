@@ -68,7 +68,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS requests (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     text TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'queued',  -- queued|evicted|rejected|serviced
+                    -- queued|producing|ready|aired|rejected|evicted|failed (OVERHAUL 4.4)
+                    status TEXT NOT NULL DEFAULT 'queued',
                     reason TEXT,
                     created_at TEXT NOT NULL
                 );
@@ -84,6 +85,14 @@ class Store:
             if "retired" not in cols:
                 self._conn.execute(
                     "ALTER TABLE items ADD COLUMN retired INTEGER DEFAULT 0")
+            # idempotent migration (OVERHAUL 4.4): request lifecycle columns
+            req_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(requests)")}
+            for col, ddl in (("attempts", "INTEGER DEFAULT 0"),
+                             ("song_item_id", "INTEGER"),
+                             ("intro_item_id", "INTEGER"),
+                             ("updated_at", "TEXT")):
+                if col not in req_cols:
+                    self._conn.execute(f"ALTER TABLE requests ADD COLUMN {col} {ddl}")
             self._conn.commit()
 
     # ------------------------------------------------------------------ items
@@ -247,12 +256,14 @@ class Store:
     def add_request(self, text: str, cap: int, status: str = "queued",
                     reason: str | None = None) -> dict[str, Any]:
         """Insert a listener request, then apply FIFO eviction. If more than
-        `cap` are queued, the oldest ones fall out (marked 'evicted'). Returns
-        the stored row."""
+        `cap` are queued, the oldest QUEUED ones fall out (marked 'evicted').
+        producing/ready/failed rows are never evicted (OVERHAUL 4.4).
+        Returns the stored row."""
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO requests (text, status, reason, created_at) VALUES (?,?,?,?)",
-                (text, status, reason, _now_iso()))
+                "INSERT INTO requests (text, status, reason, created_at, updated_at) "
+                "VALUES (?,?,?,?,?)",
+                (text, status, reason, _now_iso(), _now_iso()))
             self._conn.commit()
             rid = int(cur.lastrowid or 0)
         self._evict_overflow(cap)
@@ -267,8 +278,9 @@ class Store:
         return dict(r) if r else None
 
     def _evict_overflow(self, cap: int) -> None:
-        """FIFO: when queued requests exceed the cap, the oldest fall out
-        ('ass end' drops) so the queue always holds the latest `cap`."""
+        """FIFO: when QUEUED requests exceed the cap, the oldest fall out
+        ('ass end' drops) so the queue always holds the latest `cap`. Only
+        `queued` rows are evicted — never producing/ready/failed (OVERHAUL 4.4)."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT id FROM requests WHERE status='queued' ORDER BY id ASC").fetchall()
@@ -277,12 +289,12 @@ class Store:
                 ids = [r[0] for r in rows[:drop]]
                 for i in ids:
                     self._conn.execute(
-                        "UPDATE requests SET status='evicted', reason='fifo over cap' WHERE id=?",
-                        (i,))
+                        "UPDATE requests SET status='evicted', reason='fifo over cap' "
+                        "WHERE id=?", (i,))
                 self._conn.commit()
 
     def queued_requests(self, cap: int | None = None) -> list[dict[str, Any]]:
-        """Live queue in FIFO order (oldest first). Rejected/evicted/serviced
+        """Live queue in FIFO order (oldest first). Rejected/evicted/airéd/...
         requests are not part of the air-able queue."""
         with self._lock:
             rows = self._conn.execute(
@@ -292,17 +304,93 @@ class Store:
 
     def oldest_queued_request(self) -> dict[str, Any] | None:
         """Oldest still-queued request (the next one to be serviced on air)."""
+        return self.next_request_to_produce()
+
+    # --------------------------------------------------- request lifecycle (4.4)
+    def next_request_to_produce(self) -> dict[str, Any] | None:
+        """Oldest `queued` request — the next one to become a song."""
         with self._lock:
             r = self._conn.execute(
-                "SELECT * FROM requests WHERE status='queued' ORDER BY id ASC LIMIT 1").fetchone()
+                "SELECT * FROM requests WHERE status='queued' ORDER BY id ASC LIMIT 1"
+            ).fetchone()
         return dict(r) if r else None
 
-    def mark_serviced(self, request_id: int) -> None:
-        """Mark a request serviced (read on air) — removes it from the live queue."""
+    def mark_request_producing(self, request_id: int) -> None:
         with self._lock:
             self._conn.execute(
-                "UPDATE requests SET status='serviced', reason='serviced on air' WHERE id=?",
-                (request_id,))
+                "UPDATE requests SET status='producing', updated_at=? WHERE id=?",
+                (_now_iso(), request_id))
+            self._conn.commit()
+
+    def mark_request_ready(self, request_id: int, song_item_id: int | None,
+                           intro_item_id: int | None = None) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET status='ready', song_item_id=?, intro_item_id=?, "
+                "updated_at=? WHERE id=?",
+                (song_item_id, intro_item_id, _now_iso(), request_id))
+            self._conn.commit()
+
+    def mark_request_aired(self, request_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET status='aired', updated_at=? WHERE id=?",
+                (_now_iso(), request_id))
+            self._conn.commit()
+
+    def request_failed_attempt(self, request_id: int, max_attempts: int = 3) -> int:
+        """Record a failed production attempt. Back to `queued` until
+        `max_attempts`, then `failed` (head-of-line blocking disappears — the
+        next request can be produced; OVERHAUL 4.4). Returns the new attempt #."""
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT attempts FROM requests WHERE id=?", (request_id,)).fetchone()
+            n = int(r[0] if r and r[0] else 0) + 1
+            status = "failed" if n >= max_attempts else "queued"
+            self._conn.execute(
+                "UPDATE requests SET attempts=?, status=?, updated_at=? WHERE id=?",
+                (n, status, _now_iso(), request_id))
+            self._conn.commit()
+        return n
+
+    def ready_request_songs(self) -> list[dict[str, Any]]:
+        """`ready` requests, oldest first (their songs are ready to air)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM requests WHERE status='ready' ORDER BY id ASC").fetchall()
+        return [dict(r) for r in rows]
+
+    def reset_producing_to_queued(self) -> None:
+        """Startup: a crash mid-generation must not strand a request in
+        `producing` (OVERHAUL 4.4)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET status='queued', updated_at=? "
+                "WHERE status='producing'", (_now_iso(),))
+            self._conn.commit()
+
+    def request_board(self, cap: int) -> dict[str, Any]:
+        """Board for the UI: live queue (queued+producing+ready, oldest first,
+        <= cap) plus the most recent aired requests with their song titles."""
+        with self._lock:
+            queue = [dict(r) for r in self._conn.execute(
+                "SELECT * FROM requests WHERE status IN ('queued','producing','ready') "
+                "ORDER BY id ASC LIMIT ?", (cap,)).fetchall()]
+            recent = [dict(r) for r in self._conn.execute(
+                "SELECT r.id, r.text, r.created_at, i.title AS song_title, "
+                "i.artist AS song_artist FROM requests r "
+                "LEFT JOIN items i ON i.id = r.song_item_id "
+                "WHERE r.status IN ('aired','serviced') "
+                "ORDER BY r.id DESC LIMIT 5").fetchall()]
+        return {"queue": queue, "recent": recent}
+
+    def mark_serviced(self, request_id: int) -> None:
+        """Legacy alias: marks the request as read on air (recorded as `aired`
+        so reads treat it as finished; OVERHAUL 4.4)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET status='aired', reason='serviced on air', "
+                "updated_at=? WHERE id=?", (_now_iso(), request_id))
             self._conn.commit()
 
     def all_requests(self, limit: int = 500) -> list[dict[str, Any]]:
