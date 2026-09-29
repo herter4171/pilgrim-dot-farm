@@ -148,7 +148,6 @@ class Station:
         self._tasks.append(asyncio.create_task(self.producer.run()))
         self._tasks.append(asyncio.create_task(self.producer.news_loop()))
         self._tasks.append(asyncio.create_task(self.producer.song_loop()))
-        self._tasks.append(asyncio.create_task(self.producer.run_requests()))
         inv = await self.inventory_levels()
         log.info("station.startup", extra={
             "lookahead_s": self.cfg.playout.committed_lookahead_s, "inventory": inv})

@@ -152,7 +152,6 @@ class Requests(BaseModel):
     max_length: int = 160
     moderation_model: str = "qwen38"
     moderation_max_tokens: int = 4096  # replaces the hardcoded value (OVERHAUL 4.2)
-    service_interval_s: int = 60  # cadence for reading one request on air
     per_client_per_10min: int = 3  # rate limit on the request line (OVERHAUL 4.3)
 
 

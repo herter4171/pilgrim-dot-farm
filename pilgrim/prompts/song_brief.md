@@ -13,5 +13,7 @@ Rules:
   character. If the track is purely instrumental, set lyrics to an empty string.
 - Write lyrics of whatever length suits the song; the music model decides the
   running time.
+- If a listener request is given, the song must clearly fulfil it (subject,
+  dedication, or genre).
 
 ONLY return the requested JSON object, nothing else, no extra commentary.

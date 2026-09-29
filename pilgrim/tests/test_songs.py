@@ -54,3 +54,28 @@ def test_instrumental_has_no_lyrics_and_keeps_seed(cfg, tmp_path):
     assert "lyrics" not in sp._client.payload
     assert "duration_s" not in sp._client.payload
     assert sp._client.payload["seed"] == 7
+
+
+def test_brief_includes_json_escaped_request_text(cfg):
+    """OVERHAUL 4.5: the brief's user message carries the JSON-escaped request
+    text (DATA, not instructions)."""
+    import json as _json
+
+    class _Rec:
+        def __init__(self):
+            self.user = ""
+
+        async def chat_json(self, model, system, user, max_tokens=800):
+            self.user = user
+            return {"title": "T", "artist": "A", "genre": "polka",
+                    "style_prompt": "p", "lyrics": ""}
+
+        async def close(self):
+            pass
+
+    sp = SongPipeline.__new__(SongPipeline)
+    sp.cfg = cfg
+    sp.prompts = {"song_brief": "write a song"}
+    sp.llm = _Rec()
+    asyncio.run(sp.brief([], request_text='say "hi" & more <script>'))
+    assert _json.dumps('say "hi" & more <script>') in sp.llm.user

@@ -129,3 +129,99 @@ def test_ensure_liners_stops_at_target_when_fake_voice_fixed_short(cfg, tmp_env)
     for _ in range(20):
         asyncio.run(prod.ensure_liners())
     assert store.count_usable_of_type("liner") == target_total
+
+
+# --------------------------------------------------------------------------- #
+# OVERHAUL 4.5 — listener requests become prioritized song generations.
+# --------------------------------------------------------------------------- #
+
+class FakeSong:
+    def __init__(self, fail=False):
+        self.calls = []
+        self.fail = fail
+
+    async def brief(self, genres, request_text=None):
+        self.calls.append(("brief", request_text))
+        return {"title": "Mittens the Night", "artist": "The Barn Cats",
+                "genre": "polka", "style_prompt": "a jaunty polka", "lyrics": "[verse] meow"}
+
+    async def produce_song(self, brief):
+        if self.fail:
+            raise RuntimeError("mlx down")
+        return {"type": "song", "media_path": "/tmp/s.flac", "duration_s": 45.0,
+                "title": brief["title"], "artist": brief["artist"],
+                "genre": brief["genre"], "meta": {"seed": 1, "brief": brief}}
+
+
+class _SongSink(_Sink):
+    """Adds the song_loop-facing duck methods to the base sink."""
+
+
+def make_song_producer(cfg, store, voice, songs):
+    from typing import Any
+    sink: Any = _SongSink()
+    return Producer(cfg, store, llm=sink, kokoro=sink, voice=voice, songs=songs,
+                    clock=None, prompts={}, media_dir=cfg.library.dir, api_key="",
+                    rng=RNG(1), news_pipeline=sink)
+
+
+def _meta(store, item_id):
+    import json
+    row = store.get_item(item_id)
+    return json.loads(row["meta_json"] or "{}") if row else {}
+
+
+def test_request_song_gets_priority_even_at_stock_target(cfg, tmp_env):
+    """Stock at target + one queued request: a song_loop pass produces the
+    request's song (meta.request_id set) and marks the request ready."""
+    _, store, _ = tmp_env
+    for _ in range(cfg.inventory.fresh_songs_ready):
+        make_item(cfg, store, "song", 120.0)
+    req = store.add_request("play a song for Mittens", cap=10)
+    voice = FakeVoice()
+    songs = FakeSong()
+    prod = make_song_producer(cfg, store, voice, songs)
+    import asyncio
+    assert asyncio.run(prod.song_step()) is True
+    # exactly one new song, carrying request_id
+    new_ids = [i["id"] for i in store.list_items("song")
+               if _meta(store, i["id"]).get("request_id") == req["id"]]
+    assert len(new_ids) == 1
+    song_id = new_ids[0]
+    # an intro was made and glued via meta.song_item_id
+    intros = store.list_items("intro")
+    assert any(_meta(store, i["id"]).get("song_item_id") == song_id for i in intros)
+    ready = store.ready_request_songs()
+    assert len(ready) == 1
+    assert ready[0]["id"] == req["id"]
+    assert ready[0]["song_item_id"] == song_id
+    # the brief got the request text as the request_text parameter
+    assert ("brief", "play a song for Mittens") in songs.calls
+
+
+def test_two_requests_produced_oldest_first(cfg, tmp_env):
+    _, store, _ = tmp_env
+    a = store.add_request("first request", cap=10)
+    b = store.add_request("second request", cap=10)
+    prod = make_song_producer(cfg, store, FakeVoice(), FakeSong())
+    import asyncio
+    asyncio.run(prod.song_step())
+    assert store.get_request(a["id"])["status"] == "ready"
+    assert store.get_request(b["id"])["status"] == "queued"
+    asyncio.run(prod.song_step())
+    assert store.get_request(b["id"])["status"] == "ready"
+
+
+def test_request_song_fails_after_3_attempts(cfg, tmp_env):
+    _, store, _ = tmp_env
+    req = store.add_request("doomed request", cap=10)
+    prod = make_song_producer(cfg, store, FakeVoice(), FakeSong(fail=True))
+    import asyncio
+
+    import pytest
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            asyncio.run(prod.song_step())
+    assert store.get_request(req["id"])["status"] == "failed"
+    # head of line cleared: nothing else is queued so next_request is None
+    assert store.next_request_to_produce() is None

@@ -154,6 +154,7 @@ class VoicePipeline:
         "commercial": ("commercials", "satirical 15-30s commercial spot"),
         "dj_talk": ("dj_talk", "conversational DJ talk-up referencing previous and next"),
         "news": ("news", "news bulletin headline"),
+        "intro": ("dj_talk", "short DJ intro for the very next song; name the title and artist"),
     }
 
     def __init__(self, cfg: Config, llm: LLM, kokoro: KokoroClient,

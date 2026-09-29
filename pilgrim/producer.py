@@ -7,6 +7,7 @@ Playout never waits on production: the scheduler only commits rendered items.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import UTC
 from pathlib import Path
@@ -112,25 +113,6 @@ class Producer:
                 log.warning("dj talk production failed: %s", e)
                 return
 
-    async def ensure_requests(self) -> None:
-        """Service the OLDEST queued listener request on air as DJ talk, then
-        dequeue it (mark serviced) — a serviced request leaves the live queue.
-        One request per wake, rate-limited by service_interval_s so listener
-        lines are read at a natural cadence, not dumped all at once. If
-        servicing fails the request stays queued for a later retry."""
-        req = self.store.oldest_queued_request()
-        if not req:
-            return
-        context = 'Listener request on the line: "' + req["text"] + '"'
-        try:
-            item = await self.voice.produce_item("dj_talk", 18.0, context=context)
-            self._store_voice(item, "dj_talk", evergreen=True)
-            self.store.mark_serviced(req["id"])
-            log.info("serviced + dequeued request #%s (DJ %.1fs)",
-                     req["id"], item["duration_s"])
-        except Exception as e:
-            log.warning("request servicing failed (request stays queued): %s", e)
-
     async def ensure_news(self) -> None:
         if not self.cfg.news.enabled:
             return
@@ -186,16 +168,6 @@ class Producer:
                 log.warning("producer voice cycle error: %s", e)
             await asyncio.sleep(6.0)
 
-    async def run_requests(self) -> None:
-        """Serves listener requests on air (one per interval), dequeuing each."""
-        log.info("request servicing worker started")
-        while True:
-            try:
-                await self.ensure_requests()
-            except Exception as e:
-                log.warning("request servicing cycle error: %s", e)
-            await asyncio.sleep(self.cfg.requests.service_interval_s)
-
     async def news_loop(self) -> None:
         while True:
             try:
@@ -205,27 +177,99 @@ class Producer:
             await asyncio.sleep(5.0)
 
     async def song_loop(self) -> None:
-        """Slow worker: keeps generating songs (very expensive on mlx)."""
+        """Slow worker: keeps generating songs (very expensive on mlx). Listener
+        requests are produced FIRST (they jump ahead of stock), then stock songs
+        fill to the fresh target (OVERHAUL 4.5)."""
         log.info("song worker started")
         while True:
             try:
-                fresh = self.store.count_fresh_of_type("song")
-                if fresh >= self.cfg.inventory.fresh_songs_ready:
+                did = await self.song_step()
+                if not did:
                     await asyncio.sleep(20.0)
                     continue
-                prev_genres = self._recent_genres()
-                brief = await self.songs.brief(prev_genres)
-                item = await self.songs.produce_song(brief)
-                self.store.add_item(
-                    type_="song", media_path=item["media_path"], duration_s=item["duration_s"],
-                    sample_rate=item.get("sample_rate"), channels=item.get("channels"),
-                    title=item.get("title"), artist=item.get("artist"), genre=item.get("genre"),
-                    evergreen=True, fresh=True, meta=item.get("meta"))
-                log.info("produced song '%s' (%.1fs)", item.get("title"), item["duration_s"])
             except Exception as e:
                 log.warning("song production failed: %s", e)
                 await asyncio.sleep(15.0)
             await asyncio.sleep(2.0)
+
+    async def song_step(self) -> bool:
+        """One pass of the song worker. Returns True if it did work.
+        1) Oldest queued listener request gets produced (even at stock target).
+        2) Otherwise, a stock song if fresh stock is below target."""
+        req = self.store.next_request_to_produce()
+        if req:
+            return await self._produce_request_song(req)
+        fresh = self.store.count_fresh_of_type("song")
+        if fresh >= self.cfg.inventory.fresh_songs_ready:
+            return False
+        prev_genres = self._recent_genres()
+        brief = await self.songs.brief(prev_genres)
+        item = await self.songs.produce_song(brief)
+        song_id = self.store.add_item(
+            type_="song", media_path=item["media_path"], duration_s=item["duration_s"],
+            sample_rate=item.get("sample_rate"), channels=item.get("channels"),
+            title=item.get("title"), artist=item.get("artist"), genre=item.get("genre"),
+            evergreen=True, fresh=True, meta=item.get("meta"))
+        await self._make_intro(item, song_id, None)  # stock intros are non-fatal
+        log.info("song.produced", extra={
+            "title": item.get("title"), "genre": item.get("genre"),
+            "duration_s": item.get("duration_s")})
+        return True
+
+    async def _produce_request_song(self, req: dict) -> bool:
+        """Turn one queued listener request into a song (+ short intro). On a
+        hard failure, record the attempt (3 max -> failed) and re-raise so the
+        loop backs off; a failing intro never blocks the request (4.5/4.6)."""
+        log.info("request.producing", extra={"request_id": req["id"]})
+        self.store.mark_request_producing(req["id"])
+        try:
+            prev_genres = self._recent_genres()
+            brief = await self.songs.brief(prev_genres, request_text=req["text"])
+            item = await self.songs.produce_song(brief)
+            song_id = self.store.add_item(
+                type_="song", media_path=item["media_path"], duration_s=item["duration_s"],
+                sample_rate=item.get("sample_rate"), channels=item.get("channels"),
+                title=item.get("title"), artist=item.get("artist"), genre=item.get("genre"),
+                evergreen=True, fresh=True,
+                meta={**dict(item.get("meta") or {}), "request_id": req["id"]})
+            intro_id = await self._make_intro(item, song_id, req)
+            self.store.mark_request_ready(req["id"], song_id, intro_id)
+            log.info("request.ready", extra={
+                "request_id": req["id"], "song_item_id": song_id,
+                "title": item.get("title"), "intro_item_id": intro_id})
+            return True
+        except Exception as e:
+            n = self.store.request_failed_attempt(req["id"])
+            log.warning("request.failed", extra={
+                "request_id": req["id"], "attempt": n, "error": str(e)})
+            raise
+
+    async def _make_intro(self, item: dict, song_id: int | None,
+                          req: dict | None) -> int | None:
+        """Produce a short DJ intro naming the just-created song, crediting the
+        listener for request songs. Failure is non-fatal (returns None)."""
+        try:
+            title = item.get("title") or "this next one"
+            artist = item.get("artist") or ""
+            genre = item.get("genre") or ""
+            context = f'Next song: "{title}" by {artist} ({genre}).\n'
+            meta: dict = {"song_item_id": song_id, "text": None}
+            if req is not None:
+                context += f"Listener request: {json.dumps(req['text'])}\n"
+                meta["request_id"] = req["id"]
+            context += "Thank the listener for the request in one short phrase. " \
+                       "Do not mention the clock time."
+            intro = await self.voice.produce_item("intro", 10.0, context=context)
+            meta.update({k: intro.get("meta", {}).get(k) for k in ("text",) if intro.get("meta")})
+            intro_id = self.store.add_item(
+                type_="intro", media_path=str(intro["media_path"]),
+                duration_s=intro["duration_s"], sample_rate=intro.get("sample_rate"),
+                channels=intro.get("channels"), role="intro", evergreen=False,
+                fresh=True, meta=meta)
+            return intro_id
+        except Exception as e:
+            log.warning("intro.failed", extra={"error": str(e)})
+            return None
 
     def _recent_genres(self) -> list[str]:
         out = []
