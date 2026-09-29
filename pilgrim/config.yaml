@@ -6,6 +6,7 @@ station:
   port: 5000
   rng_seed: null          # set for deterministic tests/sim
   host: "0.0.0.0"
+  timezone: America/Detroit  # DJ clock time (OVERHAUL 5.3)
 
 hosts:
   mlx_serve: http://127.0.0.1:11234
@@ -101,3 +102,6 @@ library:
   db: station.db
   bible_dir: bible
   prompts_dir: prompts
+
+talk:
+  time_mention_ttl_s: 900   # DJ clips that mention the time expire after this

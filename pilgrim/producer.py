@@ -9,10 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pilgrim.config import RNG, Clock, Config
+from pilgrim.pipelines.clocktime import current_local_time, spoken_time
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.news import NewsPipeline
 from pilgrim.pipelines.songs import SongPipeline
@@ -26,7 +27,8 @@ class Producer:
     def __init__(self, cfg: Config, store: Store, llm: LLM, kokoro: KokoroClient,
                  voice: VoicePipeline, songs: SongPipeline, clock: Clock,
                  prompts: dict[str, str], media_dir: Path, api_key: str, rng: RNG,
-                 db=None, news_pipeline: NewsPipeline | None = None):
+                 db=None, news_pipeline: NewsPipeline | None = None,
+                 clock_time=None) -> None:
         self.cfg = cfg
         self.store = store
         self.llm = llm
@@ -37,7 +39,10 @@ class Producer:
         self.prompts = prompts
         self.media_dir = media_dir
         self.rng = rng
+        self.api_key = api_key
         self.news = news_pipeline or NewsPipeline(cfg, llm, api_key=api_key, prompts=prompts)
+        # real local time for DJ talk; injectable in tests (OVERHAUL 5.3)
+        self._clock_time = clock_time or current_local_time
         self._news_ok: dict | None = None
 
     # --------------------------------------------------------------- counts
@@ -108,18 +113,26 @@ class Producer:
         if need <= 0:
             return
         # Real material to talk about: the songs that just played (chosen NOW,
-        # so no fake 'next song' claims — OVERHAUL 5.2). Task 5.3 adds a time
-        # line here.
+        # so no fake 'next song' claims) and the real local time (5.3).
         recent = self._recent_committed_songs(3)
         context_parts: list[str] = []
         if recent:
             context_parts.append("Songs that played recently: " + "; ".join(
                 f'"{t}" by {a} ({g})' for t, a, g in recent))
+        try:
+            now_dt = await self._clock_time(self.cfg, self.api_key)
+            context_parts.append(f"Time of day right now: {spoken_time(now_dt)}")
+        except Exception:
+            pass  # never block DJ production on the time
         context = "\n".join(context_parts)
+        # DJ clips that mention the time expire, so a stale 'just after ten'
+        # never airs hours later (5.3).
+        expires = (datetime.now(UTC) + timedelta(seconds=self.cfg.talk.time_mention_ttl_s)
+                   ).isoformat()
         for _ in range(max(0, need)):
             try:
                 item = await self.voice.produce_item("dj_talk", 18.0, context=context)
-                self._store_voice(item, "dj_talk", evergreen=True)
+                self._store_voice(item, "dj_talk", evergreen=True, expires_at=expires)
                 log.info("produced dj_talk %.1fs", item["duration_s"])
             except Exception as e:
                 log.warning("dj talk production failed: %s", e)

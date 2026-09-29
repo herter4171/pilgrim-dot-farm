@@ -153,13 +153,21 @@ POST /mcp
 
 - `initialize` (protocolVersion `2025-03-26`) → session id in the
   `mcp-session-id` response header; body is SSE (`event: message` / `data: {...}`).
+- `tools/list` (id 3) → `result.tools[].name`; probed 2026-09-29: 71 tools, time
+  is `time-get_current_time` (always resolve by suffix `get_current_time` — the
+  proxy may prefix tool names).
+- `tools/call time-get_current_time {timezone: America/Detroit}` →
+  `result.content[0].text` is a JSON string:
+  `{"timezone": "America/Detroit", "datetime": "2026-09-29T19:22:02-04:00",
+    "day_of_week": "Tuesday", "is_dst": true}` — parse the `datetime` field.
 - `tools/call` `web_search-searxng_web_search` with `{query, limit, result_detail:
   "compact"}` → `result.content[].text` = ranked `Title\nDescription\nURL` blocks.
 - Live search for "top news headlines today" returned real Google News results.
 
-Client: `pilgrim/pipelines/mcp.py` (`MCPSession.searxng_search`). The news
-pipeline (RADIO.md §6.4) calls it with the bearer token; any failure degrades
-to a model-written bulletin.
+Client: `pilgrim/pipelines/mcp.py` (`MCPSession.searxng_search`, `MCPSession.list_tools`,
+`current_local_time` in `pilgrim/pipelines/clocktime.py` for the DJ's real time).
+The news pipeline (RADIO.md §6.4) calls it with the bearer token; any failure
+degrades to a model-written bulletin.
 
 ---
 

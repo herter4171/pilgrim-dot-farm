@@ -189,6 +189,12 @@ class Station(BaseModel):
     port: int = 5000
     rng_seed: int | None = None
     host: str = "0.0.0.0"
+    timezone: str = "America/Detroit"  # DJ clock time (OVERHAUL 5.3)
+
+
+class Talk(BaseModel):
+    """Contextual talk settings (OVERHAUL 5.3)."""
+    time_mention_ttl_s: int = 900  # DJ clips that mention the time expire after this
 
 
 class Config(BaseModel):
@@ -203,6 +209,7 @@ class Config(BaseModel):
     requests: Requests = Field(default_factory=Requests)
     audio: Audio = Field(default_factory=Audio)
     logging: Logging = Field(default_factory=Logging)
+    talk: Talk = Field(default_factory=Talk)
     library: Library = Field(default_factory=Library)
 
 

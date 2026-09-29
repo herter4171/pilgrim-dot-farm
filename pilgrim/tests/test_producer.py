@@ -39,7 +39,13 @@ def make_producer(cfg, store, voice: FakeVoice) -> Producer:
     return Producer(
         cfg, store, llm=sink, kokoro=sink, voice=voice_any, songs=sink,
         clock=clock, prompts={}, media_dir=cfg.library.dir, api_key="",
-        rng=RNG(1), news_pipeline=sink)
+        rng=RNG(1), news_pipeline=sink, clock_time=_stub_clock_time)
+
+
+async def _stub_clock_time(cfg, api_key):
+    """Fixed local time for DJ-talk tests (no real backends)."""
+    from datetime import datetime
+    return datetime(2026, 1, 1, 22, 2)
 
 
 def test_counts_use_usable_for_evergreen_types(cfg, tmp_env):

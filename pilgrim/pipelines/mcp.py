@@ -90,6 +90,24 @@ class MCPSession:
         return {"mcp-session-id": self._session_id} if self._session_id else {}
 
     # ----------------------------------------------------------------- tools
+    async def list_tools(self) -> list[dict[str, Any]]:
+        """tools/list: names (and schemas) of every tool on this MCP server."""
+        r = await self._client.post(
+            self.endpoint, headers=self._session_headers(), json={
+                "jsonrpc": "2.0", "id": 3, "method": "tools/list"})
+        if r.status_code != 200:
+            raise MCPError(f"MCP tools/list http {r.status_code}: {r.text[:200]}")
+        msgs = _parse_sse(r.text)
+        if not msgs:
+            raise MCPError("no tools/list result")
+        last = msgs[-1]
+        if last.get("error"):
+            raise MCPError(f"MCP tools/list error: {last['error']}")
+        result = last.get("result") or {}
+        if not isinstance(result, dict):
+            raise MCPError(f"MCP tools/list unexpected payload: {r.text[:200]}")
+        return result.get("tools", [])
+
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         r = await self._client.post(
             self.endpoint, headers=self._session_headers(), json={

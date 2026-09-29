@@ -449,6 +449,12 @@ audio:
   max_words_per_s: 3.6   # speech-rate QC gate (truncation smell)
   min_words_per_s: 1.2
 
+station:
+  timezone: America/Detroit   # DJ clock time (OVERHAUL 5.3)
+
+talk:
+  time_mention_ttl_s: 900     # DJ clips that mention the time expire after this
+
 logging:
   level: INFO            # Python logging level (DEBUG|INFO|WARNING|ERROR)
   dir: logs              # relative to pilgrim/

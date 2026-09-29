@@ -327,7 +327,15 @@ class Scheduler:
                  "consume": True}]
 
     def _pick_dj(self, st: PlayoutState) -> list[dict]:
-        items = [i for i in self.store.list_items("dj_talk") if i["fresh"] and not i["emergency"]]
+        now_wall = self.clock.wall()
+        items = []
+        for i in self.store.list_items("dj_talk"):
+            if not i["fresh"] or i["emergency"]:
+                continue
+            exp = _parse_iso(i.get("expires_at"))
+            if exp is not None and exp < now_wall:
+                continue  # time-mention clip expired (OVERHAUL 5.3)
+            items.append(i)
         if not items:
             return []
         it = self.rng.choice(items)
