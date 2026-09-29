@@ -225,3 +225,47 @@ def test_request_song_fails_after_3_attempts(cfg, tmp_env):
     assert store.get_request(req["id"])["status"] == "failed"
     # head of line cleared: nothing else is queued so next_request is None
     assert store.next_request_to_produce() is None
+
+
+# --------------------------------------------------------------------------- #
+# OVERHAUL 4.6 — per-song DJ intros (request intros credit the listener).
+# --------------------------------------------------------------------------- #
+
+class _RecordingVoice(FakeVoice):
+    def __init__(self):
+        super().__init__()
+        self.contexts = []
+
+    async def produce_item(self, role, target_s, context=None):
+        self.contexts.append((role, context))
+        return await super().produce_item(role, target_s, context)
+
+
+def test_request_intro_context_contains_request_text(cfg, tmp_env):
+    _, store, _ = tmp_env
+    store.add_request("play a song for Mittens", cap=10)
+    voice = _RecordingVoice()
+    prod = make_song_producer(cfg, store, voice, FakeSong())
+    import asyncio
+    asyncio.run(prod.song_step())
+    intro_calls = [ctx for role, ctx in voice.contexts if role == "intro"]
+    assert intro_calls
+    assert 'Listener request: "play a song for Mittens"' in intro_calls[0]
+
+
+def test_stock_song_gets_intro_without_request_line(cfg, tmp_env):
+    """Stock songs get an intro too (non-fatal, no request line), stored as a
+    non-evergreen 'intro' item whose meta.song_item_id points at the song."""
+    _, store, _ = tmp_env
+    voice = _RecordingVoice()
+    prod = make_song_producer(cfg, store, voice, FakeSong())
+    import asyncio
+    asyncio.run(prod.song_step())
+    intros = store.list_items("intro")
+    assert intros, "stock song should produce an intro"
+    intro = intros[0]
+    assert intro["evergreen"] == 0
+    song_id = _meta(store, intro["id"])["song_item_id"]
+    assert store.get_item(song_id)["type"] == "song"
+    intro_calls = [ctx for role, ctx in voice.contexts if role == "intro"]
+    assert "Listener request" not in intro_calls[0]

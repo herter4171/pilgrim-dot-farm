@@ -350,7 +350,7 @@ voice are calibrated at setup and recorded in config.
 
 | Role | Voice | Used for |
 |------|-------|----------|
-| DJ / host | `am_liam` | `dj_talk`, liners, station IDs (most airtime) |
+| DJ / host | `am_liam` | `dj_talk`, liners, station IDs, **`intro`** (most airtime; intros name the next song and credit a listener request) |
 | News anchor | `am_michael` | `news` bulletins |
 | Commercial announcer | `af_aoede` | `commercial_break` spots (exaggerated read) |
 | Liners | `am_liam` (reuses DJ) | micro-filler, IDs |
