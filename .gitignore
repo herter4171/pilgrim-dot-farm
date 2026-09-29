@@ -25,6 +25,7 @@ station.db-wal
 station.db-shm
 library/
 pilgrim/library/
+pilgrim/logs/
 
 # Generated / scratch audio
 *_song_tmp.wav

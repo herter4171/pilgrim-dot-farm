@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_config
+from pilgrim.logging_setup import setup_logging
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.moderation import Moderation
 from pilgrim.pipelines.news import NewsPipeline
@@ -30,7 +31,6 @@ from pilgrim.scheduler import Scheduler
 from pilgrim.selector import RandomSelector
 from pilgrim.store import Store
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("radio.server")
 
 
@@ -165,6 +165,7 @@ class RequestIn(BaseModel):
 
 def create_app(cfg: Config | None = None) -> FastAPI:
     cfg = cfg or load_config()
+    setup_logging(cfg)
     api_key = os.environ.get("LITELLM_TOKEN", "")
     station = Station(cfg, api_key)
     app = FastAPI(title="Pilgrim Dot Farm Radio", version="0.1.0")

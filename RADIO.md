@@ -423,6 +423,13 @@ audio:
   edge_pad_ms: 150
   delivery: flac
 
+logging:
+  level: INFO            # Python logging level (DEBUG|INFO|WARNING|ERROR)
+  dir: logs              # relative to pilgrim/
+  file: station.log
+  max_bytes: 10485760    # rotate at 10 MB
+  backups: 5
+
 library:
   soft_cap_gb: 100          # past this, producer slows song generation and recycling share rises
 ```

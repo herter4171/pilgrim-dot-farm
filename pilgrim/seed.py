@@ -9,10 +9,10 @@ import logging
 import os
 import sys
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger("radio.seed")
 
 from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_config  # noqa: E402
+from pilgrim.logging_setup import setup_logging  # noqa: E402
 from pilgrim.pipelines.llm import LLM  # noqa: E402
 from pilgrim.pipelines.news import NewsPipeline  # noqa: E402
 from pilgrim.pipelines.songs import SongPipeline  # noqa: E402
@@ -83,6 +83,7 @@ async def seed(cfg: Config, api_key: str) -> int:
 
 def main() -> int:
     cfg = load_config()
+    setup_logging(cfg)
     api_key = os.environ.get("LITELLM_TOKEN", "")
     if not api_key:
         print("LITELLM_TOKEN not set in environment", file=sys.stderr)

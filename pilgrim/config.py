@@ -152,6 +152,15 @@ class Audio(BaseModel):
     silence_db: int = -50
 
 
+class Logging(BaseModel):
+    """JSON-lines logging to stdout + a rotating file (RADIO.md §12, OVERHAUL 1.1)."""
+    level: str = "INFO"
+    dir: str = "logs"
+    file: str = "station.log"
+    max_bytes: int = 10485760  # 10 MB
+    backups: int = 5
+
+
 class Library(BaseModel):
     soft_cap_gb: int = 100
     dir: str = "library"
@@ -179,6 +188,7 @@ class Config(BaseModel):
     news: News = Field(default_factory=News)
     requests: Requests = Field(default_factory=Requests)
     audio: Audio = Field(default_factory=Audio)
+    logging: Logging = Field(default_factory=Logging)
     library: Library = Field(default_factory=Library)
 
 
