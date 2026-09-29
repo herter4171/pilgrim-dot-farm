@@ -6,6 +6,7 @@ only fully-rendered inventory enters the program.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import UTC, datetime
@@ -101,9 +102,13 @@ class Scheduler:
             "liner": st.inventory_counts["liner"] > 0,
             "news": self._news_valid() is not None,
         }
+        st.request_songs_ready = len(self.store.ready_request_songs())
         # recent types / genres in COMMITTED order (the air order). Constraints
         # apply to the committed sequence since that is exactly what airs.
-        recent = [r["type"] for r in self._items[-8:]]
+        # `intro` entries are PART of their song, so they never appear here (4.7):
+        # they don't count toward DJ adjacency or the non-song run, and the
+        # 'no song after song' rule looks at the last non-intro type.
+        recent = [r["type"] for r in self._items[-8:] if r["type"] != "intro"]
         st.recent_types = recent
         st.recent_song_genres = [
             self._genre_for(r["item_id"]) for r in self._items if r["type"] == "song"][-3:]
@@ -192,6 +197,11 @@ class Scheduler:
         self._air_clock += e["duration_s"]  # monotonic: never resets on trim
         if e.get("consume"):
             self.store.mark_aired(item_id)
+        if e.get("request_id"):
+            # a listener-request song hit the air
+            self.store.mark_request_aired(e["request_id"])
+            log.info("request.aired", extra={
+                "request_id": e["request_id"], "item_id": item_id, "seq": seq})
         log.info("program.commit", extra={
             "seq": seq, "item_id": item_id, "item_type": e["type"],
             "duration_s": e["duration_s"], "coverage_s": round(self.coverage(), 1)})
@@ -239,12 +249,21 @@ class Scheduler:
 
     # -------------------------------------------------------------- pickers
     def _pick_song(self, st: PlayoutState) -> list[dict]:
-        """Pick a song. Hard rule: never the same song within the min spacing
-        (config song_min_spacing_s[0], default 4h; run config sets 1h for the
-        demo). Fresh (unaired) songs are always preferred. When fresh stock is
-        gone, among aired songs pick the one aired longest ago; relax spacing
-        only if the entire pool is too sparsely aired to satisfy it, and even
-        then prefer a genre not in the last few songs (soft, never blocks)."""
+        """Pick a song. Ready listener-request songs jump the line (oldest
+        first); their pre-made intro is glued on. Otherwise the stock logic
+        (fresh first, then oldest-aired with min spacing). Returns
+        [intro?, song] so the intro airs immediately before its song (4.7)."""
+        reqs = self.store.ready_request_songs()
+        if reqs:
+            req = reqs[0]
+            song_id = req.get("song_item_id")
+            it = self.store.get_item(song_id) if song_id else None
+            if it and it["type"] == "song" and not it["retired"]:
+                entries = self._glue_intro(it["id"], it["duration_s"])
+                for e in entries:
+                    if e["type"] == "song":
+                        e["request_id"] = req["id"]
+                return entries
         pool = [i for i in self.store.list_items("song") if not i["emergency"]]
         if not pool:
             return []
@@ -269,8 +288,33 @@ class Scheduler:
             ]
             cand = min(spaced or recycled, key=key)  # relax gap only if forced
         self._last_song_air[cand["id"]] = now
-        return [{"item_id": cand["id"], "type": "song", "duration_s": cand["duration_s"],
-                 "consume": True}]
+        return self._glue_intro(cand["id"], cand["duration_s"])
+
+    def _glue_intro(self, song_id: int, song_dur: float) -> list[dict]:
+        """If this song has an unaired intro, materialize [intro, song] with the
+        intro first. Intros are consumed when committed and never recycled. A
+        recycled song with no fresh intro airs alone. DJ adjacency: if the last
+        committed item is dj_talk, skip the intro (two DJ segments back to back
+        is worse than a missing intro — intros are cheap, the song is not; 4.7)."""
+        for it in self.store.list_items("intro"):
+            if not it["fresh"] or it["emergency"]:
+                continue
+            try:
+                meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            except Exception:
+                continue
+            if meta.get("song_item_id") != song_id:
+                continue
+            if self._items and self._items[-1]["type"] == "dj_talk":
+                continue
+            return [
+                {"item_id": it["id"], "type": "intro",
+                 "duration_s": it["duration_s"], "consume": True},
+                {"item_id": song_id, "type": "song",
+                 "duration_s": song_dur, "consume": True},
+            ]
+        return [{"item_id": song_id, "type": "song",
+                 "duration_s": song_dur, "consume": True}]
 
     def _pick_liner(self, st: PlayoutState) -> list[dict]:
         items = [i for i in self.store.list_items("liner") if not i["emergency"]]

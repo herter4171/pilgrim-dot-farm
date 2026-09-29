@@ -146,6 +146,12 @@ Constraints (applied before drawing):
   only when the pool is too small to satisfy it.
 - Genre: no genre repeated within the last **3** songs.
 - `dj_talk` never adjacent to another `dj_talk` or to `news`.
+- **Listener-request songs jump the line** (OVERHAUL 4.7): when a ready
+  request song exists and a song is allowed right now (the interjection rule
+  above still holds), `song` is committed. Each song airs with its short
+  `intro` immediately before it; intros are consumed and never recycled, are
+  treated as part of their song for all constraints, and are skipped if they'd
+  land right after a `dj_talk` (two DJ segments back to back).
 
 ### 5.3 Planned vs. committed
 

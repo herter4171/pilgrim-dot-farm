@@ -199,3 +199,67 @@ def test_new_scheduler_starts_with_empty_program(cfg, tmp_env):
     s2 = Scheduler(cfg, store, RandomSelector(RNG(3), cfg), SimClock(), RNG(3))
     assert store.max_seq() == 0
     assert s2._items == []
+
+
+def test_request_song_jumps_line_with_intro_and_marks_aired(cfg, tmp_env):
+    """Ready request song airs next (after a liner), preceded by its intro, and
+    the request is marked aired once committed (OVERHAUL 4.7)."""
+    import json
+    _, store, _ = tmp_env
+    stock = make_item(cfg, store, "song", 90.0)                 # stock song available
+    req = store.add_request("play for Mittens", cap=10)
+    req_song = make_item(cfg, store, "song", 120.0, fresh=True) # request's song
+    intro_id = store.add_item(type_="intro", media_path="/i.flac", duration_s=8.0,
+                              evergreen=False, fresh=True,
+                              meta={"song_item_id": req_song, "request_id": req["id"]})
+    store.mark_request_ready(req["id"], req_song, intro_id)
+    liner = make_item(cfg, store, "liner", 6.0)
+
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(5), cfg), clock, RNG(5))
+    sched.build_state()  # warm
+    sched._append({"item_id": liner, "type": "liner", "duration_s": 6.0})
+    sched._rebuild_program()
+    sched.commit_lookahead()
+
+    rows = store.program_after(store.program_since(1)[0]["seq"])
+    types = [r["type"] for r in rows]
+    # the request song comes right after the liner, preceded by its intro
+    idx = types.index("song")
+    # an intro was committed immediately before that song
+    assert idx >= 1 and types[idx - 1] == "intro"
+    assert types[idx - 1] == "intro"
+    song_row = rows[idx]
+    assert song_row["item_id"] == req_song
+    # intro glued to this song
+    intro_row = rows[idx - 1]
+    imeta = json.loads(store.get_item(intro_row["item_id"])["meta_json"])
+    assert imeta["song_item_id"] == req_song
+    # request is aired
+    assert store.get_request(req["id"])["status"] == "aired"
+    assert stock  # unused var guard
+
+
+def test_no_song_after_song_even_with_request_ready(cfg, tmp_env):
+    """The interjection rule still holds: last committed is a song -> the next
+    committed item is NOT a song, even with a ready request song (4.7)."""
+    _, store, _ = tmp_env
+    make_item(cfg, store, "song", 90.0)
+    req = store.add_request("mittens", cap=10)
+    req_song = make_item(cfg, store, "song", 120.0, fresh=True)
+    store.mark_request_ready(req["id"], req_song, None)
+    song = make_item(cfg, store, "song", 60.0)
+    # non-song interjections must exist so the no-inventory fallback can't
+    # revisit "song" — we're testing the interjection rule, not the fallback
+    make_item(cfg, store, "liner", 6.0)
+    make_item(cfg, store, "commercial", 20.0)
+    make_item(cfg, store, "dj_talk", 15.0)
+
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(3), cfg), clock, RNG(3))
+    sched._append({"item_id": song, "type": "song", "duration_s": 60.0})
+    sched._rebuild_program()
+    nxt = sched.selector.choose_next(sched.build_state())
+    assert nxt != "song"
+    # the ready request was not aired, so it stays ready for the next opening
+    assert store.get_request(req["id"])["status"] == "ready"

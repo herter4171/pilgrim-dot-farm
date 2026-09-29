@@ -38,6 +38,7 @@ class PlayoutState:
         self.news_valid: bool = False
         self.news_gravity: str = "normal"
         self.pending_dj_targets: int = 0  # how many dj_talk items are pre-planned
+        self.request_songs_ready: int = 0  # ready listener-request songs (OVERHAUL 4.7)
 
 
 class Selector(Protocol):
@@ -68,6 +69,12 @@ class RandomSelector:
         if state.recent_types and state.recent_types[-1] == "song":
             available.discard("song")
             weights.pop("song", None)
+
+        # Listener-request songs jump the line: when their song is ready and a
+        # song is allowed right now (the interjection rule above still holds),
+        # commit it (OVERHAUL 4.7). Pure: state + rng only.
+        if state.request_songs_ready > 0 and "song" in available:
+            return "song"
 
         if not state.news_valid:
             available.discard("news")
