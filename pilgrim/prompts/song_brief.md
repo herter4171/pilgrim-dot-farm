@@ -11,6 +11,7 @@ Rules:
 - `lyrics`: full tagged lyrics with section markers [verse], [chorus], [bridge],
   [outro] on their own lines. Make them fit the station's tongue-in-cheek rural
   character. If the track is purely instrumental, set lyrics to an empty string.
-- `target_duration_s`: an integer seconds within the requested range.
+- Write lyrics of whatever length suits the song; the music model decides the
+  running time.
 
 ONLY return the requested JSON object, nothing else, no extra commentary.

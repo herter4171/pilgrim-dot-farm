@@ -38,20 +38,18 @@ class SongPipeline:
         prompt = self.prompts.get("song_brief")
         if not prompt:
             raise LLMError("song brief prompt template missing")
-        tmin, tmax = self.cfg.songs.target_duration_s
         genres = ", ".join(self.cfg.songs.genres.keys())
         avoid = ", ".join(previous_genres[-self.cfg.playout.genre_no_repeat:]) or "none"
         schema = ('Return JSON only: {"title": str, "artist": str, "genre": str, '
-                  '"style_prompt": str, "lyrics": str, "target_duration_s": number}')
+                  '"style_prompt": str, "lyrics": str}')
         user = (f"{prompt}\n\nGenres to pick from: {genres}\nAvoid genres (recently aired): "
-                f"{avoid}\nTarget duration {tmin}-{tmax}s.\n{schema}")
+                f"{avoid}\n{schema}")
         obj = await self.llm.chat_json(self.cfg.models.briefs, prompt, user)
         for k in ("title", "artist", "genre", "style_prompt"):
             obj[k] = str(obj.get(k, "")).strip()
         obj["lyrics"] = str(obj.get("lyrics", "")).strip()
         if not obj["title"] or not obj["style_prompt"]:
             raise LLMError("song brief incomplete")
-        obj["target_duration_s"] = int(obj.get("target_duration_s") or tmin)
         return obj
 
     async def generate(self, brief: dict) -> dict:
@@ -64,8 +62,6 @@ class SongPipeline:
             payload["lyrics"] = brief["lyrics"]
         else:
             payload["instrumental"] = True
-        if brief.get("target_duration_s"):
-            payload["duration_s"] = brief["target_duration_s"]
         if brief.get("seed") is not None:
             payload["seed"] = brief["seed"]
         t0 = time.monotonic()
@@ -88,7 +84,6 @@ class SongPipeline:
             x = np.asarray(data, dtype=np.float32)
             duration = float(len(x)) / sr
             self.generation_s[-1] = (duration, gen["wall_s"])
-            tmin, tmax = self.cfg.songs.target_duration_s
             verdict = grade_audio(x, sr, duration_s=duration, min_dur=5, max_dur=600,
                                   kind="song", max_gap_s=2.0, silence_db=self.cfg.audio.silence_db)
             if not verdict.ok:
@@ -117,7 +112,6 @@ class SongPipeline:
                 "lyrics": brief.get("lyrics", ""),
                 "style_prompt": brief.get("style_prompt", ""),
                 "genre": brief.get("genre", ""),
-                "duration_s_target": brief.get("target_duration_s"),
                 "brief": brief,
                 "wall_s": round(gen["wall_s"], 1),
             },

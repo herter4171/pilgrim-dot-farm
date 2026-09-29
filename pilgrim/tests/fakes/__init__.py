@@ -74,13 +74,13 @@ class FakeMinimax:
     async def generate(self, brief):
         if self.fail:
             raise RuntimeError("fake mlx down")
-        dur = float(brief.get("target_duration_s") or 20)
+        dur = float(brief.get("target_duration_s") or 45)  # fixed default (OVERHAUL 3.1)
         return {"path": None, "wall_s": dur * 0.1}
 
     async def music(self, brief):
         if self.fail:
             raise RuntimeError("fake mlx down")
-        dur = float(brief.get("target_duration_s") or 20)
+        dur = float(brief.get("target_duration_s") or 45)  # fixed default (OVERHAUL 3.1)
         return tone_wav(dur, self.sr, self.channels)
 
     async def close(self):

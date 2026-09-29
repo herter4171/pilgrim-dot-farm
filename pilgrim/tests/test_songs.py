@@ -31,24 +31,26 @@ def _pipeline(cfg, tmp_path):
     return sp
 
 
-def test_generate_forwards_seed_and_lyrics(cfg, tmp_path):
+def test_generate_forwards_seed_and_lyrics_but_no_duration(cfg, tmp_path):
+    """OVERHAUL 3.1: never send duration_s; seed + lyrics still forwarded."""
     sp = _pipeline(cfg, tmp_path)
     brief = {
         "title": "Tune", "artist": "The Canning Ladies", "genre": "polka",
         "style_prompt": "a jaunty polka", "lyrics": "[verse] pour the beans",
-        "target_duration_s": 60, "seed": 12345,
+        "seed": 12345,
     }
     asyncio.run(sp.generate(brief))
+    assert "duration_s" not in sp._client.payload
     assert sp._client.payload["seed"] == 12345
     assert sp._client.payload["lyrics"] == "[verse] pour the beans"
     assert sp._client.payload["prompt"] == "a jaunty polka"
-    assert sp._client.payload["duration_s"] == 60
 
 
 def test_instrumental_has_no_lyrics_and_keeps_seed(cfg, tmp_path):
     sp = _pipeline(cfg, tmp_path)
-    brief = {"style_prompt": "quiet pad", "lyrics": "", "target_duration_s": 60, "seed": 7}
+    brief = {"style_prompt": "quiet pad", "lyrics": "", "seed": 7}
     asyncio.run(sp.generate(brief))
     assert sp._client.payload["instrumental"] is True
     assert "lyrics" not in sp._client.payload
+    assert "duration_s" not in sp._client.payload
     assert sp._client.payload["seed"] == 7

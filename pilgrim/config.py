@@ -133,8 +133,9 @@ class Inventory(BaseModel):
 
 
 class Songs(BaseModel):
-    target_duration_s: list[int] = Field(default_factory=lambda: [150, 210])
+    # No duration target — the music model decides song length (OVERHAUL 3.1).
     genres: dict[str, float] = Field(default_factory=dict)
+    min_duration_s: float = 20.0  # sanity floor (OVERHAUL 3.2)
 
 
 class News(BaseModel):

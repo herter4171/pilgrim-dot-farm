@@ -196,12 +196,13 @@ Workers:
 ### 6.2 Song pipeline
 
 1. **Brief** (`qwen38`): returns JSON validated against a schema:
-   `{title, artist, genre, style_prompt, lyrics, target_duration_s}`.
+   `{title, artist, genre, style_prompt, lyrics}`.
    - Genre drawn from a weighted list in config (variety is the point), subject
      to the no-repeat rule.
    - Artist may be drawn from the station bible's recurring fictional artists
      (§7), or invented.
-   - `target_duration_s` in 150–210 s.
+   - Lyrics of arbitrary length: **the music model decides the running time**
+     (OVERHAUL 3.1 — no `target_duration_s` is sent).
 2. **Generate** (M5, mlx-serve): reuse the existing working path; poll until the
    WAV exists; record wall-clock generation time for the rate metric.
 3. **QC** (§8.1).
@@ -409,7 +410,7 @@ inventory:
   liner_buckets_s: [3, 5, 10, 15, 30]
 
 songs:
-  target_duration_s: [150, 210]
+  min_duration_s: 20         # sanity floor; no duration is requested from the model
   genres: {synthwave: 1, bluegrass: 1, doom metal: 1, bossa nova: 1, polka: 1, ...}
 
 news:

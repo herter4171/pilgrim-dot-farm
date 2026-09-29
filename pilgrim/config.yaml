@@ -49,11 +49,8 @@ inventory:
   dj_talk_min: 2
 
 songs:
-  # RADIO §6.1 wants 150-210 s, but MiniMax Music 3 (mlx) IGNORES duration_s
-  # and emits fixed short clips: instrumentals ~20-24 s, lyric songs ~60 s max.
-  # [60, 90] empirically yields the ~60 s max from this backend; asking for 150-210 s
-  # returns ~24 s. Longer songs need a backend/model that supports them (open Q).
-  target_duration_s: [60, 90]
+  # No duration request — the music model decides the running time (OVERHAUL 3.1).
+  min_duration_s: 20    # sanity floor for songs (OVERHAUL 3.2)
   genres:
     synthwave: 1
     bluegrass: 1
