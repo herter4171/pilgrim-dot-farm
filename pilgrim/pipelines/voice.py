@@ -152,7 +152,8 @@ class VoicePipeline:
     ROLE_INFO = {
         "liner": ("liners", "short station id or gag line"),
         "commercial": ("commercials", "satirical 15-30s commercial spot"),
-        "dj_talk": ("dj_talk", "conversational DJ talk-up referencing previous and next"),
+        "dj_talk": ("dj_talk", "conversational DJ filler: station life, the town, the "
+                    "weather in Thistledown, recent songs, the time of day"),
         "news": ("news", "news bulletin headline"),
         "intro": ("dj_talk", "short DJ intro for the very next song; name the title and artist"),
     }

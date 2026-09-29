@@ -13,10 +13,12 @@ class FakeVoice:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.contexts: list[str | None] = []
 
     async def produce_item(self, role: str, target_s: float,
                            context: str | None = None) -> dict:
         self.calls += 1
+        self.contexts.append(context)
         return {"media_path": f"/tmp/{role}_{self.calls}.flac", "duration_s": target_s,
                 "sample_rate": 24000, "channels": 1, "role": role}
 
@@ -251,10 +253,10 @@ def test_request_song_fails_after_3_attempts(cfg, tmp_env):
 class _RecordingVoice(FakeVoice):
     def __init__(self):
         super().__init__()
-        self.contexts = []
+        self.role_contexts = []
 
     async def produce_item(self, role, target_s, context=None):
-        self.contexts.append((role, context))
+        self.role_contexts.append((role, context))
         return await super().produce_item(role, target_s, context)
 
 
@@ -265,7 +267,7 @@ def test_request_intro_context_contains_request_text(cfg, tmp_env):
     prod = make_song_producer(cfg, store, voice, FakeSong())
     import asyncio
     asyncio.run(prod.song_step())
-    intro_calls = [ctx for role, ctx in voice.contexts if role == "intro"]
+    intro_calls = [ctx for role, ctx in voice.role_contexts if role == "intro"]
     assert intro_calls
     assert 'Listener request: "play a song for Mittens"' in intro_calls[0]
 
@@ -284,5 +286,25 @@ def test_stock_song_gets_intro_without_request_line(cfg, tmp_env):
     assert intro["evergreen"] == 0
     song_id = _meta(store, intro["id"])["song_item_id"]
     assert store.get_item(song_id)["type"] == "song"
-    intro_calls = [ctx for role, ctx in voice.contexts if role == "intro"]
+    intro_calls = [ctx for role, ctx in voice.role_contexts if role == "intro"]
     assert "Listener request" not in intro_calls[0]
+
+
+def test_ensure_dj_context_has_recent_songs_not_next(cfg, tmp_env):
+    """OVERHAUL 5.2: DJ filler is written from songs that ALREADY played (no
+    fake 'next song' claims). Context carries a recent song title."""
+    _, store, _ = tmp_env
+    s1 = store.add_item(type_="song", media_path="/a.flac", duration_s=120.0,
+                        title="Barn Cat Boogie", artist="The Canning Ladies", genre="polka")
+    s2 = store.add_item(type_="song", media_path="/b.flac", duration_s=110.0,
+                        title="Pickle Parade", artist="Lil' Clementine", genre="bluegrass")
+    store.append_program(s1, "song", 120.0)
+    store.append_program(s2, "song", 110.0)
+    voice = FakeVoice()
+    prod = make_producer(cfg, store, voice)
+    import asyncio
+    asyncio.run(prod.ensure_dj())
+    ctx = voice.contexts[0] or ""
+    assert "Barn Cat Boogie" in ctx and "Pickle Parade" in ctx
+    assert "Songs that played recently" in ctx
+    assert "next" not in ctx.lower() and "Next song" not in ctx

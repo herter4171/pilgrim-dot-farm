@@ -107,14 +107,35 @@ class Producer:
             "target": self.cfg.inventory.dj_talk_min})
         if need <= 0:
             return
+        # Real material to talk about: the songs that just played (chosen NOW,
+        # so no fake 'next song' claims — OVERHAUL 5.2). Task 5.3 adds a time
+        # line here.
+        recent = self._recent_committed_songs(3)
+        context_parts: list[str] = []
+        if recent:
+            context_parts.append("Songs that played recently: " + "; ".join(
+                f'"{t}" by {a} ({g})' for t, a, g in recent))
+        context = "\n".join(context_parts)
         for _ in range(max(0, need)):
             try:
-                item = await self.voice.produce_item("dj_talk", 18.0)
+                item = await self.voice.produce_item("dj_talk", 18.0, context=context)
                 self._store_voice(item, "dj_talk", evergreen=True)
                 log.info("produced dj_talk %.1fs", item["duration_s"])
             except Exception as e:
                 log.warning("dj talk production failed: %s", e)
                 return
+
+    def _recent_committed_songs(self, n: int) -> list[tuple[str, str, str]]:
+        """Last n songs in the committed program as (title, artist, genre)."""
+        out: list[tuple[str, str, str]] = []
+        for r in self.store.program_since(1):
+            if r["type"] != "song":
+                continue
+            it = self.store.get_item(r["item_id"])
+            if it:
+                out.append((it.get("title") or "", it.get("artist") or "",
+                            it.get("genre") or ""))
+        return out[-n:] if n else []
 
     async def ensure_news(self) -> None:
         if not self.cfg.news.enabled:
