@@ -55,3 +55,30 @@ def test_api_request_with_url_never_calls_moderator(tmp_env):
     assert payload["rejected"] is True
     assert calls["n"] == 0
     assert station.db.queued_requests() == []
+
+
+def test_rate_limited_after_fourth_request(tmp_env):
+    """OVERHAUL 4.3: the 4th request from one client is 429 and the fake
+    moderator is called at most 3 times."""
+    from fastapi.testclient import TestClient
+    from pilgrim.server import create_app
+
+    cfg, _, _ = tmp_env
+    app = create_app(cfg)
+    station = app.state.station
+    calls = {"n": 0}
+
+    class _Counting:
+        async def moderate(self, text):
+            calls["n"] += 1
+            return True, "ok"
+
+    station.moderator = _Counting()
+    c = TestClient(app)
+    codes = []
+    for _ in range(4):
+        r = c.post("/api/requests", json={"text": "play the accordion"})
+        codes.append(r.status_code)
+    assert codes[:3] == [200, 200, 200]
+    assert codes[3] == 429
+    assert calls["n"] <= 3

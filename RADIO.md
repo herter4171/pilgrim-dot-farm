@@ -426,6 +426,13 @@ news:
   max_searches: 3
   budget_s: 60
 
+requests:
+  queue_cap: 10
+  max_length: 160
+  moderation_model: qwen38
+  moderation_max_tokens: 4096
+  per_client_per_10min: 3   # request-line rate limit
+
 audio:
   lufs: -16
   true_peak_db: -1

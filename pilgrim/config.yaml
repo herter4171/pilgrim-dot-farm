@@ -76,6 +76,7 @@ requests:
   moderation_model: qwen38  # stricter reasoning model for the gate
   moderation_max_tokens: 4096  # cap for the moderation call (OVERHAUL 4.2)
   service_interval_s: 60 # read one request on air each interval
+  per_client_per_10min: 3   # request-line rate limit (OVERHAUL 4.3)
 
 audio:
   lufs: -16.0

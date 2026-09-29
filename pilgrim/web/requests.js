@@ -60,9 +60,12 @@
         body: JSON.stringify({ text }),
       });
       const d = await r.json().catch(() => ({}));
-      if (d.ok) {
+      if (r.status === 429) {
+        showErr(d.detail || "Easy there — a few requests every ten minutes, please.");
+        input.select();
+      } else if (d.ok) {
         input.value = "";
-        showErr("✓ Added to the queue — top ten go on air.", true);
+        showErr("✓ Got it — we'll write you a song.", true);
       } else {
         showErr("Head's up: " + (d.reason || "that didn't pass the DJ's taste filter."));
         input.select();

@@ -11,9 +11,10 @@ import contextlib
 import logging
 import os
 import time
+from collections import deque
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -171,10 +172,25 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     setup_logging(cfg)
     api_key = os.environ.get("LITELLM_TOKEN", "")
     station = Station(cfg, api_key)
-    app = FastAPI(title="Pilgrim Dot Farm Radio", version="0.1.0")
+    app = FastAPI(title="Pilgrim Dot Farm Radio", version="0.2.0")
     app.state.station = station
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                        allow_headers=["*"])
+    # request-line rate limit: client.host -> timestamps within the window (4.3)
+    _rate: dict[str, deque[float]] = {}
+
+    def _rate_limited(request: Request) -> bool:
+        host = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        window = 10 * 60.0
+        dq = _rate.setdefault(host, deque(maxlen=cfg.requests.per_client_per_10min))
+        # drop timestamps outside the 10-minute window
+        while dq and now - dq[0] > window:
+            dq.popleft()
+        if len(dq) >= cfg.requests.per_client_per_10min:
+            return True
+        dq.append(now)
+        return False
 
     @app.get("/api/health")
     async def health():
@@ -222,7 +238,11 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return {"voices": []}
 
     @app.post("/api/requests")
-    async def submit_request(payload: RequestIn):
+    async def submit_request(payload: RequestIn, request: Request):
+        if _rate_limited(request):
+            raise HTTPException(
+                429,
+                "Easy there — a few requests every ten minutes, please.")
         text = payload.text.strip()
         if not text or len(text) > cfg.requests.max_length:
             raise HTTPException(422, "request empty or too long")
