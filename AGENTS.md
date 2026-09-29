@@ -1,9 +1,11 @@
 # AGENTS.md — Pilgrim Dot Farm Radio
 
-You are building an AI-generated radio station. **`PLAN.md` is the source of
-truth.** Read the relevant section of PLAN.md before implementing anything,
+Active work plan: OVERHAUL.md (work it top to bottom).
+
+You are building an AI-generated radio station. **`RADIO.md` is the source of
+truth.** Read the relevant section of RADIO.md before implementing anything,
 and cite the section number (e.g. "per §5.2") in commit messages and reports.
-If this file and PLAN.md disagree, PLAN.md wins; report the conflict.
+If this file and RADIO.md disagree, RADIO.md wins; report the conflict.
 
 **Layout:** all application + test code lives under `pilgrim/` (RADIO.md §18).
 The repo root holds only repo-level files (`AGENTS.md`, `RADIO.md`, `Makefile`,
@@ -37,7 +39,7 @@ If a task cannot be done without breaking one, stop and report.
 7. **No secrets in the repo.** Keys go in environment variables; document the
    variable name in `README.md`.
 8. **Do not change the HTTP API (§11), the config schema (§12), or the
-   database schema** without updating PLAN.md in the same change and saying
+   database schema** without updating RADIO.md in the same change and saying
    so in your report.
 9. **Client audio uses the Web Audio API** (`decodeAudioData` +
    `AudioBufferSourceNode.start(when)`). Never chain `<audio>` elements.
@@ -163,9 +165,9 @@ fix the test in a separate, clearly described change.
 End every task with:
 
 - **What changed** (files, one line each).
-- **PLAN.md sections** implemented or touched.
+- **RADIO.md sections** implemented or touched.
 - **Check results** (§7), with pass/fail counts.
-- **Deviations** from PLAN.md or this file, and why.
+- **Deviations** from RADIO.md or this file, and why.
 - **Open questions** needing a human decision.
 
 Keep it short. No restating the task.
@@ -176,9 +178,9 @@ Keep it short. No restating the task.
 
 Stop and ask instead of guessing when:
 
-- A backend behaves differently from `docs/backends.md` or PLAN.md.
+- A backend behaves differently from `docs/backends.md` or RADIO.md.
 - A task would require breaking a hard rule (§1).
-- A design choice isn't covered by PLAN.md and would be hard to reverse
+- A design choice isn't covered by RADIO.md and would be hard to reverse
   (schemas, API shape, storage layout).
 - Voice role assignment (§10). This is a human listening decision.
 
