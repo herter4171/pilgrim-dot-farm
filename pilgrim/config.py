@@ -150,6 +150,8 @@ class Audio(BaseModel):
     edge_pad_ms: int = 150
     delivery: str = "flac"
     silence_db: int = -50
+    max_words_per_s: float = 3.6  # speech-rate QC ceiling (truncation smell)
+    min_words_per_s: float = 1.2  # speech-rate QC floor
 
 
 class Logging(BaseModel):

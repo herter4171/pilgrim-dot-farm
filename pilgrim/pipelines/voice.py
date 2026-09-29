@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import cast
 
 import httpx
 import numpy as np
@@ -163,8 +164,24 @@ class VoicePipeline:
         dst = self.media_dir / f"{role}_{int(__import__('time').time()*1000)}.flac"
         meta = normalize.normalize(tmp, dst, self.cfg)
         tmp.unlink(missing_ok=True)
-        return {"path": dst, "duration_s": meta["duration_s"],
-                "sample_rate": meta["sample_rate"], "channels": meta["channels"]}
+        # speech-rate gate: re-run the duration tolerance on the NORMALIZED audio
+        # too (post-processing can shorten it), and reject truncated TTS — too many
+        # words for the audio length (OVERHAUL 2.1). dst is a file we just made.
+        norm_dur = cast(float, meta["duration_s"])
+        if norm_dur < 0.4 * target_s or norm_dur > 2.2 * target_s:
+            dst.unlink(missing_ok=True)
+            raise ValueError(f"voice duration {norm_dur}s outside tolerance of {target_s}s")
+        words = len(clean.split())
+        speech_s = max(norm_dur - self.cfg.audio.edge_pad_ms / 1000.0, 0.1)
+        words_per_s = words / speech_s
+        lo, hi = self.cfg.audio.min_words_per_s, self.cfg.audio.max_words_per_s
+        if not (lo <= words_per_s <= hi):
+            dst.unlink(missing_ok=True)
+            raise ValueError(
+                f"voice speech rate {words_per_s:.2f} w/s outside [{lo},{hi}] — truncated?")
+        return {"path": dst, "duration_s": norm_dur,
+                "sample_rate": meta["sample_rate"], "channels": meta["channels"],
+                "words": words, "words_per_s": words_per_s}
 
     async def produce_item(self, role: str, target_s: float,
                            context: str | None = None) -> dict:
@@ -183,7 +200,9 @@ class VoicePipeline:
             "type": role, "media_path": str(rendered["path"]), "duration_s": rendered["duration_s"],
             "sample_rate": rendered["sample_rate"], "channels": rendered["channels"],
             "role": role, "evergreen": bool(copy.get("evergreen", True)),
-            "gravity": copy.get("gravity"), "meta": {"text": copy.get("text")},
+            "gravity": copy.get("gravity"),
+            "meta": {"text": copy.get("text"), "words": rendered.get("words"),
+                      "words_per_s": rendered.get("words_per_s")},
         }
         log.info("voice.produced", extra={
             **base, "words": len(copy.get("text", "").split()),

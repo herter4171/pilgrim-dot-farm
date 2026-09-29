@@ -422,6 +422,8 @@ audio:
   true_peak_db: -1
   edge_pad_ms: 150
   delivery: flac
+  max_words_per_s: 3.6   # speech-rate QC gate (truncation smell)
+  min_words_per_s: 1.2
 
 logging:
   level: INFO            # Python logging level (DEBUG|INFO|WARNING|ERROR)
