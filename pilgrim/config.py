@@ -24,17 +24,26 @@ class Clock:
         """Monotonic seconds since the clock started. Saturates internally."""
         return time.monotonic() - self._start
 
+    def wall(self) -> float:
+        """Unix-ish wall time. Only for expiry checks (news/dj ttl), never
+        scheduling arithmetic — keeps tests on SimClock (AGENTS §1.3, OVERHAUL 2.4)."""
+        return time.time()
+
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
 
 
 class SimClock(Clock):
     """A clock that can be advanced by hand / by the simulation driver."""
-    def __init__(self) -> None:
+    def __init__(self, epoch: float = 1_800_000_000.0) -> None:
         self._t = 0.0
+        self._epoch = epoch
 
     def now(self) -> float:
         return self._t
+
+    def wall(self) -> float:
+        return self._epoch + self._t
 
     def advance(self, seconds: float) -> None:
         self._t += seconds

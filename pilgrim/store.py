@@ -176,6 +176,14 @@ class Store:
         return int(r[0])
 
     # --------------------------------------------------------------- program
+    def clear_program(self) -> None:
+        """Wipe the committed program. Used on station start: the committed
+        program is live-only state referencing a clock that no longer exists
+        (OVERHAUL 2.4)."""
+        with self._lock:
+            self._conn.execute("DELETE FROM program")
+            self._conn.commit()
+
     def append_program(self, item_id: int, type_: str, duration_s: float) -> int:
         with self._lock:
             cur = self._conn.execute(

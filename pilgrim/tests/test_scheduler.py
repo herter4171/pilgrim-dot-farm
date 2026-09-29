@@ -163,3 +163,39 @@ def test_trimming_preserves_live_position_and_coverage(cfg, tmp_env, monkeypatch
     assert sched.on_air() == before_air
     assert sched.coverage() == before_coverage
     assert sched.coverage() >= cfg.playout.committed_lookahead_s
+
+
+def test_starvation_anchor_starts_new_item_at_now(cfg, tmp_env):
+    """After a dry spell the next appended item starts at 'now', not in the
+    past (OVERHAUL 2.4): commit 30 s, advance 100 s, append 60 s -> on-air is
+    the new item at offset ~0, not offset 70."""
+    _, store, _ = tmp_env
+    a = make_item(cfg, store, "song", 30.0)
+    b = make_item(cfg, store, "song", 60.0)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(1), cfg), clock, RNG(1))
+    sched._append({"item_id": a, "type": "song", "duration_s": 30.0})
+    sched._rebuild_program()
+    assert sched.coverage() == 30.0
+    clock.advance(100)
+    assert sched.coverage() == 0.0
+    sched._append({"item_id": b, "type": "song", "duration_s": 60.0})
+    sched._rebuild_program()
+    seq, off = sched.on_air()
+    assert seq == b
+    assert off < 1.0
+
+
+def test_new_scheduler_starts_with_empty_program(cfg, tmp_env):
+    """A fresh Scheduler over a store that already has program rows starts with
+    an empty program (the committed program is live-only state; OVERHAUL 2.4)."""
+    _, store, _ = tmp_env
+    a = make_item(cfg, store, "song", 30.0)
+    clock = SimClock()
+    s1 = Scheduler(cfg, store, RandomSelector(RNG(2), cfg), clock, RNG(2))
+    s1._append({"item_id": a, "type": "song", "duration_s": 30.0})
+    s1._rebuild_program()
+    assert store.max_seq() >= 1
+    s2 = Scheduler(cfg, store, RandomSelector(RNG(3), cfg), SimClock(), RNG(3))
+    assert store.max_seq() == 0
+    assert s2._items == []

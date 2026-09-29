@@ -43,10 +43,13 @@ def test_media_unknown_item_404(tmp_env):
 async def test_health_stays_on_air_with_rendered_audio_and_backends_down(tmp_env, monkeypatch):
     """Production outages must not tell listeners to stop buffered playback (§5.4)."""
     cfg, store, _ = tmp_env
-    item_id = store.add_item(type_="liner", media_path="unused.flac", duration_s=10)
-    store.append_program(item_id, "liner", 10)
+    store.add_item(type_="liner", media_path="unused.flac", duration_s=10)
     app = create_app(cfg)
     station = app.state.station
+    # OVERHAUL 2.4: a fresh Scheduler clears stale program rows, so build
+    # coverage from rendered inventory instead of pre-seeding append_program.
+    station.scheduler.commit_lookahead()
+    assert station.on_air
 
     async def backends_down():
         return dict.fromkeys(("litellm", "kokoro", "mlx", "searxng"), False)

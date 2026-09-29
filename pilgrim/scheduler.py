@@ -47,6 +47,10 @@ class Scheduler:
         self._items: list[dict] = []
         self._cum: list[float] = []  # absolute start times (program seconds)
         self._total = 0.0
+        self._offset = 0.0  # playhead anchor; shifts forward if the program starves
+        # The committed program is live-only state: old rows refer to a clock
+        # that no longer exists, so start clean on every run (OVERHAUL 2.4).
+        self.store.clear_program()
         self._rebuild_program()
 
     # ------------------------------------------------------------------ index
@@ -62,7 +66,7 @@ class Scheduler:
 
     def position(self) -> float:
         """Live playhead in program-seconds (advances on the real clock)."""
-        return min(self.clock.now(), self._total)
+        return min(self.clock.now() - self._offset, self._total)
 
     def on_air(self) -> tuple[int | None, float]:
         """Return (seq of on-air item, offset seconds into it)."""
@@ -139,7 +143,7 @@ class Scheduler:
         # latest not-expired bulletin not yet aired
         for it in reversed(self.store.list_items("news")):
             exp = _parse_iso(it.get("expires_at"))
-            if exp is not None and exp < time.time():
+            if exp is not None and exp < self.clock.wall():
                 continue  # expired
             fresh = it.get("fresh")
             if fresh:
@@ -180,6 +184,10 @@ class Scheduler:
 
     def _append(self, e: dict) -> None:
         item_id = e["item_id"]
+        lag = (self.clock.now() - self._offset) - self._total
+        if lag > 0:  # program ran dry: start the new item at "now", not in the past
+            self._offset += lag
+            log.warning("program.starved", extra={"gap_s": round(lag, 1)})
         seq = self.store.append_program(item_id, e["type"], e["duration_s"])
         self._air_clock += e["duration_s"]  # monotonic: never resets on trim
         if e.get("consume"):
