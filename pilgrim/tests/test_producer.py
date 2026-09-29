@@ -87,24 +87,45 @@ def test_ensure_commercials_produces_when_below_target(cfg, tmp_env):
     assert voice.calls == target - 2
 
 
-def test_ensure_liners_buckets_usable_not_fresh(cfg, tmp_env):
-    """Liners per bucket are counted from all usable liners, not just unaired:
-    the already-full short bucket must not be over-filled."""
+def test_ensure_liners_replaces_old_bucket_test(cfg, tmp_env):
+    """Replaces test_ensure_liners_buckets_usable_not_fresh: the per-bucket
+    logic it exercised is gone (OVERHAUL 2.3). Liners now fill to a TOTAL
+    target with a per-cycle cap, so this is covered by the tests below."""
+    assert cfg.inventory.liners_per_bucket * len(cfg.inventory.liner_buckets_s) > 0
+
+
+def test_ensure_liners_fills_to_total_target(cfg, tmp_env):
+    """One call produces at most 3; repeated calls stop at the total target."""
     _, store, _ = tmp_env
-    target = cfg.inventory.liners_per_bucket
-    # exactly `target` short-bucket liners, all but one already aired (reusable)
-    make_item(cfg, store, "liner", 3.0, fresh=True)
-    for d in (3.5, 4.0):
-        make_item(cfg, store, "liner", d, fresh=False)
     voice = FakeVoice()
     prod = make_producer(cfg, store, voice)
     import asyncio
+    target_total = cfg.inventory.liners_per_bucket * len(cfg.inventory.liner_buckets_s)
     asyncio.run(prod.ensure_liners())
-    liners = store.list_items("liner")
-    short = [i for i in liners if 0 <= i["duration_s"] < 5]
-    # aired liners still satisfy the bucket -> no extra production in it
-    assert len(short) == target
-    # but the empty longer buckets must have been filled to target
-    for lo, hi in ((5, 9), (9, 15), (15, 20), (20, 60)):
-        b = [i for i in liners if lo <= i["duration_s"] < hi]
-        assert len(b) == target
+    assert voice.calls <= 3
+    assert voice.calls == store.count_usable_of_type("liner")
+    # repeated calls fill up to the target, never beyond
+    for _ in range(20):
+        asyncio.run(prod.ensure_liners())
+    assert store.count_usable_of_type("liner") == target_total
+
+
+def test_ensure_liners_stops_at_target_when_fake_voice_fixed_short(cfg, tmp_env):
+    """The runaway case: a voice that always returns 5.5 s liners (never in
+    most buckets) still stops at the total target — no infinite loop (2.3)."""
+    _, store, _ = tmp_env
+
+    class FixedVoice(FakeVoice):
+        async def produce_item(self, role, target_s, context=None):
+            self.calls += 1
+            return {"media_path": f"/tmp/{role}_{self.calls}.flac",
+                    "duration_s": 5.5, "sample_rate": 24000, "channels": 1,
+                    "role": role}
+
+    voice = FixedVoice()
+    prod = make_producer(cfg, store, voice)
+    import asyncio
+    target_total = cfg.inventory.liners_per_bucket * len(cfg.inventory.liner_buckets_s)
+    for _ in range(20):
+        asyncio.run(prod.ensure_liners())
+    assert store.count_usable_of_type("liner") == target_total

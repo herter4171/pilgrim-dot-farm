@@ -20,8 +20,6 @@ from pilgrim.store import Store
 
 log = logging.getLogger("radio.producer")
 
-_LINER_BUCKETS = [(0, 5), (5, 9), (9, 15), (15, 20), (20, 60)]
-
 
 class Producer:
     def __init__(self, cfg: Config, store: Store, llm: LLM, kokoro: KokoroClient,
@@ -55,31 +53,29 @@ class Producer:
 
     # ------------------------------------------------------------- producers
     async def ensure_liners(self) -> None:
-        target = self.cfg.inventory.liners_per_bucket
-        liners = self.store.list_items("liner")
-        # Liners recycle; count every usable (non-emergency) liner, not only
-        # unaired ones, so aired liners still satisfy the low-water target.
-        usable = [i for i in liners if not i["emergency"]]
+        """Fill liners toward a TOTAL target (liners_per_bucket * #buckets) by
+        cycling the target duration through the configured buckets. The old
+        per-bucket filling looped forever when rendered durations never landed
+        in the target bucket (OVERHAUL 2.3). At most 3 items per call."""
+        inv = self.cfg.inventory
+        target_total = inv.liners_per_bucket * len(inv.liner_buckets_s)
+        usable = self.store.count_usable_of_type("liner")
         log.debug("producer.need", extra={
-            "item_type": "liner", "have": len(usable),
-            "target": target * len(_LINER_BUCKETS)})
-        by_bucket: dict[int, int] = {}
-        for i in usable:
-            for idx, (lo, hi) in enumerate(_LINER_BUCKETS):
-                if lo <= i["duration_s"] < hi:
-                    by_bucket[idx] = by_bucket.get(idx, 0) + 1
-        for idx, (lo, hi) in enumerate(_LINER_BUCKETS):
-            have = by_bucket.get(idx, 0)
-            need = target - have
-            for _ in range(max(0, need)):
-                target_s = float((lo + hi) / 2) if hi < 60 else 25.0
-                try:
-                    item = await self.voice.produce_item("liner", target_s)
-                    self._store_voice(item, "liner")
-                    log.info("produced liner %.1fs", item["duration_s"])
-                except Exception as e:
-                    log.warning("liner production failed: %s", e)
-                    return  # back off; don't hammer a failing backend
+            "item_type": "liner", "have": usable, "target": target_total})
+        if usable >= target_total:
+            return
+        made = 0
+        while made < 3 and usable < target_total:
+            bucket = float(inv.liner_buckets_s[made % len(inv.liner_buckets_s)])
+            try:
+                item = await self.voice.produce_item("liner", bucket)
+                self._store_voice(item, "liner")
+                log.info("produced liner %.1fs", item["duration_s"])
+                made += 1
+                usable += 1
+            except Exception as e:
+                log.warning("liner production failed: %s", e)
+                return  # back off; don't hammer a failing backend
 
     async def ensure_commercials(self) -> None:
         have = self.store.count_usable_of_type("commercial")
