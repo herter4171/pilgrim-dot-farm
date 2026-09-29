@@ -146,7 +146,9 @@ class Station:
         self._tasks.append(asyncio.create_task(self.producer.news_loop()))
         self._tasks.append(asyncio.create_task(self.producer.song_loop()))
         self._tasks.append(asyncio.create_task(self.producer.run_requests()))
-        log.info("station startup complete")
+        inv = await self.inventory_levels()
+        log.info("station.startup", extra={
+            "lookahead_s": self.cfg.playout.committed_lookahead_s, "inventory": inv})
 
 
 def _load_prompts(cfg: Config) -> dict:
@@ -221,10 +223,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         text = payload.text.strip()
         if not text or len(text) > cfg.requests.max_length:
             raise HTTPException(422, "request empty or too long")
+        t0 = time.monotonic()
         allowed, reason = await station.moderator.moderate(text)
         status = "queued" if allowed else "rejected"
         req = station.db.add_request(text, cap=cfg.requests.queue_cap,
                                      status=status, reason=None if allowed else reason)
+        log.info("request.received", extra={"request_id": req["id"], "len": len(text)})
+        log.info("request.moderated", extra={
+            "request_id": req["id"], "allowed": allowed, "reason": reason,
+            "prefilter": False,
+            "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
         return {
             "ok": allowed,
             "rejected": not allowed,

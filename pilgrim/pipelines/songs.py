@@ -81,21 +81,32 @@ class SongPipeline:
         # Assign a seed now so the generation is reproducible: same prompt+lyrics
         # + this seed replays the same audio on the mlx backend. Recorded in meta.
         brief.setdefault("seed", secrets.randbits(32))
-        gen = await self.generate(brief)
-        self.generation_s.append((0.0, gen["wall_s"]))
-        data, sr = sf.read(str(gen["path"]))
-        x = np.asarray(data, dtype=np.float32)
-        duration = float(len(x)) / sr
-        self.generation_s[-1] = (duration, gen["wall_s"])
-        tmin, tmax = self.cfg.songs.target_duration_s
-        verdict = grade_audio(x, sr, duration_s=duration, min_dur=5, max_dur=600,
-                              kind="song", max_gap_s=2.0, silence_db=self.cfg.audio.silence_db)
-        if not verdict.ok:
+        try:
+            gen = await self.generate(brief)
+            self.generation_s.append((0.0, gen["wall_s"]))
+            data, sr = sf.read(str(gen["path"]))
+            x = np.asarray(data, dtype=np.float32)
+            duration = float(len(x)) / sr
+            self.generation_s[-1] = (duration, gen["wall_s"])
+            tmin, tmax = self.cfg.songs.target_duration_s
+            verdict = grade_audio(x, sr, duration_s=duration, min_dur=5, max_dur=600,
+                                  kind="song", max_gap_s=2.0, silence_db=self.cfg.audio.silence_db)
+            if not verdict.ok:
+                gen["path"].unlink(missing_ok=True)
+                raise ValueError(f"song QC failed: {verdict.reasons} (len {duration:.0f}s)")
+            dst = self.media_dir / f"song_{int(time.time()*1000)}.flac"
+            meta = normalize.normalize(gen["path"], dst, self.cfg)
             gen["path"].unlink(missing_ok=True)
-            raise ValueError(f"song QC failed: {verdict.reasons} (len {duration:.0f}s)")
-        dst = self.media_dir / f"song_{int(time.time()*1000)}.flac"
-        meta = normalize.normalize(gen["path"], dst, self.cfg)
-        gen["path"].unlink(missing_ok=True)
+        except Exception as e:
+            log.warning("song.rejected", extra={
+                "title": brief.get("title"), "genre": brief.get("genre"),
+                "request_id": brief.get("request_id"), "error": str(e)})
+            raise
+        log.info("song.produced", extra={
+            "title": brief.get("title"), "genre": brief.get("genre"),
+            "duration_s": meta["duration_s"], "wall_s": round(gen["wall_s"], 1),
+            "rtf": round(duration / gen["wall_s"], 2) if gen["wall_s"] else 0,
+            "request_id": brief.get("request_id")})
         return {
             "type": "song", "media_path": str(dst), "duration_s": meta["duration_s"],
             "sample_rate": meta["sample_rate"], "channels": meta["channels"],

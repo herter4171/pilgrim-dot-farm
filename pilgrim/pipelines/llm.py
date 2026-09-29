@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 import httpx
@@ -105,13 +106,26 @@ class LLM:
             "max_tokens": max_tokens,
             "temperature": 0.8,
         }
+        t0 = time.monotonic()
         resp = await self._client.post(
             url, headers={"Authorization": f"Bearer {self.api_key}"}, json=payload)
+        duration_ms = round((time.monotonic() - t0) * 1000, 1)
         if resp.status_code != 200:
+            log.warning("llm.call", extra={
+                "model": model, "duration_ms": duration_ms,
+                "status": f"http_{resp.status_code}", "empty": False,
+                "max_tokens": max_tokens, "error": resp.text[:200]})
             raise LLMError(f"llm http {resp.status_code}: {resp.text[:300]}")
         data = resp.json()
         try:
             msg = data["choices"][0]["message"]
         except (KeyError, IndexError) as e:
+            log.warning("llm.call", extra={
+                "model": model, "duration_ms": duration_ms, "status": "bad_shape",
+                "empty": False, "max_tokens": max_tokens, "error": str(e)})
             raise LLMError(f"llm bad response shape: {e}") from e
-        return self._message_text(msg)
+        content = self._message_text(msg)
+        log.info("llm.call", extra={
+            "model": model, "duration_ms": duration_ms, "status": "ok",
+            "empty": not bool(content.strip()), "max_tokens": max_tokens})
+        return content

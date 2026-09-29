@@ -60,6 +60,9 @@ class Producer:
         # Liners recycle; count every usable (non-emergency) liner, not only
         # unaired ones, so aired liners still satisfy the low-water target.
         usable = [i for i in liners if not i["emergency"]]
+        log.debug("producer.need", extra={
+            "item_type": "liner", "have": len(usable),
+            "target": target * len(_LINER_BUCKETS)})
         by_bucket: dict[int, int] = {}
         for i in usable:
             for idx, (lo, hi) in enumerate(_LINER_BUCKETS):
@@ -81,6 +84,9 @@ class Producer:
     async def ensure_commercials(self) -> None:
         have = self.store.count_usable_of_type("commercial")
         need = self.cfg.inventory.commercials_min - have
+        log.debug("producer.need", extra={
+            "item_type": "commercial", "have": have,
+            "target": self.cfg.inventory.commercials_min})
         if need <= 0:
             return
         role = "commercial"
@@ -96,6 +102,9 @@ class Producer:
     async def ensure_dj(self) -> None:
         have = self.store.count_usable_of_type("dj_talk")
         need = self.cfg.inventory.dj_talk_min - have
+        log.debug("producer.need", extra={
+            "item_type": "dj_talk", "have": have,
+            "target": self.cfg.inventory.dj_talk_min})
         if need <= 0:
             return
         for _ in range(max(0, need)):
@@ -130,6 +139,9 @@ class Producer:
         if not self.cfg.news.enabled:
             return
         latest = self.store.list_items("news")
+        fresh_live = [i for i in latest if self._not_expired(i) and i["fresh"]]
+        log.debug("producer.need", extra={
+            "item_type": "news", "have": len(fresh_live), "target": 1})
         if latest and any(self._not_expired(i) for i in latest):
             fresh = [i for i in latest if i["fresh"]]
             if any(self._not_expired(i) for i in fresh):

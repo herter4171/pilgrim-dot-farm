@@ -168,12 +168,24 @@ class VoicePipeline:
 
     async def produce_item(self, role: str, target_s: float,
                            context: str | None = None) -> dict:
-        copy = await self.write_copy(role, target_s, context)
-        rendered = await self.render(copy, role, target_s)
+        base = {"item_type": role, "target_s": target_s}
+        try:
+            copy = await self.write_copy(role, target_s, context)
+        except Exception as e:
+            log.warning("voice.rejected", extra={**base, "stage": "copy", "error": str(e)})
+            raise
+        try:
+            rendered = await self.render(copy, role, target_s)
+        except Exception as e:
+            log.warning("voice.rejected", extra={**base, "stage": "render", "error": str(e)})
+            raise
         item = {
             "type": role, "media_path": str(rendered["path"]), "duration_s": rendered["duration_s"],
             "sample_rate": rendered["sample_rate"], "channels": rendered["channels"],
             "role": role, "evergreen": bool(copy.get("evergreen", True)),
             "gravity": copy.get("gravity"), "meta": {"text": copy.get("text")},
         }
+        log.info("voice.produced", extra={
+            **base, "words": len(copy.get("text", "").split()),
+            "duration_s": rendered["duration_s"]})
         return item

@@ -168,6 +168,11 @@ class Scheduler:
                 self._append(e)
             self._rebuild_program()
         self._trim()
+        cov = self.coverage()
+        if cov < 60:
+            log.warning("program.low_coverage", extra={
+                "coverage_s": round(cov, 1),
+                "inventory": self.build_state().inventory_counts})
 
     def coverage(self) -> float:
         pos = self.position()
@@ -175,10 +180,13 @@ class Scheduler:
 
     def _append(self, e: dict) -> None:
         item_id = e["item_id"]
-        self.store.append_program(item_id, e["type"], e["duration_s"])
+        seq = self.store.append_program(item_id, e["type"], e["duration_s"])
         self._air_clock += e["duration_s"]  # monotonic: never resets on trim
         if e.get("consume"):
             self.store.mark_aired(item_id)
+        log.info("program.commit", extra={
+            "seq": seq, "item_id": item_id, "item_type": e["type"],
+            "duration_s": e["duration_s"], "coverage_s": round(self.coverage(), 1)})
 
     def _trim(self) -> None:
         """Drop committed rows fully behind the playhead (keep a little history)."""
@@ -192,6 +200,7 @@ class Scheduler:
             else:
                 break
         if threshold_seq is not None:
+            log.debug("program.trim", extra={"before_seq": threshold_seq})
             # truncate_program_before keeps threshold_seq itself. Preserve its
             # absolute start so trimming cannot advance the audible playhead.
             retained_index = next(
