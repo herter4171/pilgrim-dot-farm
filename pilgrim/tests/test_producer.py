@@ -41,21 +41,38 @@ def make_producer(cfg, store, voice: FakeVoice) -> Producer:
 
 
 def test_counts_use_usable_for_evergreen_types(cfg, tmp_env):
-    """Aired evergreen items still count toward the low-water target."""
+    """Aired evergreen items still count toward the low-water target.
+    dj_talk is NOT evergreen (contextual, never recycled — OVERHAUL 5.1), so an
+    aired dj clip counts 0: the producer keeps topping up fresh DJ talk."""
     _, store, _ = tmp_env
     make_item(cfg, store, "commercial", 20.0, fresh=True)
     make_item(cfg, store, "commercial", 21.0, fresh=False)   # already aired, reusable
     make_item(cfg, store, "liner", 4.0, fresh=False)         # already aired, reusable
-    make_item(cfg, store, "dj_talk", 16.0, fresh=False)      # already aired, reusable
+    make_item(cfg, store, "dj_talk", 16.0, fresh=False)      # already aired, NOT reusable
     make_item(cfg, store, "news", 18.0, fresh=True)          # expiring, keep fresh
     voice = FakeVoice()
     prod = make_producer(cfg, store, voice)
     c = prod.counts()
     assert c["commercial"] == 2      # aired one still usable
     assert c["liner"] == 1
-    assert c["dj_talk"] == 1
+    assert c["dj_talk"] == 0         # aired DJ clips are spent (5.1)
     assert c["news"] == 1            # news is fresh-only
     assert voice.calls == 0
+
+
+def test_ensure_dj_refills_after_all_clips_aired(cfg, tmp_env):
+    """With dj_talk_min aired (non-fresh) DJ clips in store, ensure_dj produces
+    dj_talk_min new fresh ones (OVERHAUL 5.1 — DJ talk must keep flowing)."""
+    _, store, _ = tmp_env
+    target = cfg.inventory.dj_talk_min
+    for i in range(target):
+        make_item(cfg, store, "dj_talk", 16.0 + i, fresh=False)  # all aired
+    voice = FakeVoice()
+    prod = make_producer(cfg, store, voice)
+    import asyncio
+    asyncio.run(prod.ensure_dj())
+    assert store.count_fresh_of_type("dj_talk") == target
+    assert voice.calls == target
 
 
 def test_ensure_commercials_stops_at_usable_target(cfg, tmp_env):

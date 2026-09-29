@@ -42,13 +42,14 @@ class Producer:
 
     # --------------------------------------------------------------- counts
     def counts(self) -> dict[str, int]:
-        # Evergreen types (song/commercial/liner/dj_talk) recycle: keep a usable
-        # low-water stock, not just unaired stock. News is expiring (never reuses).
+        # Evergreen types (song/commercial/liner) recycle: keep a usable
+        # low-water stock. dj_talk is contextual and NEVER recycled (AGENTS rule
+        # 10), so it only counts unaired clips (OVERHAUL 5.1). News is expiring.
         return {
             "song": self.store.count_fresh_of_type("song"),
             "commercial": self.store.count_usable_of_type("commercial"),
             "liner": self.store.count_usable_of_type("liner"),
-            "dj_talk": self.store.count_usable_of_type("dj_talk"),
+            "dj_talk": self.store.count_fresh_of_type("dj_talk"),
             "news": self.store.count_fresh_of_type("news"),
         }
 
@@ -97,7 +98,9 @@ class Producer:
                 return
 
     async def ensure_dj(self) -> None:
-        have = self.store.count_usable_of_type("dj_talk")
+        # dj_talk is contextual: only unaired clips are stock (AGENTS rule 10,
+        # OVERHAUL 5.1) — aired DJ clips are gone, so we keep topping up.
+        have = self.store.count_fresh_of_type("dj_talk")
         need = self.cfg.inventory.dj_talk_min - have
         log.debug("producer.need", extra={
             "item_type": "dj_talk", "have": have,
