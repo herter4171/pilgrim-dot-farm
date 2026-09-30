@@ -6,35 +6,64 @@ import logging
 import sys
 
 from pilgrim.config import RNG, SimClock
-from pilgrim.logging_setup import JsonFormatter, setup_logging
+from pilgrim.logging_setup import ConsoleFormatter, TextFormatter, setup_logging
 from pilgrim.pipelines.moderation import Moderation
 from pilgrim.scheduler import Scheduler
 from pilgrim.selector import RandomSelector
 from pilgrim.tests.fakes import FakeLLM
 
 
-def test_json_formatter_includes_event_and_extra():
-    fmt = JsonFormatter()
+def test_text_formatter_is_one_greppable_line():
+    fmt = TextFormatter()
     r = logging.LogRecord("radio.test", logging.INFO, __file__, 1,
                           "program.commit", None, None, None)
     r.__dict__["item_id"] = 7
     r.__dict__["stage"] = "qc"
     line = fmt.format(r)
-    assert '"event": "program.commit"' in line
-    assert '"item_id": 7' in line
-    assert '"stage": "qc"' in line
+    assert "program.commit" in line
+    assert "INFO" in line
+    assert "radio.test" in line
+    # extra fields render as sorted key=value pairs
+    assert "item_id=7" in line
+    assert "stage=qc" in line
+    assert line.count("\n") == 0
 
 
-def test_json_formatter_emits_exc_key_for_exc_info():
-    fmt = JsonFormatter()
+def test_console_formatter_colors_the_level_only():
+    colored = ConsoleFormatter(use_color=True).format(
+        logging.LogRecord("radio.test", logging.WARNING, __file__, 1,
+                           "spot.check", None, None, None))
+    assert "\033[33m" in colored        # ANSI yellow for WARNING
+    assert "\033[0m" in colored        # reset after the level word
+    # the level word itself is still present, unescaped
+    assert "WARNING" in colored
+
+
+def test_console_formatter_strips_color_when_disabled():
+    plain = ConsoleFormatter(use_color=False).format(
+        logging.LogRecord("radio.test", logging.ERROR, __file__, 1,
+                           "pipe.failed", None, None, None))
+    assert "\033[" not in plain
+    assert "ERROR" in plain
+
+
+def test_console_formatter_is_plain_for_non_tty():
+    colored = ConsoleFormatter(use_color=False).format(
+        logging.LogRecord("radio.test", logging.INFO, __file__, 1,
+                           "ready", None, None, None))
+    assert "\033[" not in colored
+
+
+def test_text_formatter_emits_exc_key_for_exc_info():
+    fmt = TextFormatter()
     try:
         raise ValueError("boom")
     except ValueError:
         r = logging.LogRecord("radio.test", logging.ERROR, __file__, 1,
                               "pipe.failed", None, exc_info=sys.exc_info())
     line = fmt.format(r)
-    assert '"level": "ERROR"' in line
-    assert '"exc"' in line
+    assert "ERROR" in line
+    assert "exc=" in line
     assert "ValueError" in line
 
 
@@ -48,7 +77,12 @@ def test_setup_logging_creates_file_in_tmp(tmp_path, base_config):
         log = logging.getLogger("radio.test")
         log.info("hello", extra={"item_id": 1})
         text = (tmp_path / "test.log").read_text()
-        assert '"event": "hello"' in text
+        # file is plain text, not JSONL, with key=value extras.
+        # (setup_logging also logs its own logging.ready line, so the file
+        # may hold more than one record — but every line is one record.)
+        assert "hello" in text
+        assert "item_id=1" in text
+        assert all("\n" not in ln for ln in text.splitlines())
     finally:
         # restore handlers so later tests are unaffected
         root = logging.getLogger()

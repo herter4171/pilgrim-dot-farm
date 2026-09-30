@@ -171,7 +171,12 @@ class Audio(BaseModel):
 
 
 class Logging(BaseModel):
-    """JSON-lines logging to stdout + a rotating file (RADIO.md §12, OVERHAUL 1.1)."""
+    """Human-readable logging to stdout + a rotating file (RADIO.md §12).
+
+    Each record is one greppable line: ``<ts> <LEVEL> <logger> <message>
+    key=value ...``. Color is added only on the console when writing to a
+    terminal (or no NO_COLOR override); the file is always plain text.
+    OVERHAUL 1.1 (was JSON-lines)."""
     level: str = "INFO"
     dir: str = "logs"
     file: str = "station.log"

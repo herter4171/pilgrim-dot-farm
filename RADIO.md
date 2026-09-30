@@ -481,6 +481,11 @@ logging:
   file: station.log
   max_bytes: 10485760    # rotate at 10 MB
   backups: 5
+  # Format: one greppable line per record, NOT JSONL:
+  #   2026-09-30T23:33:21.616Z INFO radio.scheduler  program.commit seq=533 item_id=60
+  # The message is a short dotted event name; extra fields render as
+  # sorted key=value pairs. ANSI color is added only on the console when
+  # writing to a TTY (or no NO_COLOR override); the file is always plain.
 
 library:
   soft_cap_gb: 100          # past this, producer slows song generation and recycling share rises
