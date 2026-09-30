@@ -6,12 +6,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
 
 log = logging.getLogger("radio.seed")
 
-from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_config  # noqa: E402
+from pilgrim.config import (  # noqa: E402
+    RNG,
+    ROOT,
+    Clock,
+    Config,
+    ensure_dirs,
+    load_api_key,
+    load_config,
+)
 from pilgrim.logging_setup import setup_logging  # noqa: E402
 from pilgrim.pipelines.llm import LLM  # noqa: E402
 from pilgrim.pipelines.news import NewsPipeline  # noqa: E402
@@ -84,9 +91,9 @@ async def seed(cfg: Config, api_key: str) -> int:
 def main() -> int:
     cfg = load_config()
     setup_logging(cfg)
-    api_key = os.environ.get("LITELLM_TOKEN", "")
+    api_key = load_api_key()
     if not api_key:
-        print("LITELLM_TOKEN not set in environment", file=sys.stderr)
+        print("LITELLM_TOKEN not set in environment or .env", file=sys.stderr)
         return 1
     n = asyncio.run(seed(cfg, api_key))
     print(f"seed complete: {n} new items in inventory")

@@ -106,6 +106,8 @@ class LLM:
             "max_tokens": max_tokens,
             "temperature": 0.8,
         }
+        if not self.api_key:
+            raise LLMError("no LiteLLM token (set LITELLM_TOKEN or add it to .env)")
         t0 = time.monotonic()
         resp = await self._client.post(
             url, headers={"Authorization": f"Bearer {self.api_key}"}, json=payload)

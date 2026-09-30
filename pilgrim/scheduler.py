@@ -202,7 +202,7 @@ class Scheduler:
             self.store.mark_request_aired(e["request_id"])
             log.info("request.aired", extra={
                 "request_id": e["request_id"], "item_id": item_id, "seq": seq})
-        log.info("program.commit", extra={
+        log.debug("program.commit", extra={
             "seq": seq, "item_id": item_id, "item_type": e["type"],
             "duration_s": e["duration_s"], "coverage_s": round(self.coverage(), 1)})
 

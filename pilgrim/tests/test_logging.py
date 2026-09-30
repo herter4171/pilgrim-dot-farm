@@ -73,10 +73,12 @@ def test_scheduler_commit_logs_program_commit(cfg, tmp_env, caplog):
     seed_pool(store, cfg, n_song=10, n_liner=10, n_com=10, n_dj=5)
     clock = SimClock()
     sched = Scheduler(cfg, store, RandomSelector(RNG(1), cfg), clock, RNG(1))
-    with caplog.at_level(logging.INFO, logger="radio.scheduler"):
+    with caplog.at_level(logging.DEBUG, logger="radio.scheduler"):
         sched.commit_lookahead()
     commits = [r for r in caplog.records if r.getMessage() == "program.commit"]
     assert commits, "expected at least one program.commit record"
+    # per-item commits are DEBUG so the default INFO log isn't flooded
+    assert all(r.levelno == logging.DEBUG for r in commits)
     assert getattr(commits[0], "seq", None) is not None
     assert getattr(commits[0], "item_id", None) is not None
 

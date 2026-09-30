@@ -1,6 +1,7 @@
 """Configuration loading, Clock and RNG abstractions (RADIO.md §12, AGENTS §4)."""
 from __future__ import annotations
 
+import os
 import random
 import time
 from pathlib import Path
@@ -217,6 +218,27 @@ def load_config(path: Path | None = None) -> Config:
     path = path or (ROOT / "config.yaml")
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
     return Config(**raw)
+
+
+def load_api_key(env_file: Path | None = None) -> str:
+    """LiteLLM bearer token: $LITELLM_TOKEN, else LITELLM_TOKEN= in the repo-root .env.
+
+    `make run` injects the variable, but `python -m pilgrim.server` does not, so
+    read .env as a fallback rather than sending an empty `Bearer ` header.
+    """
+    token = os.environ.get("LITELLM_TOKEN", "").strip()
+    if token:
+        return token
+    env_file = env_file or (ROOT.parent / ".env")
+    try:
+        lines = env_file.read_text().splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        key, sep, value = line.strip().removeprefix("export ").partition("=")
+        if sep and key.strip() == "LITELLM_TOKEN":
+            return value.strip().strip("'\"")
+    return ""
 
 
 def ensure_dirs(cfg: Config) -> None:

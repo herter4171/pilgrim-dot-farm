@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
 import time
 from collections import deque
 
@@ -20,7 +19,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_config
+from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_api_key, load_config
 from pilgrim.logging_setup import setup_logging
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.moderation import Moderation
@@ -40,6 +39,7 @@ class Station:
     def __init__(self, cfg: Config, api_key: str) -> None:
         self.cfg = cfg
         self.api_key = api_key
+        self._auth = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         ensure_dirs(cfg)
         self.media_dir = ROOT / cfg.library.dir
         self.db = Store(ROOT / cfg.library.db)
@@ -70,8 +70,7 @@ class Station:
         st = {"litellm": False, "kokoro": False, "mlx": False, "searxng": False}
         try:
             r = await self._http.get(
-                self.cfg.hosts.litellm.rstrip("/") + "/models",
-                headers={"Authorization": f"Bearer {self.api_key}"})
+                self.cfg.hosts.litellm.rstrip("/") + "/models", headers=self._auth)
             st["litellm"] = ok(r.status_code)
         except Exception:
             st["litellm"] = False
@@ -86,7 +85,8 @@ class Station:
         except Exception:
             st["mlx"] = False
         try:
-            r = await self._http.get(self.cfg.hosts.searxng.rstrip("/") + "/health")
+            r = await self._http.get(self.cfg.hosts.searxng.rstrip("/") + "/health",
+                                     headers=self._auth)
             st["searxng"] = ok(r.status_code)
         except Exception:
             st["searxng"] = False
@@ -170,7 +170,10 @@ class RequestIn(BaseModel):
 def create_app(cfg: Config | None = None) -> FastAPI:
     cfg = cfg or load_config()
     setup_logging(cfg)
-    api_key = os.environ.get("LITELLM_TOKEN", "")
+    api_key = load_api_key()
+    if not api_key:
+        logging.getLogger("radio.server").warning(
+            "LITELLM_TOKEN not set (env or .env); LLM and MCP calls will fail")
     station = Station(cfg, api_key)
     app = FastAPI(title="Pilgrim Dot Farm Radio", version="0.2.0")
     app.state.station = station
