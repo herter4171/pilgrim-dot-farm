@@ -265,3 +265,23 @@ def test_no_song_after_song_even_with_request_ready(cfg, tmp_env):
     assert nxt != "song"
     # the ready request was not aired, so it stays ready for the next opening
     assert store.get_request(req["id"])["status"] == "ready"
+
+
+def test_single_song_not_looped(cfg, tmp_env):
+    """One song in stock: it may not recur inside the spacing floor."""
+    _, store, _ = tmp_env
+    genres = list(cfg.songs.genres.keys())
+    make_item(cfg, store, "song", 60.0, genre=genres[0])
+    for i in range(15):
+        make_item(cfg, store, "liner", 3 + i % 5)
+    for _ in range(20):
+        make_item(cfg, store, "commercial", 25.0)
+    floor = min(cfg.playout.song_min_spacing_s)
+    prog = run_program(cfg, store, seed=4, hours=2)
+    t, starts = 0.0, []
+    for _seq, typ, dur, _g, _iid in prog:
+        if typ == "song":
+            starts.append(t)
+        t += dur
+    assert len(starts) >= 2
+    assert all(b - a >= floor for a, b in zip(starts, starts[1:], strict=False))

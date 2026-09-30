@@ -96,7 +96,9 @@ class Scheduler:
             "liner": self.store.count_usable_of_type("liner"),
         }
         st.available = {
-            "song": st.inventory_counts["song"] > 0,
+            # a song is only drawable if one clears the spacing floor, so a thin
+            # pool never loops the same track back to back (§5.2)
+            "song": bool(self._eligible_songs()) or bool(self.store.ready_request_songs()),
             "dj_talk": st.inventory_counts["dj_talk"] > 0,
             "commercial_break": st.inventory_counts["commercial"] > 0,
             "liner": st.inventory_counts["liner"] > 0,
@@ -161,7 +163,7 @@ class Scheduler:
         cfg = self.cfg.playout
         lookahead = cfg.committed_lookahead_s
         guard = 0
-        while self.coverage() < lookahead and guard < 20:
+        while self.coverage() < lookahead and guard < 100:
             guard += 1
             st = self.build_state()
             try:
@@ -264,7 +266,7 @@ class Scheduler:
                     if e["type"] == "song":
                         e["request_id"] = req["id"]
                 return entries
-        pool = [i for i in self.store.list_items("song") if not i["emergency"]]
+        pool = self._eligible_songs()
         if not pool:
             return []
         now = self._air_clock  # monotonic air-clock: where this song will start
@@ -286,9 +288,19 @@ class Scheduler:
                 i for i in recycled
                 if now - self._last_song_air.get(i["id"], -1e9) >= min_gap
             ]
-            cand = min(spaced or recycled, key=key)  # relax gap only if forced
+            cand = min(spaced or recycled, key=key)  # relax toward the floor only
         self._last_song_air[cand["id"]] = now
         return self._glue_intro(cand["id"], cand["duration_s"])
+
+    def _eligible_songs(self) -> list[dict]:
+        """Fresh songs, plus recycled songs last aired at least the smallest
+        song_min_spacing_s ago (the relaxation floor, §5.2). Below that a song
+        is not airable; the slot goes to a commercial, DJ talk, news or liner."""
+        floor = float(min(self.cfg.playout.song_min_spacing_s))
+        now = self._air_clock
+        return [i for i in self.store.list_items("song")
+                if not i["emergency"] and (
+                    i["fresh"] or now - self._last_song_air.get(i["id"], -1e9) >= floor)]
 
     def _glue_intro(self, song_id: int, song_dur: float) -> list[dict]:
         """If this song has an unaired intro, materialize [intro, song] with the
