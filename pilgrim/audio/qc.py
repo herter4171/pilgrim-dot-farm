@@ -50,7 +50,10 @@ def check_internal_dropout(x: np.ndarray, sr: int, max_gap_s: float,
     amp = np.abs(x.astype(np.float64))
     if amp.ndim > 1:
         amp = amp.max(axis=-1)  # multi-channel (e.g. stereo songs): quiet only if every channel is
-    threshold = 10 ** ((silence_db + 20) / 20.0)  # dropout = much quieter than ambient
+    # dropout = much quieter than the silence floor (silence_db - 20, e.g. -70
+    # dBFS). It used to be silence_db + 20 (-30 dBFS), which flagged ordinary
+    # speech pauses and quiet song passages as dropouts.
+    threshold = 10 ** ((silence_db - 20) / 20.0)
     low = (amp < threshold).astype(np.int8)
     # longest run of consecutive low samples, vectorized (a Python-level per-sample
     # loop here previously raised on multi-channel audio, since `if v:` on a

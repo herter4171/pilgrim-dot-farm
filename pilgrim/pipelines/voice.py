@@ -134,15 +134,29 @@ class KokoroClient:
             wavs.append(r.content)
         if len(wavs) == 1:
             return wavs[0]
-        # concatenate at the (single) sample rate
+        # Trim each chunk's silent edges and join with one fixed pause, so a
+        # sentence boundary never stacks Kokoro's lead-in + tail silence into
+        # something QC reads as a dropout.
         pieces: list[np.ndarray] = []
         sr = 0
+        floor = 10 ** (self.cfg.audio.silence_db / 20.0)
         for w in wavs:
             d, s = sf.read(io.BytesIO(w))
-            pieces.append(np.asarray(d, dtype=np.float32))
+            x = np.asarray(d, dtype=np.float32)
             sr = int(s)
+            loud = np.flatnonzero(np.abs(x if x.ndim == 1 else x.max(axis=-1)) >= floor)
+            if loud.size:
+                x = x[loud[0]: loud[-1] + 1]
+            pieces.append(x)
+        gap = np.zeros((int(sr * self.cfg.audio.tts_join_gap_ms / 1000),)
+                       + pieces[0].shape[1:], dtype=np.float32)
+        joined: list[np.ndarray] = []
+        for i, p in enumerate(pieces):
+            if i:
+                joined.append(gap)
+            joined.append(p)
         buf = io.BytesIO()
-        sf.write(buf, np.concatenate(pieces), sr, format="WAV")
+        sf.write(buf, np.concatenate(joined), sr, format="WAV")
         return buf.getvalue()
 
 

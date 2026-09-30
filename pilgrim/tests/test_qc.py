@@ -104,3 +104,11 @@ def test_short_song_rejected_on_duration():
     v = grade_audio(x, SR, duration_s=10.0, min_dur=20.0, max_dur=600, kind="song")
     assert not v.ok
     assert "duration" in " ".join(v.reasons)
+
+
+def test_quiet_pause_is_not_a_dropout():
+    """A 1.5 s pause at -45 dBFS (breath/room tone, a soft song passage) is
+    quiet, not a dropout; only near-digital silence below silence_db-20 is."""
+    x = _tone(5.0)
+    x[int(SR * 1.0): int(SR * 2.5)] = 10 ** (-45 / 20)
+    assert not check_internal_dropout(x, SR, max_gap_s=1.0, silence_db=-50)

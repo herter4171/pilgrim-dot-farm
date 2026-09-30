@@ -134,10 +134,10 @@ class Inventory(BaseModel):
 
 
 class Songs(BaseModel):
-    # No duration target — the music model decides song length (OVERHAUL 3.1).
+    # max_duration_s is sent to mlx-serve as duration_s (the model's ceiling).
     genres: dict[str, float] = Field(default_factory=dict)
     min_duration_s: float = 20.0  # sanity floor (OVERHAUL 3.2)
-    max_duration_s: float = 360.0  # longest song the music model may produce
+    max_duration_s: float = 360.0  # sent as duration_s; also the song QC ceiling
     abrupt_fade_s: float = 2.5  # fade-out applied to songs with hard endings (3.2)
 
 
@@ -162,6 +162,7 @@ class Audio(BaseModel):
     true_peak_db: float = -1.0
     lra: float = 7.0
     edge_pad_ms: int = 150
+    tts_join_gap_ms: int = 250  # pause between Kokoro chunks after edge trim
     delivery: str = "flac"
     silence_db: int = -50
     max_words_per_s: float = 3.6  # speech-rate QC ceiling (truncation smell)

@@ -69,7 +69,9 @@ class SongPipeline:
         If `brief` carries a `seed`, it is forwarded to the backend so the exact
         same prompt+lyrics+seed reproduces the same audio."""
         url = self.cfg.hosts.mlx_serve.rstrip("/") + "/v1/audio/music-generations"
-        payload = {"prompt": brief["style_prompt"]}
+        # ask for the ceiling; the model may end sooner (songs.max_duration_s)
+        payload = {"prompt": brief["style_prompt"],
+                   "duration_s": float(self.cfg.songs.max_duration_s)}
         if brief.get("lyrics"):
             payload["lyrics"] = brief["lyrics"]
         else:

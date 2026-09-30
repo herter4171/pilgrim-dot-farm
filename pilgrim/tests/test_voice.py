@@ -99,5 +99,35 @@ def test_synth_long_text_sends_multiple_requests_and_concatenates(cfg):
     assert all(len(t) <= 200 for t in request_texts)
     x, sr = sf.read(io.BytesIO(wav))
     n = len(x) / sr
-    assert abs(n - 0.5 * len(request_texts)) < 0.01  # chunks concatenated
+    gap = cfg.audio.tts_join_gap_ms / 1000
+    # tone chunks have no silent edges: n chunks + (n-1) fixed pauses
+    assert abs(n - (0.5 * len(request_texts) + gap * (len(request_texts) - 1))) < 0.01
+    asyncio.run(kc.close())
+
+
+def test_synth_trims_chunk_edges_so_joins_are_not_dropouts(cfg):
+    """Kokoro pads each chunk with silence; joined raw, two tails + a lead-in
+    exceeded QC's 1 s dropout limit. After trimming, a join is one fixed gap."""
+    import httpx
+    import numpy as np
+    import soundfile as sf
+    from pilgrim.audio.qc import check_internal_dropout
+    from pilgrim.pipelines.voice import KokoroClient
+
+    def padded_tone():
+        sr = 24000
+        t = np.arange(int(sr * 1.0)) / sr
+        tone = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+        pad = np.zeros(int(sr * 0.6), dtype=np.float32)
+        buf = io.BytesIO()
+        sf.write(buf, np.concatenate([pad, tone, pad]), sr, format="WAV")
+        return buf.getvalue()
+
+    kc = KokoroClient(cfg)
+    kc._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, content=padded_tone())),
+        timeout=10)
+    wav = asyncio.run(kc.synth("word. " * 120, "am_liam"))
+    x, sr = sf.read(io.BytesIO(wav))
+    assert not check_internal_dropout(x, sr, max_gap_s=1.0, silence_db=cfg.audio.silence_db)
     asyncio.run(kc.close())
