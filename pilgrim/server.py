@@ -106,6 +106,19 @@ class Station:
             "news": {"have": have["news"], "target": 1},
         }
 
+    def rotation(self) -> dict[str, int]:
+        """What can air right now (the listener-facing numbers): every
+        non-retired song/commercial/liner recycles; DJ talk and news only while
+        unaired and unexpired. Unlike `inventory`, songs count aired ones too."""
+        have = self.producer.counts()
+        return {
+            "song": self.db.count_usable_of_type("song"),
+            "commercial": have["commercial"],
+            "liner": have["liner"],
+            "dj_talk": have["dj_talk"],
+            "news": have["news"],
+        }
+
     @property
     def on_air(self) -> bool:
         return self.scheduler.coverage() > 0
@@ -118,6 +131,7 @@ class Station:
             "on_air": self.on_air,
             "backends": backends,
             "inventory": inv,
+            "rotation": self.rotation(),
             "committed_coverage_s": round(self.scheduler.coverage(), 1),
             "committed_count": len(self.scheduler._items),
             "song_realtime": round(self.songs.generation_rate, 2),

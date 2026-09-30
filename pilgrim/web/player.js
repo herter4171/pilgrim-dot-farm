@@ -70,9 +70,11 @@
         setStatus(""); return h;
       }
       offairEl.classList.add("hidden"); btn.disabled = false;
-      const inv = h.inventory || {};
-      setStatus(`songs ${inv.song?.have||0} · liners ${inv.liner?.have||0} · ` +
-                `dj ${inv.dj_talk?.have||0} · cover ${Math.round(h.committed_coverage_s)}s`);
+      // rotation = what can air now; inventory.song.have = unaired new songs
+      const rot = h.rotation || {}, inv = h.inventory || {};
+      setStatus(`songs ${rot.song||0} (${inv.song?.have||0} new) · ` +
+                `spots ${rot.commercial||0} · liners ${rot.liner||0} · ` +
+                `dj ${rot.dj_talk||0} · news ${rot.news||0}`);
       return h;
     } catch (e) {
       if (playing) return null;

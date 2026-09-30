@@ -104,3 +104,21 @@ async def test_health_inventory_matches_producer_counts(tmp_env, monkeypatch):
     assert inv["commercial"]["have"] == 1
     assert inv["dj_talk"]["have"] == 0  # aired DJ talk is spent
     assert {k: v["have"] for k, v in inv.items()} == station.producer.counts()
+
+
+async def test_health_rotation_counts_aired_songs(tmp_env, monkeypatch):
+    """The listener status shows songs in rotation, not just unaired ones."""
+    cfg, store, _ = tmp_env
+    store.add_item(type_="song", media_path="a.flac", duration_s=120, fresh=False)
+    store.add_item(type_="song", media_path="b.flac", duration_s=120, fresh=True)
+    gone = store.add_item(type_="song", media_path="c.flac", duration_s=120, fresh=False)
+    store.retire_item(gone, "test")
+    station = create_app(cfg).state.station
+
+    async def backends_up():
+        return dict.fromkeys(("litellm", "kokoro", "mlx", "searxng"), True)
+
+    monkeypatch.setattr(station, "backend_status", backends_up)
+    h = await station.health()
+    assert h["rotation"]["song"] == 2
+    assert h["inventory"]["song"]["have"] == 1

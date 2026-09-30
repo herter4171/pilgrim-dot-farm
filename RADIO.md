@@ -380,7 +380,7 @@ voice, measured at setup.
 | GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, type, duration_s}` |
 | POST | `/api/station/heartbeat` | `{seq, media_id, position, type}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events |
 | GET | `/api/media/<id>` | FLAC file |
-| GET | `/api/health` | Backend status, inventory levels vs. targets, song generation rate |
+| GET | `/api/health` | Backend status, inventory levels vs. targets (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
 | GET | `/api/requests` | Request board: `{queue: [{status}], recent: [{text, song_title, song_artist}], cap}` — queue = queued+producing+ready, oldest first; recent = last 5 aired (OVERHAUL 4.8) |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
@@ -430,6 +430,7 @@ inventory:
 
 songs:
   min_duration_s: 20         # sanity floor; no duration is requested from the model
+  max_duration_s: 360        # longest song accepted; generation budget sized to it
   abrupt_fade_s: 2.5         # fade-out applied to songs with hard endings
   genres: {synthwave: 1, bluegrass: 1, doom metal: 1, bossa nova: 1, polka: 1, ...}
 

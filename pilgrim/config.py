@@ -137,6 +137,7 @@ class Songs(BaseModel):
     # No duration target — the music model decides song length (OVERHAUL 3.1).
     genres: dict[str, float] = Field(default_factory=dict)
     min_duration_s: float = 20.0  # sanity floor (OVERHAUL 3.2)
+    max_duration_s: float = 360.0  # longest song the music model may produce
     abrupt_fade_s: float = 2.5  # fade-out applied to songs with hard endings (3.2)
 
 

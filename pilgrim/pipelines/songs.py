@@ -97,7 +97,8 @@ class SongPipeline:
             duration = float(len(x)) / sr
             self.generation_s[-1] = (duration, gen["wall_s"])
             floor = float(self.cfg.songs.min_duration_s)
-            verdict = grade_audio(x, sr, duration_s=duration, min_dur=floor, max_dur=600,
+            verdict = grade_audio(x, sr, duration_s=duration, min_dur=floor,
+                                  max_dur=float(self.cfg.songs.max_duration_s),
                                   kind="song", max_gap_s=2.0, silence_db=self.cfg.audio.silence_db)
             if not verdict.ok:
                 gen["path"].unlink(missing_ok=True)
