@@ -163,17 +163,21 @@ class Scheduler:
         cfg = self.cfg.playout
         lookahead = cfg.committed_lookahead_s
         guard = 0
+        # types that came up empty this tick (e.g. every liner is inside its
+        # no-repeat window): re-draw without them instead of retrying them
+        blocked: set[str] = set()
         while self.coverage() < lookahead and guard < 100:
             guard += 1
             st = self.build_state()
+            for t in blocked:
+                st.available[t] = False
             try:
                 type_ = self.selector.choose_next(st)
             except ValueError:
-                break  # no inventory at all; producer will refill
+                break  # nothing airable right now; producer will refill
             entries = self._materialize(type_)
             if not entries:
-                # no usable inventory for that type; mark unavailable and re-draw
-                st.available[type_] = False
+                blocked.add(type_)
                 continue
             for e in entries:
                 self._append(e)
@@ -184,6 +188,13 @@ class Scheduler:
             log.warning("program.low_coverage", extra={
                 "coverage_s": round(cov, 1),
                 "inventory": self.build_state().inventory_counts})
+
+    def _may_repeat(self) -> bool:
+        """A spacing-breaking repeat (a liner inside its 10-item window, a spot
+        inside its 30-min window) only bridges imminent dead air (§5.2, §5.4).
+        Padding the whole lookahead with repeats would queue ten minutes of the
+        same two liners ahead of anything the producer makes next."""
+        return self.coverage() < self.cfg.playout.filler_horizon_s
 
     def coverage(self) -> float:
         pos = self.position()
@@ -336,7 +347,10 @@ class Scheduler:
             return []
         # don't replay a liner that aired in the last few committed items
         recent = {r["item_id"] for r in self._items[-10:]}
-        it = self.rng.choice([i for i in items if i["id"] not in recent] or items)
+        unspent = [i for i in items if i["id"] not in recent]
+        if not unspent and not self._may_repeat():
+            return []
+        it = self.rng.choice(unspent or items)
         return [{"item_id": it["id"], "type": it["type"], "duration_s": it["duration_s"],
                  "consume": True}]
 
@@ -372,10 +386,12 @@ class Scheduler:
         now = self._air_clock
         min_gap = float(self.cfg.playout.commercial_min_spacing_s)
         # prefer spots aired longer ago than the min spacing; only reuse a
-        # recently-aired spot when the pool is too small to honor the window.
+        # recently-aired spot to bridge imminent dead air (_may_repeat).
         spaced = [i for i in items
                   if now - self._last_comm_air.get(i["id"], -1e9) >= min_gap]
-        pool = spaced if len(spaced) >= n else items
+        pool = spaced if len(spaced) >= n or not self._may_repeat() else items
+        if not pool:
+            return []
         # sample WITHOUT replacement: never the same spot twice in one break
         chosen = self.rng.sample(pool, k=min(n, len(pool)))
         out = []

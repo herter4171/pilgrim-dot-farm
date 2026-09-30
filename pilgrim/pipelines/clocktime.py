@@ -15,6 +15,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from pilgrim.config import Config
+from pilgrim.logging_setup import err_text
 from pilgrim.pipelines.mcp import MCPSession
 
 log = logging.getLogger("radio.time")
@@ -53,7 +54,7 @@ async def current_local_time(
         data = _json.loads(text)
         return datetime.fromisoformat(data["datetime"])
     except Exception as e:  # noqa: BLE001 - never let the MCP silence the DJ
-        log.warning("time.fallback", extra={"error": str(e)})
+        log.warning("time.fallback", extra={"error": err_text(e)})
         return datetime.now(ZoneInfo(cfg.station.timezone))
 
 

@@ -112,6 +112,7 @@ class Voices(BaseModel):
 
 class Playout(BaseModel):
     committed_lookahead_s: int = 600
+    filler_horizon_s: int = 60  # spacing-breaking repeats only below this coverage
     window_trim_keep_s: int = 120
     weights: dict[str, float] = Field(
         default_factory=lambda: {"song": .55, "dj_talk": .12,

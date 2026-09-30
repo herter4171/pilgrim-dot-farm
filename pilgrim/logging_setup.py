@@ -17,6 +17,13 @@ from pilgrim.config import ROOT, Config
 _RESERVED = set(vars(logging.makeLogRecord({}))) | {"message", "asctime"}
 
 
+def err_text(e: BaseException) -> str:
+    """Exception text for logs. httpx timeouts and friends stringify to ""
+    (the blank `error` fields at startup), so always lead with the type."""
+    msg = str(e)
+    return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+
+
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         out = {

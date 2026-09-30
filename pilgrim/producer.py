@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pilgrim.config import RNG, Clock, Config
+from pilgrim.logging_setup import err_text
 from pilgrim.pipelines.clocktime import current_local_time, spoken_time
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.news import NewsPipeline
@@ -100,7 +101,7 @@ class Producer:
                 made += 1
                 usable += 1
             except Exception as e:
-                log.warning("liner production failed: %s", e)
+                log.warning("liner production failed: %s", err_text(e))
                 return  # back off; don't hammer a failing backend
 
     async def ensure_commercials(self) -> None:
@@ -118,7 +119,7 @@ class Producer:
                 self._store_voice(item, role)
                 log.info("produced commercial %.1fs", item["duration_s"])
             except Exception as e:
-                log.warning("commercial production failed: %s", e)
+                log.warning("commercial production failed: %s", err_text(e))
                 return
 
     async def ensure_dj(self) -> None:
@@ -156,7 +157,7 @@ class Producer:
                 self._store_voice(item, "dj_talk", evergreen=True, expires_at=expires)
                 log.info("produced dj_talk %.1fs", item["duration_s"])
             except Exception as e:
-                log.warning("dj talk production failed: %s", e)
+                log.warning("dj talk production failed: %s", err_text(e))
                 return
 
     def _recent_committed_songs(self, n: int) -> list[tuple[str, str, str]]:
@@ -194,7 +195,7 @@ class Producer:
             self._news_ok = bulletin
             log.info("produced news bulletin (gravity=%s)", bulletin["gravity"])
         except Exception as e:
-            log.warning("news production failed: %s", e)
+            log.warning("news production failed: %s", err_text(e))
 
     def _not_expired(self, item: dict) -> bool:
         exp = item.get("expires_at")
@@ -246,7 +247,7 @@ class Producer:
                     await asyncio.sleep(20.0)
                     continue
             except Exception as e:
-                log.warning("song production failed: %s", e)
+                log.warning("song production failed: %s", err_text(e))
                 await asyncio.sleep(15.0)
             await asyncio.sleep(2.0)
 
@@ -299,7 +300,7 @@ class Producer:
         except Exception as e:
             n = self.store.request_failed_attempt(req["id"])
             log.warning("request.failed", extra={
-                "request_id": req["id"], "attempt": n, "error": str(e)})
+                "request_id": req["id"], "attempt": n, "error": err_text(e)})
             raise
 
     async def _make_intro(self, item: dict, song_id: int | None,
@@ -326,7 +327,7 @@ class Producer:
                 fresh=True, meta=meta)
             return intro_id
         except Exception as e:
-            log.warning("intro.failed", extra={"error": str(e)})
+            log.warning("intro.failed", extra={"error": err_text(e)})
             return None
 
     def _recent_genres(self) -> list[str]:

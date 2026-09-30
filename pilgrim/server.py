@@ -327,7 +327,9 @@ def main() -> None:
     import uvicorn
     cfg = load_config()
     app = create_app(cfg)
-    uvicorn.run(app, host=cfg.station.host, port=cfg.station.port)
+    # log_config=None: uvicorn's access/error lines propagate to the root JSON
+    # logger, so they carry timestamps like everything else (AGENTS §5)
+    uvicorn.run(app, host=cfg.station.host, port=cfg.station.port, log_config=None)
 
 
 if __name__ == "__main__":

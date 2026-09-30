@@ -18,6 +18,7 @@ import soundfile as sf
 from pilgrim.audio import normalize
 from pilgrim.audio.qc import grade_audio
 from pilgrim.config import Config
+from pilgrim.logging_setup import err_text
 from pilgrim.pipelines.llm import LLM, LLMError
 
 log = logging.getLogger("radio.songs")
@@ -115,7 +116,7 @@ class SongPipeline:
         except Exception as e:
             log.warning("song.rejected", extra={
                 "title": brief.get("title"), "genre": brief.get("genre"),
-                "request_id": brief.get("request_id"), "error": str(e)})
+                "request_id": brief.get("request_id"), "error": err_text(e)})
             raise
         log.info("song.produced", extra={
             "title": brief.get("title"), "genre": brief.get("genre"),

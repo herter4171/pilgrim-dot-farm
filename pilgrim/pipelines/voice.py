@@ -14,6 +14,7 @@ import soundfile as sf
 from pilgrim.audio import normalize
 from pilgrim.audio.qc import grade_audio
 from pilgrim.config import Config
+from pilgrim.logging_setup import err_text
 from pilgrim.pipelines.llm import LLM, LLMError
 
 log = logging.getLogger("radio.voice")
@@ -258,12 +259,12 @@ class VoicePipeline:
         try:
             copy = await self.write_copy(role, target_s, context)
         except Exception as e:
-            log.warning("voice.rejected", extra={**base, "stage": "copy", "error": str(e)})
+            log.warning("voice.rejected", extra={**base, "stage": "copy", "error": err_text(e)})
             raise
         try:
             rendered = await self.render(copy, role, target_s)
         except Exception as e:
-            log.warning("voice.rejected", extra={**base, "stage": "render", "error": str(e)})
+            log.warning("voice.rejected", extra={**base, "stage": "render", "error": err_text(e)})
             raise
         item = {
             "type": role, "media_path": str(rendered["path"]), "duration_s": rendered["duration_s"],

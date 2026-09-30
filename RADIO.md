@@ -150,6 +150,10 @@ Constraints (applied before drawing):
   `dj_talk`, news) is ready, and the same liner isn't replayed within the last
   10 committed items. With no songs ready, the station fills with commercial
   breaks, DJ talk and news; liners stay bridges, not the program.
+  A liner or commercial may break its own spacing only to bridge imminent
+  dead air (committed coverage below `playout.filler_horizon_s`); the
+  lookahead is never padded with repeats, so fresh items reach air within
+  about that horizon instead of queuing behind minutes of the same liner.
 - **Listener-request songs jump the line** (OVERHAUL 4.7): when a ready
   request song exists and a song is allowed right now (the interjection rule
   above still holds), `song` is committed. Each song airs with its short
@@ -414,6 +418,7 @@ voices:
 
 playout:
   committed_lookahead_s: 600
+  filler_horizon_s: 60     # spacing-breaking liner/commercial repeats only below this coverage
   weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08}
   max_consecutive_non_song: 2
   news_min_spacing_s: 1200

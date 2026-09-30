@@ -19,7 +19,7 @@ from pilgrim.config import (  # noqa: E402
     load_api_key,
     load_config,
 )
-from pilgrim.logging_setup import setup_logging  # noqa: E402
+from pilgrim.logging_setup import err_text, setup_logging  # noqa: E402
 from pilgrim.pipelines.llm import LLM  # noqa: E402
 from pilgrim.pipelines.news import NewsPipeline  # noqa: E402
 from pilgrim.pipelines.songs import SongPipeline  # noqa: E402
@@ -80,7 +80,7 @@ async def seed(cfg: Config, api_key: str) -> int:
                 evergreen=True, fresh=True, meta=item.get("meta"))
             made += 1
         except Exception as e:
-            log.warning("seed song failed: %s", e)
+            log.warning("seed song failed: %s", err_text(e))
             break
     await llm.close()
     await kokoro.close()

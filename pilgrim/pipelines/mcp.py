@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 
 from pilgrim.config import Config
+from pilgrim.logging_setup import err_text
 
 log = logging.getLogger("radio.mcp")
 
@@ -153,7 +154,7 @@ async def searxng_search(cfg: Config, api_key: str, query: str,
                 out.append(str(item["text"]))
         return out
     except Exception as e:  # noqa: BLE001 - degraded, never fatal
-        log.warning("searxng MCP search failed: %s", e)
+        log.warning("searxng MCP search failed: %s", err_text(e))
         return []
     finally:
         await sess.close()

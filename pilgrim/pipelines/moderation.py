@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from pilgrim.config import Config
+from pilgrim.logging_setup import err_text
 from pilgrim.pipelines.llm import LLM
 
 log = logging.getLogger("radio.moderation")
@@ -51,9 +52,9 @@ class Moderation:
                     self.cfg.requests.moderation_model, prompt, user, max_tokens=max_tokens)
             except Exception as e:  # empty content / error: retry once, then fail closed
                 if attempts == 1:
-                    log.warning("moderation.retry", extra={"error": str(e)})
+                    log.warning("moderation.retry", extra={"error": err_text(e)})
                     continue
-                log.warning("moderation.failed", extra={"error": str(e)})
+                log.warning("moderation.failed", extra={"error": err_text(e)})
                 return (False, "couldn't reach the DJ's filter — rejected to be safe, try again")
             raw = obj.get("allowed")
             if isinstance(raw, bool):

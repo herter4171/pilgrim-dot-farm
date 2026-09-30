@@ -285,3 +285,25 @@ def test_single_song_not_looped(cfg, tmp_env):
         t += dur
     assert len(starts) >= 2
     assert all(b - a >= floor for a, b in zip(starts, starts[1:], strict=False))
+
+
+def test_thin_liner_pool_does_not_pad_the_lookahead(cfg, tmp_env):
+    """Only two short liners in stock (a fresh start): the scheduler bridges
+    dead air but never pads the 10-min lookahead with repeats, so a song made
+    moments later airs within the filler horizon, not after ~185 liners (§5.2)."""
+    _, store, _ = tmp_env
+    make_item(cfg, store, "liner", 3.2)
+    make_item(cfg, store, "liner", 3.9)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(1), cfg), clock, RNG(1))
+    horizon = cfg.playout.filler_horizon_s
+    for _ in range(30):
+        clock.advance(2)
+        sched.commit_lookahead()
+        assert 0 < sched.coverage() < horizon + 4.0  # bridged, never padded
+    song = make_item(cfg, store, "song", 120.0, genre="polka")
+    clock.advance(2)
+    sched.commit_lookahead()
+    starts = dict(zip([r["item_id"] for r in sched._items], sched._cum, strict=True))
+    assert song in starts
+    assert starts[song] - sched.position() < horizon + 4.0
