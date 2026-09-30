@@ -9,7 +9,11 @@ from pilgrim.selector import RandomSelector
 from pilgrim.store import Store
 
 
-def run_program(cfg, store, seed, hours=24, step=30):
+def run_program(cfg, store, seed, hours=24, step=30, min_coverage=None):
+    """min_coverage defaults to the full lookahead (a well-stocked pool); a
+    song-starved pool only bridges to filler_horizon_s by design (§5.2)."""
+    if min_coverage is None:
+        min_coverage = cfg.playout.committed_lookahead_s
     clock = SimClock()
     sched = Scheduler(cfg, store, RandomSelector(RNG(seed), cfg), clock, RNG(seed))
     seen = []  # (seq, type, duration, genre_or_None, item_id)
@@ -17,7 +21,7 @@ def run_program(cfg, store, seed, hours=24, step=30):
     for _ in range(int(hours * 3600) // step):
         clock.advance(step)
         sched.commit_lookahead()
-        assert sched.coverage() >= cfg.playout.committed_lookahead_s
+        assert sched.coverage() >= min_coverage
         for r in store.program_after(last_seq):
             it = store.get_item(r["item_id"])
             genre = (it or {}).get("genre")
@@ -277,7 +281,9 @@ def test_single_song_not_looped(cfg, tmp_env):
     for _ in range(20):
         make_item(cfg, store, "commercial", 25.0)
     floor = min(cfg.playout.song_min_spacing_s)
-    prog = run_program(cfg, store, seed=4, hours=2)
+    # one song can't fill 10 min ahead: droughts bridge, they don't pad (§5.2)
+    prog = run_program(cfg, store, seed=4, hours=2,
+                       min_coverage=cfg.playout.filler_horizon_s)
     t, starts = 0.0, []
     for _seq, typ, dur, _g, _iid in prog:
         if typ == "song":
@@ -307,3 +313,28 @@ def test_thin_liner_pool_does_not_pad_the_lookahead(cfg, tmp_env):
     starts = dict(zip([r["item_id"] for r in sched._items], sched._cum, strict=True))
     assert song in starts
     assert starts[song] - sched.position() < horizon + 4.0
+
+
+def test_new_song_airs_promptly_after_a_drought(cfg, tmp_env):
+    """Songs aired, none airable, 20 unaired spots in stock: the scheduler must
+    not commit a wall of spots. A song made mid-drought airs within the filler
+    horizon (the 22:48 incident: a new song queued behind ~10 min of spots)."""
+    _, store, _ = tmp_env
+    make_item(cfg, store, "song", 90.0, genre="polka")
+    for i in range(20):
+        make_item(cfg, store, "commercial", 20.0 + i % 5)
+    for i in range(4):
+        make_item(cfg, store, "liner", 4.0 + i)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(5), cfg), clock, RNG(5))
+    horizon = cfg.playout.filler_horizon_s
+    for _ in range(90):  # 3 min: the lone song airs, then the drought
+        clock.advance(2)
+        sched.commit_lookahead()
+    assert sched.coverage() < horizon + 45.0
+    song = make_item(cfg, store, "song", 120.0, genre="synthwave")
+    clock.advance(2)
+    sched.commit_lookahead()
+    starts = dict(zip([r["item_id"] for r in sched._items], sched._cum, strict=True))
+    assert song in starts
+    assert starts[song] - sched.position() < horizon + 45.0

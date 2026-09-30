@@ -175,6 +175,8 @@ class Scheduler:
                 type_ = self.selector.choose_next(st)
             except ValueError:
                 break  # nothing airable right now; producer will refill
+            if type_ != "song" and self._song_drought(st):
+                break  # hold the slot open for the next song (§5.2)
             entries = self._materialize(type_)
             if not entries:
                 blocked.add(type_)
@@ -188,6 +190,19 @@ class Scheduler:
             log.warning("program.low_coverage", extra={
                 "coverage_s": round(cov, 1),
                 "inventory": self.build_state().inventory_counts})
+
+    def _song_drought(self, st: PlayoutState) -> bool:
+        """New songs air as soon as they are made. A run of interjections past
+        max_consecutive_non_song means no song was airable, so only bridge dead
+        air (coverage below filler_horizon_s) instead of committing ten minutes
+        of spots a fresh song would have to wait behind (§5.2)."""
+        run = 0
+        for t in reversed(st.recent_types):
+            if t == "song":
+                break
+            run += 1
+        return (run >= self.cfg.playout.max_consecutive_non_song
+                and self.coverage() >= self.cfg.playout.filler_horizon_s)
 
     def _may_repeat(self) -> bool:
         """A spacing-breaking repeat (a liner inside its 10-item window, a spot

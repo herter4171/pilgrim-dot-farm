@@ -57,6 +57,9 @@ def _load_cfg() -> tuple[Config, Path]:
     tmp = Path(tempfile.mkdtemp(prefix="radio_e2e_"))
     base.library.dir = str(tmp / "library")
     base.library.db = str(tmp / "station.db")
+    # 2 s clips: scale the song spacing floors to match, so 30 songs behave like
+    # a stocked library, not a song drought (which only bridges ~60 s, §5.2)
+    base.playout.song_min_spacing_s = [30, 20, 10]
     ensure_dirs(base)
     return base, tmp
 

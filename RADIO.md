@@ -154,6 +154,11 @@ Constraints (applied before drawing):
   dead air (committed coverage below `playout.filler_horizon_s`); the
   lookahead is never padded with repeats, so fresh items reach air within
   about that horizon instead of queuing behind minutes of the same liner.
+- **New songs air as soon as they are made.** When no song is airable, the
+  scheduler commits interjections only up to `playout.filler_horizon_s` ahead
+  (enough to avoid dead air), never a full lookahead of spots or talk. A song
+  that lands mid-drought takes the next open slot, within about that horizon.
+  The ≥10 min committed lookahead (§5.3) holds only while songs are airable.
 - **Listener-request songs jump the line** (OVERHAUL 4.7): when a ready
   request song exists and a song is allowed right now (the interjection rule
   above still holds), `song` is committed. Each song airs with its short
@@ -166,7 +171,8 @@ Constraints (applied before drawing):
 - **Planned** items are chosen but may still need rendering (contextual items).
 - **Committed** items are fully rendered and visible to the client.
 - The scheduler keeps **≥10 min of committed audio** ahead of the client
-  playhead (from heartbeat) and plans a few items past that.
+  playhead (from heartbeat) and plans a few items past that, while songs are
+  airable (song droughts: see §5.2).
 - When a `dj_talk` is planned, the scheduler first fixes its neighbors, then
   requests the copy from `qwen38` with previous/next metadata, then renders via
   Kokoro. If it isn't rendered by the time it would enter the committed window,
@@ -418,7 +424,7 @@ voices:
 
 playout:
   committed_lookahead_s: 600
-  filler_horizon_s: 60     # spacing-breaking liner/commercial repeats only below this coverage
+  filler_horizon_s: 60     # song drought / spacing-breaking repeats: commit only this far ahead
   weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08}
   max_consecutive_non_song: 2
   news_min_spacing_s: 1200
