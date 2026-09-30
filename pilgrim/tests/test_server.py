@@ -83,3 +83,24 @@ def test_heartbeat_records_media_id_not_seq(tmp_env):
     row = app.state.station.db.recent_airplay(1)[0]
     assert row["item_id"] == 42
     assert row["seq"] == 5
+
+
+async def test_health_inventory_matches_producer_counts(tmp_env, monkeypatch):
+    """Aired liners/commercials recycle, so the site must count them (the old
+    fresh-only count showed 'liners 0' while 15 were on air)."""
+    cfg, store, _ = tmp_env
+    for _ in range(3):
+        store.add_item(type_="liner", media_path="l.flac", duration_s=5, fresh=False)
+    store.add_item(type_="commercial", media_path="c.flac", duration_s=25, fresh=False)
+    store.add_item(type_="dj_talk", media_path="d.flac", duration_s=15, fresh=False)
+    station = create_app(cfg).state.station
+
+    async def backends_up():
+        return dict.fromkeys(("litellm", "kokoro", "mlx", "searxng"), True)
+
+    monkeypatch.setattr(station, "backend_status", backends_up)
+    inv = (await station.health())["inventory"]
+    assert inv["liner"]["have"] == 3
+    assert inv["commercial"]["have"] == 1
+    assert inv["dj_talk"]["have"] == 0  # aired DJ talk is spent
+    assert {k: v["have"] for k, v in inv.items()} == station.producer.counts()

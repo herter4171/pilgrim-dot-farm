@@ -50,13 +50,32 @@ class Producer:
         # Evergreen types (song/commercial/liner) recycle: keep a usable
         # low-water stock. dj_talk is contextual and NEVER recycled (AGENTS rule
         # 10), so it only counts unaired clips (OVERHAUL 5.1). News is expiring.
+        # This is THE inventory count: /api/health reports it and the ensure_*
+        # loops refill against it, so the site and the producer never disagree.
         return {
             "song": self.store.count_fresh_of_type("song"),
             "commercial": self.store.count_usable_of_type("commercial"),
             "liner": self.store.count_usable_of_type("liner"),
-            "dj_talk": self.store.count_fresh_of_type("dj_talk"),
-            "news": self.store.count_fresh_of_type("news"),
+            "dj_talk": self._count_fresh_unexpired("dj_talk"),
+            "news": self._count_fresh_unexpired("news"),
         }
+
+    def _count_fresh_unexpired(self, type_: str) -> int:
+        """Unaired clips the scheduler can still air: expired time-mention DJ
+        clips (5.3) and stale bulletins are not stock."""
+        now = self.clock.wall()
+        n = 0
+        for it in self.store.list_items(type_):
+            if not it["fresh"] or it["emergency"]:
+                continue
+            exp = it.get("expires_at")
+            try:
+                if exp and datetime.fromisoformat(exp).timestamp() <= now:
+                    continue
+            except ValueError:
+                pass
+            n += 1
+        return n
 
     # ------------------------------------------------------------- producers
     async def ensure_liners(self) -> None:
@@ -105,7 +124,7 @@ class Producer:
     async def ensure_dj(self) -> None:
         # dj_talk is contextual: only unaired clips are stock (AGENTS rule 10,
         # OVERHAUL 5.1) — aired DJ clips are gone, so we keep topping up.
-        have = self.store.count_fresh_of_type("dj_talk")
+        have = self._count_fresh_unexpired("dj_talk")
         need = self.cfg.inventory.dj_talk_min - have
         log.debug("producer.need", extra={
             "item_type": "dj_talk", "have": have,

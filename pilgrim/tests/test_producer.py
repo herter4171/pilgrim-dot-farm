@@ -314,3 +314,21 @@ def test_ensure_dj_context_has_recent_songs_not_next(cfg, tmp_env):
     assert "Barn Cat Boogie" in ctx and "Pickle Parade" in ctx
     assert "Songs that played recently" in ctx
     assert "next" not in ctx.lower() and "Next song" not in ctx
+
+
+def test_counts_skip_expired_dj_and_news(cfg, tmp_env):
+    """Expired time-mention DJ clips and stale bulletins can't air, so they
+    aren't stock — and ensure_dj refills past them (5.3)."""
+    from datetime import UTC, datetime
+    _, store, _ = tmp_env
+    voice = FakeVoice()
+    prod = make_producer(cfg, store, voice)
+    wall = prod.clock.wall()
+    past = datetime.fromtimestamp(wall - 60, UTC).isoformat()
+    future = datetime.fromtimestamp(wall + 600, UTC).isoformat()
+    make_item(cfg, store, "dj_talk", 16.0, fresh=True, expires_at=past)
+    make_item(cfg, store, "dj_talk", 16.0, fresh=True, expires_at=future)
+    make_item(cfg, store, "news", 18.0, fresh=True, expires_at=past)
+    c = prod.counts()
+    assert c["dj_talk"] == 1
+    assert c["news"] == 0

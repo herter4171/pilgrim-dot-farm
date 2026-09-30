@@ -93,16 +93,17 @@ class Station:
         return st
 
     async def inventory_levels(self) -> dict:
-        def c(t: str) -> int:
-            return self.db.count_fresh_of_type(t)
+        # same counts the producer refills against (songs/dj/news: unaired and
+        # unexpired; commercials/liners: everything usable, they recycle)
+        have = self.producer.counts()
         inv = self.cfg.inventory
         return {
-            "song": {"have": c("song"), "target": inv.fresh_songs_ready},
-            "commercial": {"have": c("commercial"), "target": inv.commercials_min},
-            "liner": {"have": c("liner"),
+            "song": {"have": have["song"], "target": inv.fresh_songs_ready},
+            "commercial": {"have": have["commercial"], "target": inv.commercials_min},
+            "liner": {"have": have["liner"],
                       "target": inv.liners_per_bucket * len(inv.liner_buckets_s)},
-            "dj_talk": {"have": c("dj_talk"), "target": inv.dj_talk_min},
-            "news": {"have": c("news"), "target": 1},
+            "dj_talk": {"have": have["dj_talk"], "target": inv.dj_talk_min},
+            "news": {"have": have["news"], "target": 1},
         }
 
     @property
