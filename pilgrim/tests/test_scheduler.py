@@ -41,7 +41,9 @@ def test_24h_contiguous_and_long(cfg, tmp_env):
         assert t >= prev_end - 1e-6
         prev_end = t + dur
         t += dur
-    assert t >= 24 * 3600 + cfg.playout.committed_lookahead_s
+    # program time starts at the first commit (one 30 s step in), so the
+    # committed total covers the remaining sim time plus the lookahead
+    assert t >= 24 * 3600 - 30 + cfg.playout.committed_lookahead_s
     # ordering strictly increasing seq
     seqs = [s for s, _, _, _, _ in prog]
     assert seqs == list(range(1, len(seqs) + 1))

@@ -114,7 +114,8 @@ def test_integration_sim_over_6_hours(cfg, tmp_path):
 
     # 3. all three requests aired, in submission order, each first airing of its
     # song preceded by its intro (recycled reruns air without the consumed intro,
-    # which is correct — 4.7). Seed 1 keeps the DJ-adjacency exception from firing.
+    # which is correct — 4.7), except right after dj_talk, where §5.2 skips the
+    # intro to avoid two DJ segments back to back.
     aired = sorted((r for r in store.all_requests() if r["status"] == "aired"),
                    key=lambda r: r["id"])
     assert len(aired) == 3
@@ -129,6 +130,8 @@ def test_integration_sim_over_6_hours(cfg, tmp_path):
         if rid is None or rid in seen_requests:
             continue
         seen_requests.add(rid)
+        if i >= 1 and seen[i - 1][1] == "dj_talk":
+            continue  # §5.2 DJ-adjacency exception: intro skipped
         assert i >= 1 and seen[i - 1][1] == "intro", "request song w/o its intro"
         imeta = _json.loads((store.get_item(seen[i - 1][3]) or {}).get("meta_json") or "{}")
         assert imeta.get("song_item_id") == item_id, "intro glued to wrong song"
