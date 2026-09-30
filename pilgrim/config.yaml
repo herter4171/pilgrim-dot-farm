@@ -50,9 +50,9 @@ inventory:
   dj_talk_min: 2
 
 songs:
-  # duration_s sent to mlx-serve is max_duration_s; the model may end sooner.
+  # duration_seconds sent to mlx-serve is max_duration_s; the model may end sooner.
   min_duration_s: 20    # sanity floor for songs (OVERHAUL 3.2)
-  max_duration_s: 360   # sent as duration_s; also the song QC ceiling
+  max_duration_s: 360   # sent as duration_seconds (1-360); also the song QC ceiling
   abrupt_fade_s: 2.5    # fade-out for songs with hard endings (OVERHAUL 3.2)
   genres:
     synthwave: 1

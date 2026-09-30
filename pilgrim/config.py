@@ -134,10 +134,10 @@ class Inventory(BaseModel):
 
 
 class Songs(BaseModel):
-    # max_duration_s is sent to mlx-serve as duration_s (the model's ceiling).
+    # max_duration_s is sent to mlx-serve as duration_seconds (the model's ceiling).
     genres: dict[str, float] = Field(default_factory=dict)
     min_duration_s: float = 20.0  # sanity floor (OVERHAUL 3.2)
-    max_duration_s: float = 360.0  # sent as duration_s; also the song QC ceiling
+    max_duration_s: float = 360.0  # sent as duration_seconds; also the song QC ceiling
     abrupt_fade_s: float = 2.5  # fade-out applied to songs with hard endings (3.2)
 
 

@@ -211,10 +211,10 @@ Workers:
      to the no-repeat rule.
    - Artist may be drawn from the station bible's recurring fictional artists
      (§7), or invented.
-   - Lyrics of arbitrary length. The request sends `duration_s` =
+   - Lyrics of arbitrary length. The request sends `duration_seconds` =
      `songs.max_duration_s` (360 s) as the ceiling; the model may end sooner.
-     (Supersedes OVERHAUL 3.1, which sent no duration: without it mlx-serve
-     cut every song at ~60 s.)
+     (Supersedes OVERHAUL 3.1, which sent no duration: without it mlx-serve defaults to 60 s and
+     cuts every song there. `duration_s` is silently ignored.)
 2. **Generate** (M5, mlx-serve): reuse the existing working path; poll until the
    WAV exists; record wall-clock generation time for the rate metric.
 3. **QC** (§8.1).
@@ -432,7 +432,7 @@ inventory:
 
 songs:
   min_duration_s: 20         # sanity floor
-  max_duration_s: 360        # sent to mlx-serve as duration_s; song QC ceiling
+  max_duration_s: 360        # sent to mlx-serve as duration_seconds (1-360); song QC ceiling
   abrupt_fade_s: 2.5         # fade-out applied to songs with hard endings
   genres: {synthwave: 1, bluegrass: 1, doom metal: 1, bossa nova: 1, polka: 1, ...}
 

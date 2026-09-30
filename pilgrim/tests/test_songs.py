@@ -40,7 +40,7 @@ def test_generate_forwards_seed_lyrics_and_max_duration(cfg, tmp_path):
         "seed": 12345,
     }
     asyncio.run(sp.generate(brief))
-    assert sp._client.payload["duration_s"] == cfg.songs.max_duration_s
+    assert sp._client.payload["duration_seconds"] == cfg.songs.max_duration_s
     assert sp._client.payload["seed"] == 12345
     assert sp._client.payload["lyrics"] == "[verse] pour the beans"
     assert sp._client.payload["prompt"] == "a jaunty polka"
@@ -52,7 +52,7 @@ def test_instrumental_has_no_lyrics_and_keeps_seed(cfg, tmp_path):
     asyncio.run(sp.generate(brief))
     assert sp._client.payload["instrumental"] is True
     assert "lyrics" not in sp._client.payload
-    assert sp._client.payload["duration_s"] == cfg.songs.max_duration_s
+    assert sp._client.payload["duration_seconds"] == cfg.songs.max_duration_s
     assert sp._client.payload["seed"] == 7
 
 

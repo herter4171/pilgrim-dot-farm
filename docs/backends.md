@@ -96,10 +96,22 @@ Example that produced audio:
 {"prompt":"quiet ambient pad","instrumental":true,"duration_s":5}
 ```
 
+### Duration — `duration_seconds` (verified 2026-09-30)
+
+Per the model card (huggingface.co/ddalcu/MiniMax-Music3-MLX-Serve-8bit):
+`"duration_seconds"`, 1–360, an **upper bound** ("the model may end the song
+earlier"). Without it the server defaults to **60 s** and hard-cuts there
+(server log: `[music3] generating 60s ... (≤1500 frames)`).
+
+Observed: `{"prompt":..., "lyrics":..., "seed":1, "duration_seconds":10}` →
+HTTP 200, **10.0 s** of audio in 16.4 s wall. `duration_s` and `max_tokens`
+are **silently ignored** (both returned 60 s). The producer sends
+`duration_seconds = songs.max_duration_s` (360).
+
 ### Observed output WAV properties:
 - 2 channels (stereo), 16-bit, **44100 Hz** (native; keep it, client resamples).
-- Requested 5 s returned **21.5 s** — `duration_s` was evidently **ignored**,
-  or the model enforces a minimum segment. ⚠ duration control is UNRESOLVED.
+- Requested 5 s returned **21.5 s** — `duration_s` is **ignored** (wrong key;
+  see `duration_seconds` above — RESOLVED).
   Longer lyric-conditioned requests may also not honor duration. Must measure
   with real prompts; do not assume linear scaling (AGENTS/PLAN warning stands).
 
