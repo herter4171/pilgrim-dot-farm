@@ -137,3 +137,20 @@ print([selector.choose_next(state) for _ in range(100)])
         timeout=30,
     ) for seed in (1, 2)]
     assert programs[0] == programs[1]
+
+
+def test_no_liner_after_liner_when_songs_run_dry(cfg):
+    """Song drought: liners must not stack while commercials are ready."""
+    sel = RandomSelector(RNG(3), cfg)
+    st = make_state(cfg, available={"song": False, "dj_talk": False},
+                    recent=["commercial_break", "liner"], news_valid=False)
+    for _ in range(50):
+        assert sel.choose_next(st) == "commercial_break"
+
+
+def test_liner_after_liner_only_when_nothing_else(cfg):
+    sel = RandomSelector(RNG(3), cfg)
+    st = make_state(cfg, available={"song": False, "dj_talk": False,
+                                    "commercial_break": False},
+                    recent=["liner"], news_valid=False)
+    assert sel.choose_next(st) == "liner"

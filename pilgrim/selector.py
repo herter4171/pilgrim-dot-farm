@@ -95,6 +95,13 @@ class RandomSelector:
             available.discard("commercial_break")
             weights.pop("commercial_break", None)
 
+        # A liner is a bridge, not filler: never liner -> liner while any other
+        # interjection (commercial, dj_talk, news) is ready. Without this a song
+        # drought turns into Liam reading station IDs back to back.
+        if last == "liner" and available - {"liner", "song"}:
+            available.discard("liner")
+            weights.pop("liner", None)
+
         if last == "song" and state.recent_song_genres:
             # genre no-repeat handled separately; nothing forcing here
             pass
@@ -105,8 +112,8 @@ class RandomSelector:
             # non-song interjection stock exists, take the interjection before the song.
             # "song" is only revisited when no non-song inventory exists at all.
             last = state.recent_types[-1] if state.recent_types else None
-            order = ("liner", "commercial_break", "dj_talk", "news", "song") \
-                if last == "song" else ("song", "liner", "commercial_break", "dj_talk", "news")
+            order = ("commercial_break", "dj_talk", "news", "liner", "song") \
+                if last == "song" else ("song", "commercial_break", "dj_talk", "news", "liner")
             for s in order:
                 if state.available.get(s):
                     return s

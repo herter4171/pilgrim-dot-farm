@@ -44,7 +44,7 @@ playout:
 inventory:
   fresh_songs_ready: 2
   briefs_queued: 3
-  commercials_min: 6
+  commercials_min: 20            # RADIO.md §6.1/§12: >= 20 so a song drought has spots to air
   liners_per_bucket: 3
   liner_buckets_s: [3, 5, 10, 15, 30]
   dj_talk_min: 2

@@ -322,7 +322,9 @@ class Scheduler:
             items = [i for i in self.store.list_items("station_id") if not i["emergency"]]
         if not items:
             return []
-        it = self.rng.choice(items)
+        # don't replay a liner that aired in the last few committed items
+        recent = {r["item_id"] for r in self._items[-10:]}
+        it = self.rng.choice([i for i in items if i["id"] not in recent] or items)
         return [{"item_id": it["id"], "type": it["type"], "duration_s": it["duration_s"],
                  "consume": True}]
 

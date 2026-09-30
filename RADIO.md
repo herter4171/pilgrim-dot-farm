@@ -146,6 +146,10 @@ Constraints (applied before drawing):
   only when the pool is too small to satisfy it.
 - Genre: no genre repeated within the last **3** songs.
 - `dj_talk` never adjacent to another `dj_talk` or to `news`.
+- `liner` never follows a `liner` while any other interjection (commercial,
+  `dj_talk`, news) is ready, and the same liner isn't replayed within the last
+  10 committed items. With no songs ready, the station fills with commercial
+  breaks, DJ talk and news; liners stay bridges, not the program.
 - **Listener-request songs jump the line** (OVERHAUL 4.7): when a ready
   request song exists and a song is allowed right now (the interjection rule
   above still holds), `song` is committed. Each song airs with its short
