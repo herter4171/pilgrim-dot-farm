@@ -332,3 +332,34 @@ def test_counts_skip_expired_dj_and_news(cfg, tmp_env):
     c = prod.counts()
     assert c["dj_talk"] == 1
     assert c["news"] == 0
+
+
+class _SnoopVoice(FakeVoice):
+    """Records how many songs the store held while each intro was rendering."""
+
+    def __init__(self, store):
+        super().__init__()
+        self.store = store
+        self.songs_during_intro: list[int] = []
+
+    async def produce_item(self, role, target_s, context=None):
+        if role == "intro":
+            self.songs_during_intro.append(len(self.store.list_items("song")))
+        return await super().produce_item(role, target_s, context)
+
+
+def test_song_not_in_library_while_its_intro_renders(cfg, tmp_env):
+    """The scheduler shares the event loop: if the song is stored before its
+    intro renders, it airs bare as a stock song in that gap (the 23:11 and
+    23:22 incidents). Song, intro and 'ready' land together."""
+    import asyncio
+    _, store, _ = tmp_env
+    voice = _SnoopVoice(store)
+    prod = make_song_producer(cfg, store, voice, FakeSong())
+    req = store.add_request("play a song for Mittens", cap=10)
+    asyncio.run(prod.song_step())  # request song
+    asyncio.run(prod.song_step())  # stock song (below fresh target)
+    assert voice.songs_during_intro == [0, 1]
+    assert store.get_request(req["id"])["status"] == "ready"
+    stock_intro = [c for c in voice.contexts if c and "Listener request" not in c][0]
+    assert "Thank the listener" not in stock_intro  # nobody to thank

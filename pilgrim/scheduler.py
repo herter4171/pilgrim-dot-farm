@@ -49,6 +49,9 @@ class Scheduler:
         self._cum: list[float] = []  # absolute start times (program seconds)
         self._total = 0.0
         self._offset = 0.0  # playhead anchor; shifts forward if the program starves
+        # committed request songs not yet on air: seq -> request_id. A request
+        # is 'aired' when the playhead reaches its song, not when committed.
+        self._pending_aired: dict[int, int] = {}
         # The committed program is live-only state: old rows refer to a clock
         # that no longer exists, so start clean on every run (OVERHAUL 2.4).
         self.store.clear_program()
@@ -98,13 +101,13 @@ class Scheduler:
         st.available = {
             # a song is only drawable if one clears the spacing floor, so a thin
             # pool never loops the same track back to back (§5.2)
-            "song": bool(self._eligible_songs()) or bool(self.store.ready_request_songs()),
+            "song": bool(self._eligible_songs()) or bool(self._uncommitted_ready_requests()),
             "dj_talk": st.inventory_counts["dj_talk"] > 0,
             "commercial_break": st.inventory_counts["commercial"] > 0,
             "liner": st.inventory_counts["liner"] > 0,
             "news": self._news_valid() is not None,
         }
-        st.request_songs_ready = len(self.store.ready_request_songs())
+        st.request_songs_ready = len(self._uncommitted_ready_requests())
         # recent types / genres in COMMITTED order (the air order). Constraints
         # apply to the committed sequence since that is exactly what airs.
         # `intro` entries are PART of their song, so they never appear here (4.7):
@@ -163,8 +166,9 @@ class Scheduler:
         cfg = self.cfg.playout
         lookahead = cfg.committed_lookahead_s
         guard = 0
-        # types that came up empty this tick (e.g. every liner is inside its
-        # no-repeat window): re-draw without them instead of retrying them
+        # types that came up empty (e.g. every liner is inside its no-repeat
+        # window): re-draw without them until something commits
+        self._settle_aired()
         blocked: set[str] = set()
         while self.coverage() < lookahead and guard < 100:
             guard += 1
@@ -184,6 +188,7 @@ class Scheduler:
             for e in entries:
                 self._append(e)
             self._rebuild_program()
+            blocked.clear()  # the program moved on; re-check everything
         self._trim()
         cov = self.coverage()
         if cov < 60:
@@ -226,13 +231,26 @@ class Scheduler:
         if e.get("consume"):
             self.store.mark_aired(item_id)
         if e.get("request_id"):
-            # a listener-request song hit the air
-            self.store.mark_request_aired(e["request_id"])
-            log.info("request.aired", extra={
+            # committed, not yet heard: _settle_aired marks it when it airs
+            self._pending_aired[seq] = e["request_id"]
+            log.info("request.committed", extra={
                 "request_id": e["request_id"], "item_id": item_id, "seq": seq})
         log.debug("program.commit", extra={
             "seq": seq, "item_id": item_id, "item_type": e["type"],
             "duration_s": e["duration_s"], "coverage_s": round(self.coverage(), 1)})
+
+    def _settle_aired(self) -> None:
+        """Mark committed request songs 'aired' once the playhead reaches them."""
+        if not self._pending_aired:
+            return
+        pos = self.position()
+        for i, r in enumerate(self._items):
+            rid = self._pending_aired.get(r["seq"])
+            if rid is not None and self._cum[i] <= pos + 1e-6:
+                del self._pending_aired[r["seq"]]
+                self.store.mark_request_aired(rid)
+                log.info("request.aired", extra={
+                    "request_id": rid, "item_id": r["item_id"], "seq": r["seq"]})
 
     def _trim(self) -> None:
         """Drop committed rows fully behind the playhead (keep a little history)."""
@@ -281,7 +299,13 @@ class Scheduler:
         first); their pre-made intro is glued on. Otherwise the stock logic
         (fresh first, then oldest-aired with min spacing). Returns
         [intro?, song] so the intro airs immediately before its song (4.7)."""
-        reqs = self.store.ready_request_songs()
+        reqs = self._uncommitted_ready_requests()
+        after_dj = bool(self._items) and self._items[-1]["type"] == "dj_talk"
+        # a request's intro is its on-air thank-you: don't take the request in
+        # a slot where the intro would be dropped (right after dj_talk); it
+        # takes the next song slot instead (4.7)
+        if reqs and after_dj and reqs[0].get("intro_item_id"):
+            return []  # no stock song either: the request owns the next slot
         if reqs:
             req = reqs[0]
             song_id = req.get("song_item_id")
@@ -291,6 +315,7 @@ class Scheduler:
                 for e in entries:
                     if e["type"] == "song":
                         e["request_id"] = req["id"]
+                self._last_song_air[it["id"]] = self._air_clock  # spacing (§5.2)
                 return entries
         pool = self._eligible_songs()
         if not pool:
@@ -317,6 +342,12 @@ class Scheduler:
             cand = min(spaced or recycled, key=key)  # relax toward the floor only
         self._last_song_air[cand["id"]] = now
         return self._glue_intro(cand["id"], cand["duration_s"])
+
+    def _uncommitted_ready_requests(self) -> list[dict]:
+        """Ready requests not already committed (they stay 'ready' until the
+        playhead reaches them, so filter out the ones waiting in the window)."""
+        pending = set(self._pending_aired.values())
+        return [r for r in self.store.ready_request_songs() if r["id"] not in pending]
 
     def _eligible_songs(self) -> list[dict]:
         """Fresh songs, plus recycled songs last aired at least the smallest

@@ -208,8 +208,9 @@ def test_new_scheduler_starts_with_empty_program(cfg, tmp_env):
 
 
 def test_request_song_jumps_line_with_intro_and_marks_aired(cfg, tmp_env):
-    """Ready request song airs next (after a liner), preceded by its intro, and
-    the request is marked aired once committed (OVERHAUL 4.7)."""
+    """Ready request song airs next (after a liner), preceded by its intro. The
+    request is marked aired when the playhead reaches its song, not when it is
+    committed up to 10 min earlier, and it is committed only once (4.7)."""
     import json
     _, store, _ = tmp_env
     stock = make_item(cfg, store, "song", 90.0)                 # stock song available
@@ -241,8 +242,17 @@ def test_request_song_jumps_line_with_intro_and_marks_aired(cfg, tmp_env):
     intro_row = rows[idx - 1]
     imeta = json.loads(store.get_item(intro_row["item_id"])["meta_json"])
     assert imeta["song_item_id"] == req_song
-    # request is aired
+    # committed but not yet heard: still 'ready' (UI: "up next")
+    assert store.get_request(req["id"])["status"] == "ready"
+    song_start = sum(r["duration_s"] for r in store.program_since(1)[:idx + 1])
+    clock.advance(song_start - 1.0)
+    sched.commit_lookahead()
+    assert store.get_request(req["id"])["status"] == "ready"
+    clock.advance(2.0)
+    sched.commit_lookahead()
     assert store.get_request(req["id"])["status"] == "aired"
+    committed = [r["item_id"] for r in store.program_since(1)]
+    assert committed.count(req_song) == 1  # never re-committed while pending
     assert stock  # unused var guard
 
 
@@ -338,3 +348,30 @@ def test_new_song_airs_promptly_after_a_drought(cfg, tmp_env):
     starts = dict(zip([r["item_id"] for r in sched._items], sched._cum, strict=True))
     assert song in starts
     assert starts[song] - sched.position() < horizon + 45.0
+
+
+def test_request_not_taken_right_after_dj_talk(cfg, tmp_env):
+    """A request's intro is its thank-you: right after dj_talk the intro would
+    be dropped, so the slot goes to a non-song and the request (with its
+    intro) airs in the following slot."""
+    _, store, _ = tmp_env
+    make_item(cfg, store, "song", 90.0, genre="polka")
+    req = store.add_request("play for Mittens", cap=10)
+    req_song = make_item(cfg, store, "song", 120.0, genre="synthwave")
+    intro_id = store.add_item(type_="intro", media_path="/i.flac", duration_s=8.0,
+                              evergreen=False, fresh=True,
+                              meta={"song_item_id": req_song, "request_id": req["id"]})
+    store.mark_request_ready(req["id"], req_song, intro_id)
+    for i in range(5):
+        make_item(cfg, store, "liner", 4.0 + i)
+    dj = make_item(cfg, store, "dj_talk", 12.0)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(2), cfg), clock, RNG(2))
+    sched._append({"item_id": dj, "type": "dj_talk", "duration_s": 12.0, "consume": True})
+    sched._rebuild_program()
+    sched.commit_lookahead()
+    rows = store.program_since(1)
+    types = [r["type"] for r in rows]
+    assert types[1] not in ("song", "intro")
+    idx = [r["item_id"] for r in rows].index(req_song)
+    assert types[idx - 1] == "intro"

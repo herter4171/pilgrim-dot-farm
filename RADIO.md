@@ -163,8 +163,9 @@ Constraints (applied before drawing):
   request song exists and a song is allowed right now (the interjection rule
   above still holds), `song` is committed. Each song airs with its short
   `intro` immediately before it; intros are consumed and never recycled, are
-  treated as part of their song for all constraints, and are skipped if they'd
-  land right after a `dj_talk` (two DJ segments back to back).
+  treated as part of their song for all constraints. A stock intro is skipped
+  if it would land right after a `dj_talk`; a **request** is never taken in
+  that slot (its intro is the on-air thank-you), it takes the next song slot.
 
 ### 5.3 Planned vs. committed
 
@@ -517,7 +518,10 @@ or `store.retire_item(id, reason)` (reason merged into `meta_json`).
 The `requests` table carries lifecycle columns (`attempts`, `song_item_id`,
 `intro_item_id`, `updated_at`) and statuses `queued -> producing -> ready ->
 aired`, plus `rejected`, `evicted`, `failed` (legacy `serviced` reads as
-`aired`; OVERHAUL 4.4). Only `queued` rows are ever FIFO-evicted; a crash
+`aired`; OVERHAUL 4.4). A request becomes `aired` when the playhead reaches
+its song, not when the song is committed; until then it stays `ready` ("up
+next"). The request's song and intro enter the library together with the
+`ready` flag, so the song can never air bare as stock first. Only `queued` rows are ever FIFO-evicted; a crash
 mid-generation is reset `producing -> queued` on station start.
 
 ---

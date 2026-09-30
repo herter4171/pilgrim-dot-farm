@@ -264,12 +264,15 @@ class Producer:
         prev_genres = self._recent_genres()
         brief = await self.songs.brief(prev_genres)
         item = await self.songs.produce_song(brief)
+        # render the intro BEFORE the song enters the library: the scheduler
+        # shares this event loop and would air the song bare in the gap
+        intro = await self._render_intro(item, None)  # stock intros are non-fatal
         song_id = self.store.add_item(
             type_="song", media_path=item["media_path"], duration_s=item["duration_s"],
             sample_rate=item.get("sample_rate"), channels=item.get("channels"),
             title=item.get("title"), artist=item.get("artist"), genre=item.get("genre"),
             evergreen=True, fresh=True, meta=item.get("meta"))
-        await self._make_intro(item, song_id, None)  # stock intros are non-fatal
+        self._store_intro(intro, song_id, None)
         log.info("song.produced", extra={
             "title": item.get("title"), "genre": item.get("genre"),
             "duration_s": item.get("duration_s")})
@@ -285,13 +288,17 @@ class Producer:
             prev_genres = self._recent_genres()
             brief = await self.songs.brief(prev_genres, request_text=req["text"])
             item = await self.songs.produce_song(brief)
+            # Everything awaited is done before the song is stored: song, intro
+            # and 'ready' land with no await between them, so the scheduler can
+            # never air a request song bare, as stock, before its intro exists.
+            intro = await self._render_intro(item, req)
             song_id = self.store.add_item(
                 type_="song", media_path=item["media_path"], duration_s=item["duration_s"],
                 sample_rate=item.get("sample_rate"), channels=item.get("channels"),
                 title=item.get("title"), artist=item.get("artist"), genre=item.get("genre"),
                 evergreen=True, fresh=True,
                 meta={**dict(item.get("meta") or {}), "request_id": req["id"]})
-            intro_id = await self._make_intro(item, song_id, req)
+            intro_id = self._store_intro(intro, song_id, req)
             self.store.mark_request_ready(req["id"], song_id, intro_id)
             log.info("request.ready", extra={
                 "request_id": req["id"], "song_item_id": song_id,
@@ -303,32 +310,37 @@ class Producer:
                 "request_id": req["id"], "attempt": n, "error": err_text(e)})
             raise
 
-    async def _make_intro(self, item: dict, song_id: int | None,
-                          req: dict | None) -> int | None:
-        """Produce a short DJ intro naming the just-created song, crediting the
+    async def _render_intro(self, item: dict, req: dict | None) -> dict | None:
+        """Render a short DJ intro naming the just-created song, crediting the
         listener for request songs. Failure is non-fatal (returns None)."""
         try:
             title = item.get("title") or "this next one"
             artist = item.get("artist") or ""
             genre = item.get("genre") or ""
             context = f'Next song: "{title}" by {artist} ({genre}).\n'
-            meta: dict = {"song_item_id": song_id, "text": None}
             if req is not None:
                 context += f"Listener request: {json.dumps(req['text'])}\n"
-                meta["request_id"] = req["id"]
-            context += "Thank the listener for the request in one short phrase. " \
-                       "Do not mention the clock time."
-            intro = await self.voice.produce_item("intro", 10.0, context=context)
-            meta.update({k: intro.get("meta", {}).get(k) for k in ("text",) if intro.get("meta")})
-            intro_id = self.store.add_item(
-                type_="intro", media_path=str(intro["media_path"]),
-                duration_s=intro["duration_s"], sample_rate=intro.get("sample_rate"),
-                channels=intro.get("channels"), role="intro", evergreen=False,
-                fresh=True, meta=meta)
-            return intro_id
+                context += "Thank the listener for the request in one short phrase. "
+            context += "Do not mention the clock time."
+            return await self.voice.produce_item("intro", 10.0, context=context)
         except Exception as e:
             log.warning("intro.failed", extra={"error": err_text(e)})
             return None
+
+    def _store_intro(self, intro: dict | None, song_id: int,
+                     req: dict | None) -> int | None:
+        """Store a rendered intro against its song. Synchronous on purpose."""
+        if intro is None:
+            return None
+        meta: dict = {"song_item_id": song_id,
+                      "text": (intro.get("meta") or {}).get("text")}
+        if req is not None:
+            meta["request_id"] = req["id"]
+        return self.store.add_item(
+            type_="intro", media_path=str(intro["media_path"]),
+            duration_s=intro["duration_s"], sample_rate=intro.get("sample_rate"),
+            channels=intro.get("channels"), role="intro", evergreen=False,
+            fresh=True, meta=meta)
 
     def _recent_genres(self) -> list[str]:
         out = []

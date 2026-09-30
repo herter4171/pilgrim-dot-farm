@@ -681,6 +681,9 @@ Commit: `feat(talk): per-song DJ intros; request intros credit the listener (OVE
    never recycled. A recycled song with no fresh intro airs alone.
 5. When a song with `meta.request_id` is committed, call
    `store.mark_request_aired(request_id)` and log `request.aired`.
+   **Superseded 2026-09-30:** marking at commit told listeners a request had
+   played up to 10 min before it did. It is now marked when the playhead
+   reaches the song (`Scheduler._settle_aired`); see RADIO.md §5.2 and the requests lifecycle note.
 6. Rules treat an `intro` **as part of its song**:
    - `_consecutive_non_song` skips `intro` entries (they don't count toward
      `max_consecutive_non_song`).
@@ -690,6 +693,9 @@ Commit: `feat(talk): per-song DJ intros; request intros credit the listener (OVE
      without its intro rather than breaking this rule, and keep the intro for
      next time. That's a deliberate trade-off: intros are cheap, the song is
      not.
+     **Superseded 2026-09-30 for requests:** a request intro is the listener's
+     thank-you, so a request is not taken right after `dj_talk`; it takes the
+     next song slot with its intro (RADIO.md §5.2).
 7. `sim_run.py` and `test_scheduler.py`: update the constraint assertions to
    match rule 6 (explain in the commit body). Add a sim assertion: every
    committed `intro` is immediately followed by the song it names.
@@ -697,7 +703,7 @@ Commit: `feat(talk): per-song DJ intros; request intros credit the listener (OVE
 **Acceptance:**
 - Stock and ready-request songs both present, last committed type is
   `liner` → the next committed song is the request's, preceded by its intro,
-  and the request status is `aired`.
+  and the request status becomes `aired` when that song starts playing.
 - Last committed is a song → next item is not a song, even with a request
   ready.
 - Sim passes with intros in the pool.
