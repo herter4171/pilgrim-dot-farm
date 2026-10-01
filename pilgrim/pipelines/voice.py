@@ -234,6 +234,12 @@ class VoicePipeline:
         sfx_note = self._sfx_instructions(role)
         if sfx_note:
             sys_prompt += "\n\n" + sfx_note
+            # the model follows the explicit schema in the user turn, not the
+            # system prose: cues must be IN the schema or it never asks for any
+            sfx_fields = ', "sfx": [{"cue": "<cue>", "after_sentence": <n>}]'
+            if self._joke_ok(role):
+                sfx_fields += ', "joke_after_sentence": <n>|null'
+            schema = schema[:-1] + sfx_fields + "}"
         user = (f"Write the copy. {schema}\n\nContext:\n{extra}"
                 if extra else f"Write the copy. {schema}")
         obj = await self.llm.chat_json(self._model_for(role), sys_prompt, user)

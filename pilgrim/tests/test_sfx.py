@@ -279,3 +279,33 @@ def test_field_report_adjacency(cfg, last, banned):
         st.news_valid = True
         st.recent_types = ["song", last]
         assert sel.choose_next(st) != banned
+
+
+async def test_last_sentence_beat_is_pulled_inside_the_clip(tmp_env):
+    """Scripts often cue after their final sentence; the hit must still fit."""
+    cfg, store, tmp = tmp_env
+    _approve_all(cfg)
+    prod, _ = _producer(cfg, store, tmp, CueVoice(cues=[{"cue": "cow", "after_sentence": 4}]))
+    await prod.ensure_dj()
+    o = _meta(store, "dj_talk")["sfx"][0]
+    assert o["offset_s"] + o["duration_s"] <= 15.0
+    assert o["offset_s"] >= cfg.audio.edge_pad_ms / 1000.0
+
+
+async def test_cue_fields_are_in_the_explicit_schema(cfg, tmp_path):
+    """The model follows the user-turn schema, not system prose: without the
+    sfx field there it never asked for a cue on the real backend."""
+    llm = FakeLLM()
+    seen: list[str] = []
+    real = llm.chat_json
+
+    async def spy(model, system, user, max_tokens=800):
+        seen.append(user)
+        return await real(model, system, user, max_tokens)
+    llm.chat_json = spy  # type: ignore[method-assign]
+    vp = VoicePipeline(cfg, llm, FakeKokoro(), media_dir=tmp_path,
+                       prompts={"voice": "dj", "sfx_cues": "Cues: {cues}. {joke}"})
+    await vp.write_copy("dj_talk", 18.0)
+    await vp.write_copy("news", 18.0)
+    assert '"sfx"' in seen[0]
+    assert '"sfx"' not in seen[1]

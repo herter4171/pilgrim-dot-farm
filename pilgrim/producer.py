@@ -276,10 +276,16 @@ class Producer:
             wanted.append((sfx_cfg.joke_cue, "joke", joke))
         for name, kind, after in wanted:
             got = await resolve(name)
-            if got:
-                overlays.append({"item_id": got["id"], "cue": name, "kind": kind,
-                                 "offset_s": beat_offset(text, after, dur, lead),
-                                 "duration_s": got["duration_s"]})
+            if not got:
+                continue
+            # a beat after the last sentence lands at the clip's end, where
+            # the hit could never fit: pull it in so it ends with the clip
+            off = min(beat_offset(text, after, dur, lead),
+                      round(dur - got["duration_s"] - 0.05, 3))
+            if off < lead:
+                continue  # clip too short for this hit
+            overlays.append({"item_id": got["id"], "cue": name, "kind": kind,
+                             "offset_s": off, "duration_s": got["duration_s"]})
         if role == "field_report":
             bed_s = min(sfx_cfg.bed_max_s, dur - lead)
             if bed_s >= 1.0:

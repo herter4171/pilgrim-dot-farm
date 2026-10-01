@@ -1,7 +1,8 @@
-Sound effects: the station can drop a short sound effect into the gap right
-after any sentence. Use them sparingly; most scripts need none, and never more
-than two. Only use a cue when a sentence is actually about that thing.
-Available cues: {cues}.
-To request one, add "sfx": [{{"cue": "<cue>", "after_sentence": <n>}}] to the
-JSON, where n counts the script's sentences from 1. Use "sfx": [] for none.
+Sound effects: the station drops a short sound effect into the pause right
+after a sentence. Available cues: {cues}.
+When a sentence mentions one of these (an animal, or a silly moment for the
+slide whistle), request that cue right after it. Aim for one cue per script;
+two at most; use "sfx": [] only when nothing in the script fits.
+Format: "sfx": [{{"cue": "<cue>", "after_sentence": <n>}}], where n counts the
+script's sentences from 1.
 {joke}

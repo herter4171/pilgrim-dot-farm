@@ -12,7 +12,8 @@ Content: one or two invented farm factoids around Thistledown, reported as if
 they were serious news. Examples of the flavor: a farmer getting a new
 center-pivot irrigation system, a goat that has learned to open the feed shed,
 the south forty finally drying out. Neighbors and farms are invented. Mention
-what he can see or hear around him in the field.
+what he can see or hear around him in the field, such as
+the livestock nearby.
 
 Tone: dry, polite, faintly bewildered, British turns of phrase. Banned topics:
 real politics, real news, profanity, real brand names, anything that breaks the
