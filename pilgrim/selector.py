@@ -89,6 +89,9 @@ class RandomSelector:
         if last in ("dj_talk", "news"):
             available.discard("dj_talk")
             weights.pop("dj_talk", None)
+        if last == "dj_talk":  # ...in either order (§5.2)
+            available.discard("news")
+            weights.pop("news", None)
 
         # seriousness adjacency: serious bulletin -> next non-song isn't a commercial
         if state.news_gravity == "serious" and (last is None or last != "song"):

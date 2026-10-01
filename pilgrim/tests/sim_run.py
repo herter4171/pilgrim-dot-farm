@@ -42,6 +42,7 @@ def run(hours=24):
     step = 30
     max_run_non_song = 0
     min_coverage = float("inf")
+    sched.commit_lookahead()  # the station commits at startup (Station.startup)
     for _ in range(int(hours * 3600) // step):
         clock.advance(step)
         sched.commit_lookahead()

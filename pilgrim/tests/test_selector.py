@@ -49,6 +49,16 @@ def test_dj_not_after_dj_or_news(cfg):
             assert sel.choose_next(st) != "dj_talk"
 
 
+def test_news_not_after_dj(cfg):
+    """§5.2: dj_talk is never adjacent to news — in either order. Only
+    dj-after-news used to be blocked; the 24 h sim found news-after-dj once it
+    was seeded with a bulletin."""
+    sel = RandomSelector(RNG(3), cfg)
+    st = make_state(cfg, recent=["song", "dj_talk"], available={"song": False})
+    for _ in range(200):
+        assert sel.choose_next(st) != "news"
+
+
 def test_interjection_between_songs(cfg):
     """A song on the tail must never be followed by another song (at least one
     interjection between songs)."""
