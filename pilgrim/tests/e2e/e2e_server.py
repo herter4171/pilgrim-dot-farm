@@ -44,12 +44,21 @@ def _seed(cfg: Config, store: Store, tmp: Path) -> None:
         _make_flac(f, 1.5 + (i % 3) * 0.5)
         store.add_item(type_="song", media_path=str(f), duration_s=1.5 + (i % 3) * 0.5,
                        genre=genres[i % len(genres)], evergreen=True, fresh=True)
+    # one short SFX stinger that rides on talk clips (SFX.md §7.4): exercises
+    # the client's overlay path without touching the host joins
+    sfx = lib / "sfx_0.flac"
+    _make_flac(sfx, 0.5)
+    sfx_id = store.add_item(type_="sfx", media_path=str(sfx), duration_s=0.5,
+                            meta={"cue": "cow"})
+    cue = {"item_id": sfx_id, "cue": "cow", "kind": "stinger", "offset_s": 0.6,
+           "duration_s": 0.5}
     for t, n in (("liner", 20), ("commercial", 20), ("dj_talk", 15)):
         for j in range(n):
             f = lib / f"{t}_{j}.flac"
             _make_flac(f, 2.0 + (j % 3) * 0.5)
             store.add_item(type_=t, media_path=str(f),
-                           duration_s=2.0 + (j % 3) * 0.5, evergreen=True, fresh=True)
+                           duration_s=2.0 + (j % 3) * 0.5, evergreen=True, fresh=True,
+                           meta={"sfx": [cue]} if j % 2 == 0 else None)
 
 
 def _load_cfg() -> tuple[Config, Path]:
@@ -105,7 +114,8 @@ def build_app() -> FastAPI:
             items = store.program_after(after_seq)
             start_offset = 0.0
         return {"items": [{"seq": it["seq"], "media_id": it["item_id"],
-                           "type": it["type"], "duration_s": it["duration_s"]}
+                           "type": it["type"], "duration_s": it["duration_s"],
+                           "sfx": sched.overlays_for(it["seq"])}
                           for it in items], "start_offset_s": start_offset}
 
     @app.post("/api/station/heartbeat")

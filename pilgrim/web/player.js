@@ -13,7 +13,7 @@
   const offairEl = $("offair"), statusEl = $("status");
 
   let ctx = null, analyser = null, raf = null;
-  let items = [];            // {seq, media_id, type, duration_s, buffer}
+  let items = [];            // {seq, media_id, type, duration_s, sfx[], buffer}
   let cursor = 0;            // index of the item currently on air
   let scheduleCursor = 0;    // index of the next item to schedule (in order)
   let nextWhen = 0;
@@ -104,6 +104,18 @@
     const it = items[i];
     if (!it) return null;
     if (!it.buffer) it.buffer = await decode(it.media_id, ctx);
+    // SFX overlays decode in the background and are never awaited: a slow or
+    // failed stinger is skipped, it never delays its host (SFX.md §7.4).
+    for (const ov of it.sfx || []) {
+      if (ov._loading) continue;
+      ov._loading = true;
+      const c = ctx;
+      decode(ov.media_id, c).then(b => {
+        if (c !== ctx || (it._scheduled && !it._gain)) return;  // host already done
+        ov.buffer = b;
+        if (it._scheduled) scheduleOverlay(it, ov);
+      }).catch(() => {});
+    }
     return it.buffer;
   }
 
@@ -121,12 +133,56 @@
     it._end = end;
     nextWhen = end;
     it._scheduled = true;
+    it._gain = g;
+    scheduleOverlays(it);
     src.addEventListener("ended", () => {
       src.disconnect(); g.disconnect(); src.buffer = null;
-      it.buffer = null;
+      it.buffer = null; it._gain = null;
+      for (const ov of it.sfx || []) if (!ov._scheduled) ov.buffer = null;
       if (playing && token === session) advancePlayhead();
     });
     return src;
+  }
+
+  /* SFX sidecars ride on their host: started at host start + offset_s on the
+     same AudioContext clock, gain-staged, stopped at the host's end so they
+     can never push a join. The host dips to `duck` under a stinger so two
+     full-level sources don't clip. Joining mid-host: a stinger whose beat has
+     passed is skipped; a bed picks up where it would be. An overlay decoded
+     too late to start on time is dropped. */
+  function scheduleOverlays(it) {
+    for (const ov of it.sfx || []) if (ov.buffer) scheduleOverlay(it, ov);
+  }
+
+  function scheduleOverlay(it, ov) {
+    if (ov._scheduled || !ov.buffer || !it._gain) return;
+    let when = it._when + (ov.offset_s - it._offset), skip = 0;
+    if (ov.offset_s < it._offset) {
+      if (ov.kind !== "bed") return;
+      when = it._when; skip = it._offset - ov.offset_s;
+    }
+    if (when < ctx.currentTime + 0.02 || skip >= ov.buffer.duration || when >= it._end) return;
+    ov._scheduled = true;
+    const s = ctx.createBufferSource(); s.buffer = ov.buffer; s._sfx = true;
+    const g = ctx.createGain(); g.gain.value = ov.gain ?? 0.5;
+    s.connect(g); g.connect(analyser);
+    s.start(when, skip);
+    s.stop(it._end);
+    s.addEventListener("ended", () => {
+      s.disconnect(); g.disconnect(); s.buffer = null; ov.buffer = null;
+    });
+    const level = ov.duck ?? 1;
+    if (level >= 1) return;
+    const end = Math.min(when + ov.buffer.duration - skip, it._end);
+    // overlapping stingers share the first one's dip rather than fight over it
+    it._ducks = it._ducks || [];
+    if (it._ducks.some(([a, b]) => when < b && end > a)) return;
+    it._ducks.push([when, end]);
+    const r = 0.04, hg = it._gain.gain;
+    hg.setValueAtTime(1, Math.max(when - r, it._when));
+    hg.linearRampToValueAtTime(level, when);
+    hg.setValueAtTime(level, end);
+    hg.linearRampToValueAtTime(1, Math.min(end + r, it._end));
   }
 
   function advancePlayhead() {
@@ -229,7 +285,7 @@
       if (!playing || token !== session) return;
       const p = await fetchProgram(null);
       if (!playing || token !== session) return;
-      items = p.items.map(it => ({ ...it, buffer: null }));
+      items = p.items.map(it => ({ ...it, buffer: null }));  // sfx[] rides along
       cursor = 0; scheduleCursor = 0;
       nextWhen = ctx.currentTime + 0.2;
       drawLevel();

@@ -17,6 +17,7 @@ from pilgrim.logging_setup import err_text
 from pilgrim.pipelines.clocktime import current_local_time, spoken_time
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.news import NewsPipeline
+from pilgrim.pipelines.sfx import SFX_HOST_TYPES, SfxPipeline, beat_offset
 from pilgrim.pipelines.songs import SongPipeline
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
 from pilgrim.store import Store
@@ -29,7 +30,7 @@ class Producer:
                  voice: VoicePipeline, songs: SongPipeline, clock: Clock,
                  prompts: dict[str, str], media_dir: Path, api_key: str, rng: RNG,
                  db=None, news_pipeline: NewsPipeline | None = None,
-                 clock_time=None) -> None:
+                 clock_time=None, sfx: SfxPipeline | None = None) -> None:
         self.cfg = cfg
         self.store = store
         self.llm = llm
@@ -45,6 +46,7 @@ class Producer:
         # real local time for DJ talk; injectable in tests (OVERHAUL 5.3)
         self._clock_time = clock_time or current_local_time
         self._news_ok: dict | None = None
+        self.sfx = sfx  # None = station airs dry (no SFX backend configured)
 
     # --------------------------------------------------------------- counts
     def counts(self) -> dict[str, int]:
@@ -58,8 +60,23 @@ class Producer:
             "commercial": self.store.count_usable_of_type("commercial"),
             "liner": self.store.count_usable_of_type("liner"),
             "dj_talk": self._count_fresh_unexpired("dj_talk"),
+            "field_report": self._count_fresh_unexpired("field_report"),
             "news": self._count_fresh_unexpired("news"),
+            "sfx": self.count_sfx_stock(),
         }
+
+    def sfx_stock_target(self) -> int:
+        """Approved evergreen cues: the stock stinger pool's target size."""
+        if self.sfx is None or not self.cfg.sfx.enabled:
+            return 0
+        return sum(1 for c in self.cfg.sfx.cues.values() if c.evergreen and c.approved)
+
+    def count_sfx_stock(self) -> int:
+        approved = {n for n, c in self.cfg.sfx.cues.items() if c.evergreen and c.approved}
+        if self.sfx is None or not self.cfg.sfx.enabled:
+            return 0
+        return len({self._sfx_cue(it) for it in self.store.list_items("sfx")
+                    if it["evergreen"]} & approved)
 
     def _count_fresh_unexpired(self, type_: str) -> int:
         """Unaired clips the scheduler can still air: expired time-mention DJ
@@ -96,6 +113,7 @@ class Producer:
             bucket = float(inv.liner_buckets_s[made % len(inv.liner_buckets_s)])
             try:
                 item = await self.voice.produce_item("liner", bucket)
+                await self._attach_sfx(item, "liner")
                 self._store_voice(item, "liner")
                 log.info("produced liner %.1fs", item["duration_s"])
                 made += 1
@@ -116,6 +134,7 @@ class Producer:
         for _ in range(need):
             try:
                 item = await self.voice.produce_item(role, 25.0)
+                await self._attach_sfx(item, role)
                 self._store_voice(item, role)
                 log.info("produced commercial %.1fs", item["duration_s"])
             except Exception as e:
@@ -154,11 +173,123 @@ class Producer:
         for _ in range(max(0, need)):
             try:
                 item = await self.voice.produce_item("dj_talk", 18.0, context=context)
+                await self._attach_sfx(item, "dj_talk")
                 self._store_voice(item, "dj_talk", evergreen=True, expires_at=expires)
                 log.info("produced dj_talk %.1fs", item["duration_s"])
             except Exception as e:
                 log.warning("dj talk production failed: %s", err_text(e))
                 return
+
+    async def ensure_field_reports(self) -> None:
+        """Keep `field_reports_min` unaired field reports (SFX.md §4.2). Like
+        dj_talk they are contextual: aired once, never recycled."""
+        have = self._count_fresh_unexpired("field_report")
+        need = self.cfg.inventory.field_reports_min - have
+        log.debug("producer.need", extra={
+            "item_type": "field_report", "have": have,
+            "target": self.cfg.inventory.field_reports_min})
+        for _ in range(max(0, need)):
+            try:
+                item = await self.voice.produce_item(
+                    "field_report", 20.0,
+                    context="Do not mention the clock time.")
+                await self._attach_sfx(item, "field_report")
+                self._store_voice(item, "field_report", evergreen=False)
+                log.info("produced field_report %.1fs", item["duration_s"])
+            except Exception as e:
+                log.warning("field report production failed: %s", err_text(e))
+                return
+
+    # ------------------------------------------------------------------ sfx
+    async def ensure_sfx_pool(self) -> int:
+        """Render each approved evergreen cue once into the recycled stock pool
+        (SFX.md §6.2). Contextual cues are rendered per host in _attach_sfx.
+        Returns how many were made; a failing backend just leaves gaps."""
+        if self.sfx is None or not self.cfg.sfx.enabled:
+            return 0
+        have = {self._sfx_cue(it) for it in self.store.list_items("sfx")}
+        made = 0
+        for name, cue in self.cfg.sfx.cues.items():
+            if not (cue.evergreen and cue.approved) or name in have:
+                continue
+            try:
+                r = await self.sfx.render(name)
+            except Exception as e:
+                log.warning("sfx.failed", extra={"cue": name, "error": err_text(e)})
+                return made
+            self._store_sfx(r, evergreen=True)
+            made += 1
+        return made
+
+    @staticmethod
+    def _sfx_cue(it: dict) -> str | None:
+        try:
+            return (json.loads(it.get("meta_json") or "{}") or {}).get("cue")
+        except ValueError:
+            return None
+
+    def _stock_sfx(self, name: str) -> dict | None:
+        for it in self.store.list_items("sfx"):
+            if it["evergreen"] and self._sfx_cue(it) == name:
+                return it
+        return None
+
+    def _store_sfx(self, r: dict, evergreen: bool) -> int:
+        return self.store.add_item(
+            type_="sfx", media_path=r["media_path"], duration_s=r["duration_s"],
+            sample_rate=r.get("sample_rate"), channels=r.get("channels"),
+            role="sfx", evergreen=evergreen, fresh=True, meta=r.get("meta"))
+
+    async def _attach_sfx(self, item: dict, role: str) -> None:
+        """Resolve a rendered host's script cues to stored sfx items and record
+        them as `meta.sfx` overlays (SFX.md §7.1). Which of them air (coin flip,
+        rate budget) is decided at commit time by sfx_plan. Never fatal: any
+        cue that can't be rendered is dropped and the host airs dry."""
+        meta = item.setdefault("meta", {})
+        cues = list(meta.pop("sfx_cues", None) or [])
+        joke = meta.pop("joke_after_sentence", None)
+        sfx = self.sfx
+        if sfx is None or not self.cfg.sfx.enabled or role not in SFX_HOST_TYPES:
+            return
+        text = str(meta.get("text") or "")
+        dur = float(item["duration_s"])
+        lead = self.cfg.audio.edge_pad_ms / 1000.0
+        sfx_cfg = self.cfg.sfx
+        overlays: list[dict] = []
+
+        async def resolve(name: str, **kw) -> dict | None:
+            cue = sfx_cfg.cues.get(name)
+            if not cue or not cue.approved:
+                return None
+            if cue.evergreen:
+                return self._stock_sfx(name)
+            try:
+                r = await sfx.render(name, seed=self.rng.randint(0, 2**31 - 1), **kw)
+            except Exception as e:
+                log.warning("sfx.failed", extra={"cue": name, "error": err_text(e)})
+                return None
+            sid = self._store_sfx(r, evergreen=False)
+            return {"id": sid, "duration_s": r["duration_s"]}
+
+        wanted = [(c["cue"], "stinger", c["after_sentence"]) for c in cues]
+        if joke is not None:
+            wanted.append((sfx_cfg.joke_cue, "joke", joke))
+        for name, kind, after in wanted:
+            got = await resolve(name)
+            if got:
+                overlays.append({"item_id": got["id"], "cue": name, "kind": kind,
+                                 "offset_s": beat_offset(text, after, dur, lead),
+                                 "duration_s": got["duration_s"]})
+        if role == "field_report":
+            bed_s = min(sfx_cfg.bed_max_s, dur - lead)
+            if bed_s >= 1.0:
+                got = await resolve(sfx_cfg.bed_cue, duration_s=bed_s)
+                if got:
+                    overlays.append({"item_id": got["id"], "cue": sfx_cfg.bed_cue,
+                                     "kind": "bed", "offset_s": 0.0,
+                                     "duration_s": got["duration_s"]})
+        if overlays:
+            meta["sfx"] = overlays
 
     def _recent_committed_songs(self, n: int) -> list[tuple[str, str, str]]:
         """Last n songs in the committed program as (title, artist, genre)."""
@@ -220,9 +351,12 @@ class Producer:
         log.info("producer running")
         while True:
             try:
+                # stock stingers first, so new talk can reference them
+                await self.ensure_sfx_pool()
                 await self.ensure_commercials()
                 await self.ensure_liners()
                 await self.ensure_dj()
+                await self.ensure_field_reports()
             except Exception as e:
                 log.warning("producer voice cycle error: %s", e)
             await asyncio.sleep(6.0)

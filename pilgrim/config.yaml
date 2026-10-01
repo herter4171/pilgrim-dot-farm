@@ -15,6 +15,7 @@ hosts:
   # searxng is reached through the LiteLLM MCP server (web_search-searxng tool),
   # NOT a direct HTTP /search. This is the MCP Streamable-HTTP endpoint.
   searxng: http://localhost:4000/mcp
+  sfx: http://127.0.0.1:8500   # Stable Audio 3 Small SFX (SFX.md §1)
 
 models:
   news: qwen38
@@ -22,19 +23,22 @@ models:
   dj_talk: qwen38
   commercials: "Ornith-1.5-9B"
   liners: "Ornith-1.5-9B"
+  field_report: qwen38
 
 voices:
   dj: am_liam
   news: am_michael
   commercials: af_aoede
   liners: am_liam
+  field_reporter: bm_lewis   # British field reporter (SFX.md §4.2, user pick)
   speed: 1.0             # seconds-per-word calibrated at setup; 1.0 is Koken default
 
 playout:
   committed_lookahead_s: 600     # keep >= this much committed audio ahead
   filler_horizon_s: 60           # repeat a liner/spot inside its spacing only below this coverage
   window_trim_keep_s: 120        # keep this much committed history behind "now"
-  weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08}
+  weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08,
+            field_report: 0.05}
   max_consecutive_non_song: 2
   news_min_spacing_s: 1200
   news_ttl_s: 2700
@@ -49,6 +53,7 @@ inventory:
   liners_per_bucket: 3
   liner_buckets_s: [3, 5, 10, 15, 30]
   dj_talk_min: 2
+  field_reports_min: 1
 
 songs:
   # duration_seconds sent to mlx-serve is max_duration_s; the model may end sooner.
@@ -108,3 +113,51 @@ library:
 
 talk:
   time_mention_ttl_s: 900   # DJ clips that mention the time expire after this
+  field_reporter_name: Giles  # PLACEHOLDER until the user names him (SFX.md §10.1)
+
+# Sound effects overlaid on non-news talk (SFX.md). Never on news, by construction.
+sfx:
+  enabled: true
+  model: stable-audio-3-small-sfx
+  steps: 8
+  cfg_scale: 4.0
+  timeout_s: 60
+  stinger_gain: 0.5        # TBD by ear (SFX.md §10.3); applied at air time
+  bed_gain: 0.15
+  host_duck: 0.7           # host gain while a stinger plays (anti-clip)
+  bed_cue: wind_bed        # ambience under every field report
+  bed_max_s: 30
+  joke_cue: rimshot        # 50/50 coin after a marked joke
+  joke_p: 0.5
+  max_per_window: 3        # at most 3 stingers ...
+  window_s: 10             # ... in any 10 s of air
+  max_stinger_s: 2.5
+  # Prompt lottery is real: only ear-approved cues render or air (SFX.md §6).
+  # evergreen: rendered once into a recycled stock pool (fixed seed).
+  # otherwise contextual: rendered fresh for the clip that calls for it.
+  cues:
+    chicken: {prompt: "excited chicken clucking, barnyard commotion", duration_s: 2.0}
+    cow: {prompt: "a single slow cartoon cow moo, barnyard", duration_s: 2.0}
+    horse: {prompt: "cartoon horse neigh and snort", duration_s: 2.0}
+    pig: {prompt: "happy pig oinking oink oink, comic barnyard", duration_s: 2.0}
+    slide_whistle: {prompt: "comical slide whistle going up then down", duration_s: 2.0,
+                    seed: 24, evergreen: true}
+    # not yet approved by ear: re-roll and flip `approved` once one lands
+    rooster: {prompt: "rooster crowing cock-a-doodle-doo, morning farm", duration_s: 2.5,
+              approved: false}
+    sprinkler: {prompt: "garden sprinkler spraying water psst psst, irrigation",
+                duration_s: 2.0, approved: false}
+    wind_bed: {prompt: "gentle wind over an open grass field, soft outdoor ambience",
+               duration_s: 10.0, approved: false}
+    rimshot: {prompt: "snare drum rimshot ba dum tss, comedy beat", duration_s: 1.5,
+              seed: 22, evergreen: true, approved: false}
+    airhorn: {prompt: "loud airhorn blast, comedic party horn", duration_s: 1.5,
+              seed: 21, evergreen: true, approved: false}
+    record_scratch: {prompt: "turntable record scratch, DJ sound effect", duration_s: 1.5,
+                     seed: 23, evergreen: true, approved: false}
+    sad_trombone: {prompt: "sad trombone wah wah wah wah, comedic failure", duration_s: 2.5,
+                   seed: 25, evergreen: true, approved: false}
+    boing: {prompt: "cartoon spring boing, wonky bounce", duration_s: 1.5, seed: 26,
+            evergreen: true, approved: false}
+    applause: {prompt: "small tinny crowd applause burst", duration_s: 2.0, seed: 27,
+               evergreen: true, approved: false}

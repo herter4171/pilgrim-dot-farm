@@ -30,12 +30,12 @@ asyncio_mode = "auto"
 python_version = "3.12"
 ignore_missing_imports = true
 warn_unused_ignores = false
-exclude = ["old_style"]
+exclude = ["old_style", "sfx_probe"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-exclude = ["old_style"]
+exclude = ["old_style", "sfx_probe"]
 src = ["pilgrim"]
 
 [tool.ruff.lint]

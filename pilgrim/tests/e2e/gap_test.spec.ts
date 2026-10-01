@@ -3,14 +3,22 @@ import { test, expect } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    const starts: { when: number; end: number; sampleRate: number; context: AudioContext }[] = [];
+    const starts: { when: number; end: number; sampleRate: number; context: AudioContext;
+                    sfx: boolean; stop?: number }[] = [];
     (window as any).__audioStarts = starts;
     const start = AudioBufferSourceNode.prototype.start;
     AudioBufferSourceNode.prototype.start = function (when = 0, offset = 0, duration?: number) {
       starts.push({ when, end: when + (duration ?? this.buffer!.duration - offset),
-                    sampleRate: this.context.sampleRate, context: this.context as AudioContext });
+                    sampleRate: this.context.sampleRate, context: this.context as AudioContext,
+                    sfx: !!(this as any)._sfx });
+      (this as any).__rec = starts[starts.length - 1];
       if (duration === undefined) start.call(this, when, offset);
       else start.call(this, when, offset, duration);
+    };
+    const stop = AudioBufferSourceNode.prototype.stop;
+    AudioBufferSourceNode.prototype.stop = function (when = 0) {
+      if ((this as any).__rec) (this as any).__rec.stop = when;
+      stop.call(this, when);
     };
   });
 });
@@ -23,13 +31,23 @@ test("PLAY continues past three clips with sample-contiguous joins", async ({ pa
   await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 15_000 });
   await page.waitForTimeout(25_000);
 
-  const starts = await page.evaluate(() => (window as any).__audioStarts.map((s: any) => ({
-    when: s.when, end: s.end, sampleRate: s.sampleRate,
+  const all = await page.evaluate(() => (window as any).__audioStarts.map((s: any) => ({
+    when: s.when, end: s.end, sampleRate: s.sampleRate, sfx: s.sfx, stop: s.stop,
   })));
+  // SFX overlays ride on top of a host; the joins are between hosts only
+  const starts = all.filter((s: any) => !s.sfx);
   expect(starts.length, "schedules beyond the initial three decoded items").toBeGreaterThan(8);
   for (let i = 1; i < starts.length; i++) {
     expect(Math.abs(starts[i].when - starts[i - 1].end), "join within one sample")
       .toBeLessThanOrEqual(1 / starts[i].sampleRate);
+  }
+  // every overlay starts inside a host and is stopped by that host's end (SFX.md §7.4)
+  const overlays = all.filter((s: any) => s.sfx);
+  expect(overlays.length, "talk clips carried SFX overlays").toBeGreaterThan(0);
+  for (const o of overlays) {
+    const host = starts.find((h: any) => h.when <= o.when && o.when < h.end);
+    expect(host, "overlay starts inside a host clip").toBeTruthy();
+    expect(o.stop, "overlay is stopped at its host's end").toBeLessThanOrEqual(host.end + 1e-6);
   }
   const report = await page.request.get("/api/test/report").then(r => r.json());
   expect(report.underrun).toBe(0);

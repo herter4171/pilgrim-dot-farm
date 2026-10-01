@@ -92,6 +92,7 @@ class Hosts(BaseModel):
     kokoro: str
     litellm: str
     searxng: str
+    sfx: str = "http://127.0.0.1:8500"  # Stable Audio SFX wrapper (SFX.md §1)
 
 
 class Models(BaseModel):
@@ -100,6 +101,7 @@ class Models(BaseModel):
     dj_talk: str
     commercials: str
     liners: str
+    field_report: str = "qwen38"  # field reporter copy (SFX.md §4.2)
 
 
 class Voices(BaseModel):
@@ -107,6 +109,7 @@ class Voices(BaseModel):
     news: str
     commercials: str
     liners: str
+    field_reporter: str = "bm_lewis"  # British field reporter (SFX.md §4.2, user pick)
     speed: float = 1.0
 
 
@@ -116,7 +119,8 @@ class Playout(BaseModel):
     window_trim_keep_s: int = 120
     weights: dict[str, float] = Field(
         default_factory=lambda: {"song": .55, "dj_talk": .12,
-                                 "commercial_break": .15, "liner": .10, "news": .08})
+                                 "commercial_break": .15, "liner": .10, "news": .08,
+                                 "field_report": .05})
     max_consecutive_non_song: int = 2
     news_min_spacing_s: int = 1200
     news_ttl_s: int = 2700
@@ -132,6 +136,7 @@ class Inventory(BaseModel):
     liners_per_bucket: int = 3
     liner_buckets_s: list[int] = Field(default_factory=lambda: [3, 5, 10, 15, 30])
     dj_talk_min: int = 2
+    field_reports_min: int = 1  # unaired field reports kept ready (SFX.md §4.2)
 
 
 class Songs(BaseModel):
@@ -204,6 +209,39 @@ class Station(BaseModel):
 class Talk(BaseModel):
     """Contextual talk settings (OVERHAUL 5.3)."""
     time_mention_ttl_s: int = 900  # DJ clips that mention the time expire after this
+    field_reporter_name: str = "Giles"  # placeholder until the user names him (SFX.md §10)
+
+
+class SfxCue(BaseModel):
+    """One curated sound effect (SFX.md §6). `evergreen` cues are rendered once
+    into a recycled stock pool; contextual cues are rendered fresh for the host
+    clip that calls for them. Prompts are a lottery, so only `approved` cues
+    (picked by ear) are ever rendered or aired."""
+    prompt: str
+    duration_s: float = 2.0
+    seed: int | None = None  # fixed seed = byte-identical clip; None = injected RNG
+    evergreen: bool = False
+    approved: bool = True
+
+
+class Sfx(BaseModel):
+    """Sound-effect overlays on non-news talk (SFX.md §0, §7)."""
+    enabled: bool = True
+    model: str = "stable-audio-3-small-sfx"
+    steps: int = 8
+    cfg_scale: float = 4.0
+    timeout_s: float = 60.0
+    stinger_gain: float = 0.5  # undecided by ear (SFX.md §10.3): a knob, not baked in
+    bed_gain: float = 0.15
+    host_duck: float = 0.7  # host gain under a stinger, so the sum doesn't clip
+    bed_cue: str = "wind_bed"  # ambience under every field report
+    bed_max_s: float = 30.0
+    joke_cue: str = "rimshot"  # the 50/50 da-dum-tiss after a marked joke
+    joke_p: float = 0.5
+    max_per_window: int = 3  # rolling stinger budget ...
+    window_s: float = 10.0  # ... per this many seconds of air
+    max_stinger_s: float = 2.5
+    cues: dict[str, SfxCue] = Field(default_factory=dict)
 
 
 class Config(BaseModel):
@@ -219,6 +257,7 @@ class Config(BaseModel):
     audio: Audio = Field(default_factory=Audio)
     logging: Logging = Field(default_factory=Logging)
     talk: Talk = Field(default_factory=Talk)
+    sfx: Sfx = Field(default_factory=Sfx)
     library: Library = Field(default_factory=Library)
 
 

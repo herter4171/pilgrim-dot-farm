@@ -22,6 +22,7 @@ from pilgrim.config import (  # noqa: E402
 from pilgrim.logging_setup import err_text, setup_logging  # noqa: E402
 from pilgrim.pipelines.llm import LLM  # noqa: E402
 from pilgrim.pipelines.news import NewsPipeline  # noqa: E402
+from pilgrim.pipelines.sfx import SfxClient, SfxPipeline  # noqa: E402
 from pilgrim.pipelines.songs import SongPipeline  # noqa: E402
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline  # noqa: E402
 from pilgrim.producer import Producer  # noqa: E402
@@ -31,7 +32,8 @@ from pilgrim.store import Store  # noqa: E402
 def _prompts(cfg: Config) -> dict:
     pdir = ROOT / cfg.library.prompts_dir
     return {f.replace(".md", ""): (pdir / f).read_text()
-            for f in ("voice.md", "song_brief.md", "news.md") if (pdir / f).exists()}
+            for f in ("voice.md", "song_brief.md", "news.md", "field.md", "sfx_cues.md",
+                      "sfx_joke.md") if (pdir / f).exists()}
 
 
 async def seed(cfg: Config, api_key: str) -> int:
@@ -43,10 +45,14 @@ async def seed(cfg: Config, api_key: str) -> int:
     voice = VoicePipeline(cfg, llm, kokoro, db, media_dir, prompts=_prompts(cfg))
     songs = SongPipeline(cfg, llm, media_dir, prompts=_prompts(cfg))
     news = NewsPipeline(cfg, llm, api_key=api_key, prompts=_prompts(cfg))
+    sfx_client = SfxClient(cfg)
     prod = Producer(cfg, db, llm, kokoro, voice, songs, Clock(), prompts=_prompts(cfg),
                     media_dir=media_dir, api_key=api_key, rng=RNG(cfg.station.rng_seed),
-                    news_pipeline=news)
+                    news_pipeline=news, sfx=SfxPipeline(cfg, sfx_client, media_dir))
     made = 0
+    # stock stingers first so seeded talk can use them (SFX.md §8.1)
+    log.info("seeding sfx stock pool...")
+    made += await prod.ensure_sfx_pool()
     log.info("seeding commercials...")
     n0 = db.count_fresh_of_type("commercial")
     await prod.ensure_commercials()
@@ -59,6 +65,10 @@ async def seed(cfg: Config, api_key: str) -> int:
     n0 = db.count_fresh_of_type("dj_talk")
     await prod.ensure_dj()
     made += db.count_fresh_of_type("dj_talk") - n0
+    log.info("seeding field report...")
+    n0 = db.count_fresh_of_type("field_report")
+    await prod.ensure_field_reports()
+    made += db.count_fresh_of_type("field_report") - n0
     log.info("seeding news bulletin...")
     n0 = db.count_fresh_of_type("news")
     await prod.ensure_news()
@@ -85,6 +95,7 @@ async def seed(cfg: Config, api_key: str) -> int:
     await llm.close()
     await kokoro.close()
     await songs.close()
+    await sfx_client.close()
     return made
 
 

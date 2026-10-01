@@ -22,7 +22,7 @@ import json
 from pilgrim.config import ROOT, load_config
 from pilgrim.store import Store
 
-_VOICE_TYPES = ("commercial", "liner", "dj_talk", "news")
+_VOICE_TYPES = ("commercial", "liner", "dj_talk", "field_report", "news")
 
 
 def classify(rows: list[dict], cfg) -> tuple[list[tuple[int, str, str]], list[int]]:

@@ -85,3 +85,21 @@ class FakeMinimax:
 
     async def close(self):
         pass
+
+
+class FakeSfx:
+    """Fake of SfxClient (SFX.md §7.5): a 44.1 kHz stereo tone of exactly the
+    requested duration, like the real wrapper. `fail=True` injects outages."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[tuple[str, float, int | None]] = []
+
+    async def generate(self, prompt: str, duration_s: float, seed: int | None) -> bytes:
+        self.calls.append((prompt, duration_s, seed))
+        if self.fail:
+            raise RuntimeError("fake sfx down")
+        return tone_wav(duration_s, 44100, 2, freq=880.0)
+
+    async def close(self) -> None:
+        pass

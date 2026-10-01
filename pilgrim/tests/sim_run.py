@@ -20,6 +20,41 @@ from pilgrim.selector import RandomSelector  # noqa: E402
 from pilgrim.store import Store  # noqa: E402
 
 
+def _seed_sfx(store) -> set[int]:
+    """SFX stock + hosts that carry overlays: field reports with a bed and a
+    stinger, DJ talk with a joke, commercials (recycled) with a joke and a
+    burst of stingers that the rate budget must thin out. Returns the ids of
+    hosts carrying a joke cue."""
+    rim = store.add_item(type_="sfx", media_path="rim.flac", duration_s=1.5,
+                         evergreen=True, meta={"cue": "rimshot"})
+    moo = store.add_item(type_="sfx", media_path="moo.flac", duration_s=2.0,
+                         meta={"cue": "cow"})
+    bed = store.add_item(type_="sfx", media_path="bed.flac", duration_s=25.0,
+                         meta={"cue": "wind_bed"})
+
+    def cue(item_id, kind, off, dur):
+        return {"item_id": item_id, "cue": "x", "kind": kind, "offset_s": off,
+                "duration_s": dur}
+    jokes: set[int] = set()
+    for _ in range(40):
+        store.add_item(type_="field_report", media_path="fr.flac", duration_s=22.0,
+                       evergreen=False, meta={"sfx": [cue(bed, "bed", 0.0, 25.0),
+                                                      cue(moo, "stinger", 6.0, 2.0)]})
+    for _ in range(30):
+        jokes.add(store.add_item(
+            type_="dj_talk", media_path="dj.flac", duration_s=18.0,
+            meta={"sfx": [cue(rim, "joke", 9.0, 1.5)]}))
+    for _ in range(10):
+        jokes.add(store.add_item(
+            type_="commercial", media_path="c.flac", duration_s=25.0,
+            meta={"sfx": [cue(moo, "stinger", 1.0 + k * 1.2, 1.0) for k in range(5)]
+                  + [cue(rim, "joke", 20.0, 1.5)]}))
+    # news that (wrongly) carries a cue: the scheduler must still air it dry
+    store.add_item(type_="news", media_path="n.flac", duration_s=30.0,
+                   meta={"sfx": [cue(moo, "stinger", 2.0, 2.0)]})
+    return jokes
+
+
 def run(hours=24):
     cfg = load_config()
     tmp = Path(tempfile.mkdtemp(prefix="radio_sim_"))
@@ -34,6 +69,7 @@ def run(hours=24):
         store.add_item(type_="intro", media_path="intro.flac", duration_s=8.0,
                        evergreen=False, fresh=True,
                        meta={"song_item_id": s["id"]})
+    joke_hosts = _seed_sfx(store)
 
     clock = SimClock()
     sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
@@ -42,6 +78,7 @@ def run(hours=24):
     step = 30
     max_run_non_song = 0
     min_coverage = float("inf")
+    overlays: dict[int, list[dict]] = {}  # seq -> aired SFX overlays
     sched.commit_lookahead()  # the station commits at startup (Station.startup)
     for _ in range(int(hours * 3600) // step):
         clock.advance(step)
@@ -49,6 +86,7 @@ def run(hours=24):
         min_coverage = min(min_coverage, sched.coverage())
         for r in store.program_after(last_seq):
             seen.append((r["seq"], r["type"], r["duration_s"], r["item_id"]))
+            overlays[r["seq"]] = sched.overlays_for(r["seq"])
             last_seq = max(last_seq, r["seq"])
 
     # ---- assertions ----
@@ -97,6 +135,38 @@ def run(hours=24):
         if imeta.get("song_item_id") != nxt[3]:
             fails.append("intro followed by a different song")
 
+    # field reports are comic: never next to news (SFX.md §4.2)
+    for a, b in zip(types, types[1:], strict=False):
+        if {a, b} == {"field_report", "news"} or a == b == "field_report":
+            fails.append("field_report adjacent to news/field_report")
+            break
+
+    # ---- SFX policy (SFX.md §0, §7.5) ----
+    start = 0.0
+    stinger_starts: list[float] = []
+    joke_chances = jokes_aired = 0
+    for seq, t, dur, item_id in seen:
+        ovs = overlays.get(seq, [])
+        if ovs and t not in ("dj_talk", "field_report", "commercial", "liner"):
+            fails.append(f"sfx on a {t}")
+        for o in ovs:
+            if o["offset_s"] < 0 or o["offset_s"] + o["duration_s"] > dur + 1e-6:
+                fails.append("sfx overlay runs outside its host")
+            if o["kind"] != "bed":
+                stinger_starts.append(start + o["offset_s"])
+        if item_id in joke_hosts:
+            joke_chances += 1
+            jokes_aired += any(o["kind"] == "joke" for o in ovs)
+        start += dur
+    win, cap = cfg.sfx.window_s, cfg.sfx.max_per_window
+    for i, t0 in enumerate(stinger_starts):
+        if sum(1 for t1 in stinger_starts[i:] if t1 < t0 + win) > cap:
+            fails.append(f"more than {cap} stingers in {win:.0f}s")
+            break
+    joke_rate = jokes_aired / joke_chances if joke_chances else 0.0
+    if joke_chances < 50 or not 0.35 <= joke_rate <= 0.65:
+        fails.append(f"joke rimshot rate {joke_rate:.2f} over {joke_chances} jokes, want ~0.5")
+
     from collections import Counter
     mix = Counter(types)
     if not seen:
@@ -110,6 +180,8 @@ def run(hours=24):
     max_run_str = (f"max consecutive non-song: {max_run_non_song} "
                    f"(limit {cfg.playout.max_consecutive_non_song})")
     print(max_run_str)
+    print(f"sfx: {len(stinger_starts)} stingers, {sum(len(v) for v in overlays.values())} "
+          f"overlays; joke rimshot {jokes_aired}/{joke_chances} ({joke_rate:.2f})")
     if fails:
         print("FAILURES:")
         for f in fails:

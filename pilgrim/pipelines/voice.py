@@ -16,6 +16,7 @@ from pilgrim.audio.qc import grade_audio
 from pilgrim.config import Config
 from pilgrim.logging_setup import err_text
 from pilgrim.pipelines.llm import LLM, LLMError
+from pilgrim.pipelines.sfx import SFX_HOST_TYPES, parse_cues
 
 log = logging.getLogger("radio.voice")
 
@@ -171,7 +172,10 @@ class VoicePipeline:
                     "weather in Thistledown, recent songs, the time of day"),
         "news": ("news", "news bulletin headline"),
         "intro": ("dj_talk", "short DJ intro for the very next song; name the title and artist"),
+        "field_report": ("field_report", "a field report filed from a literal field: "
+                         "farm factoids delivered as serious news"),
     }
+    CATCH_PHRASE = "outstanding in my field"
 
     def __init__(self, cfg: Config, llm: LLM, kokoro: KokoroClient,
                  db=None, media_dir: Path | None = None, prompts=None):
@@ -190,27 +194,60 @@ class VoicePipeline:
             return self.cfg.voices.commercials
         if role == "news":
             return self.cfg.voices.news
+        if role == "field_report":
+            return self.cfg.voices.field_reporter
         return self.cfg.voices.dj
+
+    def _sfx_cue_names(self, role: str) -> list[str]:
+        """Cues a script for `role` may ask for. Empty for news, always."""
+        if role not in SFX_HOST_TYPES or not self.cfg.sfx.enabled:
+            return []
+        sfx = self.cfg.sfx
+        skip = {sfx.joke_cue, sfx.bed_cue}
+        return sorted(n for n, c in sfx.cues.items() if c.approved and n not in skip)
+
+    def _joke_ok(self, role: str) -> bool:
+        cue = self.cfg.sfx.cues.get(self.cfg.sfx.joke_cue)
+        return bool(role in SFX_HOST_TYPES and self.cfg.sfx.enabled and cue and cue.approved)
+
+    def _sfx_instructions(self, role: str) -> str:
+        names = self._sfx_cue_names(role)
+        tmpl = self.prompts.get("sfx_cues")
+        if not tmpl or not (names or self._joke_ok(role)):
+            return ""
+        joke = self.prompts.get("sfx_joke", "") if self._joke_ok(role) else ""
+        return tmpl.format(cues=", ".join(names) or "none", joke=joke).strip()
 
     async def write_copy(self, role: str, target_s: float,
                          context: str | None = None) -> dict:
-        prompt = self.prompts.get("voice")
+        name = self.cfg.talk.field_reporter_name
+        prompt = (self.prompts.get("field", "").replace("{name}", name)
+                  if role == "field_report" else self.prompts.get("voice"))
         if not prompt:
-            raise LLMError("voice prompt template missing")
+            raise LLMError(f"prompt template missing for {role}")
         extra = context or ""
         schema = ('Return JSON only: {"text": "<copy>", "est_duration_s": <number>, '
                   '"evergreen": true}') if role != "news" else (
             'Return JSON only: {"text": "<copy>", "est_duration_s": <number>, '
             '"gravity": "serious"|"normal"}')
         sys_prompt = f"{prompt}\n\nRole: {self.ROLE_INFO[role][1]}. Target {target_s:.0f}s."
+        sfx_note = self._sfx_instructions(role)
+        if sfx_note:
+            sys_prompt += "\n\n" + sfx_note
         user = (f"Write the copy. {schema}\n\nContext:\n{extra}"
                 if extra else f"Write the copy. {schema}")
         obj = await self.llm.chat_json(self._model_for(role), sys_prompt, user)
         text = str(obj.get("text", "")).strip()
         if not text:
             raise LLMError("copy empty")
+        if role == "field_report" and self.CATCH_PHRASE not in text.lower():
+            # the catch phrase closes every report: enforced, not just prompted
+            text = (f"{text.rstrip()} This is {name} signing off with a reminder "
+                    f"that I'm {self.CATCH_PHRASE}.")
         est = float(obj.get("est_duration_s", target_s) or target_s)
-        return {"text": text, "est_duration_s": est, **obj}
+        cues, joke = parse_cues(obj, text, set(self._sfx_cue_names(role)), self._joke_ok(role))
+        return {**obj, "text": text, "est_duration_s": est,
+                "sfx_cues": cues, "joke_after_sentence": joke}
 
     async def render(self, copy: dict, role: str, target_s: float) -> dict:
         clean = tts_cleanup(copy["text"])
@@ -272,7 +309,9 @@ class VoicePipeline:
             "role": role, "evergreen": bool(copy.get("evergreen", True)),
             "gravity": copy.get("gravity"),
             "meta": {"text": copy.get("text"), "words": rendered.get("words"),
-                      "words_per_s": rendered.get("words_per_s")},
+                      "words_per_s": rendered.get("words_per_s"),
+                      "sfx_cues": copy.get("sfx_cues") or [],
+                      "joke_after_sentence": copy.get("joke_after_sentence")},
         }
         log.info("voice.produced", extra={
             **base, "words": len(copy.get("text", "").split()),

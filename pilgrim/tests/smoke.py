@@ -49,6 +49,7 @@ def probe() -> int:
              {"Authorization": f"Bearer {key}"} if key else None),
             ("kokoro", cfg.hosts.kokoro.rstrip("/") + "/health", None),
             ("mlx_serve", cfg.hosts.mlx_serve.rstrip("/") + "/v1/models", None),
+            ("sfx", cfg.hosts.sfx.rstrip("/") + "/health", None),
         ]
         for name, url, headers in checks:
             try:

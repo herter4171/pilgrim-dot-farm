@@ -8,7 +8,7 @@ from typing import Protocol
 from pilgrim.config import RNG, Config
 
 # Segment types the selector chooses from.
-SEGMENTS = ["song", "dj_talk", "commercial_break", "liner", "news"]
+SEGMENTS = ["song", "dj_talk", "commercial_break", "liner", "news", "field_report"]
 
 # Segment types whose inventory must be present for the type to be drawable.
 INVENTORY_TYPES = {
@@ -17,6 +17,7 @@ INVENTORY_TYPES = {
     "commercial_break": "commercial",
     "liner": "liner",
     "news": "news",
+    "field_report": "field_report",
 }
 
 
@@ -93,10 +94,20 @@ class RandomSelector:
             available.discard("news")
             weights.pop("news", None)
 
+        # the field reporter is a comic bit: never right after news (in either
+        # order) and never two reports back to back (SFX.md §4.2)
+        if last in ("field_report", "news"):
+            available.discard("field_report")
+            weights.pop("field_report", None)
+        if last == "field_report":
+            available.discard("news")
+            weights.pop("news", None)
+
         # seriousness adjacency: serious bulletin -> next non-song isn't a commercial
         if state.news_gravity == "serious" and (last is None or last != "song"):
-            available.discard("commercial_break")
-            weights.pop("commercial_break", None)
+            for comic in ("commercial_break", "field_report"):
+                available.discard(comic)
+                weights.pop(comic, None)
 
         # A liner is a bridge, not filler: never liner -> liner while any other
         # interjection (commercial, dj_talk, news) is ready. Without this a song
@@ -115,8 +126,9 @@ class RandomSelector:
             # non-song interjection stock exists, take the interjection before the song.
             # "song" is only revisited when no non-song inventory exists at all.
             last = state.recent_types[-1] if state.recent_types else None
-            order = ("commercial_break", "dj_talk", "news", "liner", "song") \
-                if last == "song" else ("song", "commercial_break", "dj_talk", "news", "liner")
+            order = ("commercial_break", "dj_talk", "field_report", "news", "liner", "song") \
+                if last == "song" else ("song", "commercial_break", "dj_talk", "field_report",
+                                        "news", "liner")
             for s in order:
                 if state.available.get(s):
                     return s

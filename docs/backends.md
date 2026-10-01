@@ -183,6 +183,28 @@ degrades to a model-written bulletin.
 
 ---
 
+## 7. SFX — Stable Audio 3 Small SFX (`127.0.0.1:8500`, verified 2026-10-01)
+
+OpenAI-style wrapper, no auth, CPU. Full probe notes: `SFX.md` §1–§2.
+
+- `GET /health` → `{"status":"ok","model":"stable-audio-3-small-sfx","device":"cpu"}`
+- `GET /v1/models` → lists `stable-audio-3-small-sfx`.
+- `POST /v1/audio/speech` (synchronous, raw audio body):
+  ```json
+  {"model": "stable-audio-3-small-sfx", "input": "<prompt>", "duration": 2.0,
+   "steps": 8, "cfg_scale": 4.0, "response_format": "wav", "seed": 24}
+  ```
+  `duration` 0.5–380 s, honored exactly. `wav` → PCM s16le **44.1 kHz stereo**,
+  often peaking at full scale. `mp3` is real; `flac`/`ogg` silently fall back
+  to wav. Fixed `seed` → byte-identical output.
+- Wall time (warm): ~2–3 s floor, ~1.3× real time past ~5 s.
+- Through `SfxPipeline` (two-pass loudnorm → FLAC): a 2 s request comes out
+  ~1.3 s (edge silence trimmed, 150 ms lead pad), −16.3 LUFS, TP ≈ −5 dBFS.
+
+Client: `pilgrim/pipelines/sfx.py` (`SfxClient.generate`).
+
+---
+
 ## 6. Playwright — `localhost:8931`
 
 MCP server + headed browser (Chrome on VNC display :1) confirmed working

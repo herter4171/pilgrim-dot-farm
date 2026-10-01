@@ -12,7 +12,9 @@ import time
 from datetime import UTC, datetime
 
 from pilgrim.config import RNG, Clock, Config
+from pilgrim.pipelines.sfx import SFX_HOST_TYPES
 from pilgrim.selector import PlayoutState, Selector
+from pilgrim.sfx_plan import plan_overlays
 from pilgrim.store import Store
 
 log = logging.getLogger("radio.scheduler")
@@ -52,6 +54,11 @@ class Scheduler:
         # committed request songs not yet on air: seq -> request_id. A request
         # is 'aired' when the playhead reaches its song, not when committed.
         self._pending_aired: dict[int, int] = {}
+        # SFX overlays that air with each committed host: seq -> overlays, plus
+        # the absolute program start of recent stingers (rolling budget).
+        # Live-only, like the program itself (SFX.md §7.2).
+        self._sfx_by_seq: dict[int, list[dict]] = {}
+        self._stinger_starts: list[float] = []
         # The committed program is live-only state: old rows refer to a clock
         # that no longer exists, so start clean on every run (OVERHAUL 2.4).
         self.store.clear_program()
@@ -95,6 +102,7 @@ class Scheduler:
         st.inventory_counts = {
             "song": self.store.count_usable_of_type("song"),
             "dj_talk": self.store.count_fresh_of_type("dj_talk"),
+            "field_report": self.store.count_fresh_of_type("field_report"),
             "commercial": self.store.count_usable_of_type("commercial"),
             "liner": self.store.count_usable_of_type("liner"),
         }
@@ -103,6 +111,7 @@ class Scheduler:
             # pool never loops the same track back to back (§5.2)
             "song": bool(self._eligible_songs()) or bool(self._uncommitted_ready_requests()),
             "dj_talk": st.inventory_counts["dj_talk"] > 0,
+            "field_report": st.inventory_counts["field_report"] > 0,
             "commercial_break": st.inventory_counts["commercial"] > 0,
             "liner": st.inventory_counts["liner"] > 0,
             "news": self._news_valid() is not None,
@@ -226,8 +235,10 @@ class Scheduler:
         if lag > 0:  # program ran dry: start the new item at "now", not in the past
             self._offset += lag
             log.warning("program.starved", extra={"gap_s": round(lag, 1)})
+        host_start = self._total
         seq = self.store.append_program(item_id, e["type"], e["duration_s"])
         self._air_clock += e["duration_s"]  # monotonic: never resets on trim
+        self._plan_sfx(seq, e, host_start)
         if e.get("consume"):
             self.store.mark_aired(item_id)
         if e.get("request_id"):
@@ -235,9 +246,45 @@ class Scheduler:
             self._pending_aired[seq] = e["request_id"]
             log.info("request.committed", extra={
                 "request_id": e["request_id"], "item_id": item_id, "seq": seq})
+        # a break commits several entries before the next rebuild: advance the
+        # end now so each entry's start (and SFX timing) is its own
+        self._total += e["duration_s"]
         log.debug("program.commit", extra={
             "seq": seq, "item_id": item_id, "item_type": e["type"],
             "duration_s": e["duration_s"], "coverage_s": round(self.coverage(), 1)})
+
+    def _plan_sfx(self, seq: int, e: dict, host_start: float) -> None:
+        """Decide which of the host's rendered SFX overlays air (coin flip,
+        rate budget; sfx_plan). Missing/retired sfx items are skipped: a
+        stinger is optional, never a stall (SFX.md §7.4)."""
+        if e["type"] not in SFX_HOST_TYPES:
+            return  # songs, intros and news never carry SFX
+        it = self.store.get_item(e["item_id"])
+        try:
+            meta = json.loads(it["meta_json"]) if it and it.get("meta_json") else {}
+        except ValueError:
+            meta = {}
+        cues = [c for c in (meta.get("sfx") or [])
+                if isinstance(c, dict) and self._sfx_airable(c.get("item_id"))]
+        if not cues:
+            return
+        horizon = host_start - self.cfg.sfx.window_s
+        self._stinger_starts = [t for t in self._stinger_starts if t > horizon]
+        overlays, added = plan_overlays(e["type"], host_start, e["duration_s"], cues,
+                                        self._stinger_starts, self.rng, self.cfg.sfx)
+        self._stinger_starts.extend(added)
+        if overlays:
+            self._sfx_by_seq[seq] = overlays
+
+    def _sfx_airable(self, item_id: object) -> bool:
+        if not isinstance(item_id, int):
+            return False
+        it = self.store.get_item(item_id)
+        return bool(it and it["type"] == "sfx" and not it["retired"])
+
+    def overlays_for(self, seq: int) -> list[dict]:
+        """SFX overlays committed with program row `seq` (empty if none)."""
+        return list(self._sfx_by_seq.get(seq, []))
 
     def _settle_aired(self) -> None:
         """Mark committed request songs 'aired' once the playhead reaches them."""
@@ -272,6 +319,8 @@ class Scheduler:
             )
             self._program_start = self._cum[retained_index]
             self.store.truncate_program_before(threshold_seq)
+            for s in [s for s in self._sfx_by_seq if s < threshold_seq]:
+                del self._sfx_by_seq[s]
             self._rebuild_program()
 
     def _materialize(self, type_: str) -> list[dict]:
@@ -283,6 +332,8 @@ class Scheduler:
                 return self._pick_liner(st)
             if type_ == "dj_talk":
                 return self._pick_dj(st)
+            if type_ == "field_report":
+                return self._pick_fresh_talk("field_report")
             if type_ == "commercial_break":
                 return self._pick_commercial_break(st)
             if type_ == "news":
@@ -401,9 +452,14 @@ class Scheduler:
                  "consume": True}]
 
     def _pick_dj(self, st: PlayoutState) -> list[dict]:
+        return self._pick_fresh_talk("dj_talk")
+
+    def _pick_fresh_talk(self, type_: str) -> list[dict]:
+        """An unaired, unexpired contextual clip (dj_talk / field_report).
+        Consumed on commit: contextual talk is never recycled (AGENTS rule 10)."""
         now_wall = self.clock.wall()
         items = []
-        for i in self.store.list_items("dj_talk"):
+        for i in self.store.list_items(type_):
             if not i["fresh"] or i["emergency"]:
                 continue
             exp = _parse_iso(i.get("expires_at"))
@@ -413,7 +469,7 @@ class Scheduler:
         if not items:
             return []
         it = self.rng.choice(items)
-        return [{"item_id": it["id"], "type": "dj_talk", "duration_s": it["duration_s"],
+        return [{"item_id": it["id"], "type": type_, "duration_s": it["duration_s"],
                  "consume": True}]
 
     def _pick_commercial_break(self, st: PlayoutState) -> list[dict]:

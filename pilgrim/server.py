@@ -25,6 +25,7 @@ from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.moderation import Moderation
 from pilgrim.pipelines.news import NewsPipeline
 from pilgrim.pipelines.request_filter import prefilter
+from pilgrim.pipelines.sfx import SfxClient, SfxPipeline
 from pilgrim.pipelines.songs import SongPipeline
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
 from pilgrim.producer import Producer
@@ -52,6 +53,8 @@ class Station:
         self.songs = SongPipeline(cfg, self.llm, self.media_dir, prompts=_load_prompts(cfg))
         self.news = NewsPipeline(cfg, self.llm, api_key=api_key,
                                 prompts=_load_prompts(cfg))
+        self.sfx_client = SfxClient(cfg)
+        self.sfx = SfxPipeline(cfg, self.sfx_client, self.media_dir)
         self.clock = Clock()
         self.rng = RNG(cfg.station.rng_seed)
         self.selector = RandomSelector(self.rng, cfg)
@@ -59,7 +62,7 @@ class Station:
         self.producer = Producer(
             cfg, self.db, self.llm, self.kokoro, self.voice, self.songs,
             self.clock, prompts=_load_prompts(cfg), media_dir=self.media_dir,
-            api_key=api_key, rng=self.rng, news_pipeline=self.news)
+            api_key=api_key, rng=self.rng, news_pipeline=self.news, sfx=self.sfx)
         self._tasks: list = []
         self._http = httpx.AsyncClient(timeout=4.0)
 
@@ -67,7 +70,8 @@ class Station:
     async def backend_status(self) -> dict:
         def ok(status: int) -> bool:
             return 200 <= status < 500
-        st = {"litellm": False, "kokoro": False, "mlx": False, "searxng": False}
+        st = {"litellm": False, "kokoro": False, "mlx": False, "searxng": False,
+              "sfx": False}
         try:
             r = await self._http.get(
                 self.cfg.hosts.litellm.rstrip("/") + "/models", headers=self._auth)
@@ -90,6 +94,11 @@ class Station:
             st["searxng"] = ok(r.status_code)
         except Exception:
             st["searxng"] = False
+        try:
+            r = await self._http.get(self.cfg.hosts.sfx.rstrip("/") + "/health")
+            st["sfx"] = ok(r.status_code)
+        except Exception:
+            st["sfx"] = False
         return st
 
     async def inventory_levels(self) -> dict:
@@ -103,7 +112,9 @@ class Station:
             "liner": {"have": have["liner"],
                       "target": inv.liners_per_bucket * len(inv.liner_buckets_s)},
             "dj_talk": {"have": have["dj_talk"], "target": inv.dj_talk_min},
+            "field_report": {"have": have["field_report"], "target": inv.field_reports_min},
             "news": {"have": have["news"], "target": 1},
+            "sfx": {"have": have["sfx"], "target": self.producer.sfx_stock_target()},
         }
 
     def rotation(self) -> dict[str, int]:
@@ -116,6 +127,7 @@ class Station:
             "commercial": have["commercial"],
             "liner": have["liner"],
             "dj_talk": have["dj_talk"],
+            "field_report": have["field_report"],
             "news": have["news"],
         }
 
@@ -153,7 +165,8 @@ class Station:
         out = []
         for it in items:
             out.append({"seq": it["seq"], "media_id": it["item_id"],
-                        "type": it["type"], "duration_s": it["duration_s"]})
+                        "type": it["type"], "duration_s": it["duration_s"],
+                        "sfx": scheduler.overlays_for(it["seq"])})
         return {"items": out, "start_offset_s": start_offset}
 
     async def startup(self) -> None:
@@ -171,7 +184,8 @@ class Station:
 def _load_prompts(cfg: Config) -> dict:
     pdir = ROOT / cfg.library.prompts_dir
     out = {}
-    for f in ("voice.md", "song_brief.md", "news.md", "moderation.md"):
+    for f in ("voice.md", "song_brief.md", "news.md", "moderation.md", "field.md",
+              "sfx_cues.md", "sfx_joke.md"):
         p = pdir / f
         if p.exists():
             out[f.replace(".md", "")] = p.read_text()

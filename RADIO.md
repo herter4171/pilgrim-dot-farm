@@ -96,7 +96,7 @@ item is made.
 |-------|-------|---------------|-----------|
 | **Evergreen** | songs, commercials, generic liners, station IDs | Well ahead, into inventory | Yes |
 | **Expiring** | news bulletins | On a refresh cycle; carries `expires_at` | Never |
-| **Contextual** | DJ talk-ups (back-announce + intro), time checks | Just in time, once neighbors are known | Never |
+| **Contextual** | DJ talk-ups (back-announce + intro), time checks, field reports | Just in time, once neighbors are known | Never |
 
 Segment types the selector chooses from:
 - `song` — one song (fresh preferred over recycled).
@@ -104,6 +104,22 @@ Segment types the selector chooses from:
 - `liner` — short station ID or gag line.
 - `dj_talk` — contextual talk-up referencing the previous and next items.
 - `news` — the current bulletin, if one is valid.
+- `field_report` — the British field reporter, filing invented farm factoids
+  from a literal field; always closes with his "outstanding in my field"
+  sign-off (enforced in code). Contextual: aired once, never recycled.
+
+**SFX** (`sfx` items, SFX.md): short sound effects rendered by the Stable Audio
+SFX backend. They are **never airable on their own**: they ride on a host clip
+(`dj_talk`, `field_report`, `commercial`, `liner`) as sidecar overlays recorded
+in the host's `meta.sfx` as `{item_id, cue, kind, offset_s, duration_s}`,
+`kind` ∈ `stinger | joke | bed`. **News never carries SFX**, by construction.
+Cues are curated by ear in `sfx.cues`; only `approved` ones render or air.
+Evergreen cues (fixed seed) form a small recycled stock pool; contextual cues
+(e.g. barnyard animals, the field reporter's wind bed) are rendered fresh for
+the clip that calls for them. Scripts ask for cues by sentence
+(`"sfx": [{"cue", "after_sentence"}]`, `"joke_after_sentence"`); the offset is
+a coarse word-share estimate of that sentence boundary — an intentional beat,
+not syllable accuracy.
 
 ---
 
@@ -133,6 +149,7 @@ types. Default weights (tunable in config):
 | commercial_break | 0.15 |
 | liner | 0.10 |
 | news | 0.08 |
+| field_report | 0.05 |
 
 Constraints (applied before drawing):
 - At most **2 consecutive non-song segments**; after that, force `song`.
@@ -145,7 +162,17 @@ Constraints (applied before drawing):
 - Same song: minimum **4 h** separation, relaxed stepwise (4 h → 2 h → 1 h)
   only when the pool is too small to satisfy it.
 - Genre: no genre repeated within the last **3** songs.
-- `dj_talk` never adjacent to another `dj_talk` or to `news`.
+- `dj_talk` never adjacent to another `dj_talk` or to `news` (either order).
+- `field_report` never adjacent to `news` (either order) or to another
+  `field_report`, and is held back after a `serious` bulletin like a
+  `commercial_break`.
+- **SFX at commit time** (`sfx_plan.py`, pure over the injected RNG): only
+  the SFX host types carry overlays (never news); a `joke` overlay (the
+  rimshot) airs on a coin flip (`sfx.joke_p`, 50/50); a stinger that would run
+  past its host's end is dropped (never push a join); at most
+  `sfx.max_per_window` (3) stingers start in any `sfx.window_s` (10 s) of air.
+  Beds are ambience and don't count. A missing or retired sfx item is skipped;
+  the host still airs.
 - `liner` never follows a `liner` while any other interjection (commercial,
   `dj_talk`, news) is ready, and the same liner isn't replayed within the last
   10 committed items. With no songs ready, the station fills with commercial
@@ -205,6 +232,12 @@ target, per host worker.
 | Current news bulletin | 1 valid; refreshed every 30 min |
 | Commercials (library) | ≥ 20 at launch; top up slowly (they repeat on purpose) |
 | Liners, by length bucket (3 / 5 / 10 / 15 / 30 s) | ≥ 5 each |
+| Unaired field reports | ≥ `inventory.field_reports_min` (1) |
+| Evergreen SFX stock | one per approved evergreen cue |
+
+SFX are rendered by the producer, never at playout: the evergreen stock pool
+first in each cycle (and in `seed.py`), contextual cues while their host clip
+is produced. A failing SFX backend only means hosts air dry.
 
 Workers:
 - **M5 worker:** pulls briefs, generates songs continuously.
@@ -361,6 +394,13 @@ Phase 1 (no now-playing, schedule, or log windows).
   one and log an `underrun` event to the server.
 - Release decoded buffers after playback (a 3-min 48 kHz stereo song decodes
   to ~70 MB of float32).
+- **SFX overlays** (`sfx` on a program item): decoded in the background,
+  never awaited, and started as a second `AudioBufferSourceNode` at
+  `host start + offset_s` with their own `GainNode` (`gain`), stopped at the
+  host's end. The host's gain dips to `duck` under a stinger so two full-level
+  sources don't clip. An overlay that isn't decoded in time, or whose beat
+  already passed when joining mid-clip, is skipped (a bed resumes at the right
+  point). Overlays never move a join.
 - Known limitation: mobile browsers (especially iOS) may suspend audio in
   background tabs. Documented, not solved, in Phase 1.
 
@@ -377,6 +417,7 @@ voice are calibrated at setup and recorded in config.
 | News anchor | `am_michael` | `news` bulletins |
 | Commercial announcer | `af_aoede` | `commercial_break` spots (exaggerated read) |
 | Liners | `am_liam` (reuses DJ) | micro-filler, IDs |
+| Field reporter | `bm_lewis` (British; user pick, SFX.md §4.2) | `field_report` |
 
 Remaining calibration: seconds-per-word and preferred speaking speed per
 voice, measured at setup.
@@ -390,10 +431,10 @@ voice, measured at setup.
 | GET | `/` | Static UI |
 | POST | `/api/station/start` | Start playout session |
 | POST | `/api/station/stop` | Stop playout session |
-| GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, type, duration_s}` |
+| GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, type, duration_s, sfx}`. `sfx` is a list (usually empty) of overlays to play over that item: `{media_id, cue, kind, offset_s, duration_s, gain, duck}`; overlay audio is served by `/api/media/<id>` |
 | POST | `/api/station/heartbeat` | `{seq, media_id, position, type}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events |
 | GET | `/api/media/<id>` | FLAC file |
-| GET | `/api/health` | Backend status, inventory levels vs. targets (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate |
+| GET | `/api/health` | Backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
 | GET | `/api/requests` | Request board: `{queue: [{status}], recent: [{text, song_title, song_artist}], cap}` — queue = queued+producing+ready, oldest first; recent = last 5 aired (OVERHAUL 4.8) |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
@@ -408,6 +449,7 @@ hosts:
   kokoro: http://192.168.68.89:8001
   litellm: http://<LITELLM_HOST>
   searxng: http://<SEARXNG_HOST>
+  sfx: http://127.0.0.1:8500      # Stable Audio 3 Small SFX wrapper
 
 models:
   news: qwen38
@@ -415,18 +457,21 @@ models:
   dj_talk: qwen38
   commercials: ornith
   liners: ornith
+  field_report: qwen38
 
 voices:
   dj: am_liam
   news: am_michael
   commercials: af_aoede
   liners: am_liam
+  field_reporter: bm_lewis
   # speed and seconds_per_word per voice: calibrated at setup
 
 playout:
   committed_lookahead_s: 600
   filler_horizon_s: 60     # song drought / spacing-breaking repeats: commit only this far ahead
-  weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08}
+  weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08,
+            field_report: 0.05}
   max_consecutive_non_song: 2
   news_min_spacing_s: 1200
   news_ttl_s: 2700
@@ -441,6 +486,7 @@ inventory:
   commercials_min: 20
   liners_per_bucket: 5
   liner_buckets_s: [3, 5, 10, 15, 30]
+  field_reports_min: 1       # unaired field reports kept ready
 
 songs:
   min_duration_s: 20         # sanity floor
@@ -474,6 +520,28 @@ station:
 
 talk:
   time_mention_ttl_s: 900     # DJ clips that mention the time expire after this
+  field_reporter_name: Giles  # placeholder until named
+
+sfx:                          # SFX.md; never on news
+  enabled: true
+  model: stable-audio-3-small-sfx
+  steps: 8
+  cfg_scale: 4.0
+  timeout_s: 60
+  stinger_gain: 0.5           # applied at air time: tune without re-rendering
+  bed_gain: 0.15
+  host_duck: 0.7              # host gain under a stinger
+  bed_cue: wind_bed           # under every field report
+  bed_max_s: 30
+  joke_cue: rimshot
+  joke_p: 0.5                 # 50/50 da-dum-tiss
+  max_per_window: 3           # stingers per ...
+  window_s: 10                # ... seconds of air
+  max_stinger_s: 2.5
+  cues:                       # curated by ear; only approved ones render/air
+    cow: {prompt: "a single slow cartoon cow moo, barnyard", duration_s: 2.0}
+    slide_whistle: {prompt: "...", duration_s: 2.0, seed: 24, evergreen: true}
+    rimshot: {prompt: "...", duration_s: 1.5, seed: 22, evergreen: true, approved: false}
 
 logging:
   level: INFO            # Python logging level (DEBUG|INFO|WARNING|ERROR)
@@ -541,6 +609,8 @@ Random selection is chosen for Phase 1 partly because it is easy to test.
   bad output).
 - `fake_kokoro`: returns a tone/noise WAV sized from word count.
 - `fake_llm`: returns canned valid and invalid JSON.
+- `fake_sfx`: returns a 44.1 kHz stereo tone of exactly the requested
+  duration (like the real wrapper); can inject outages.
 
 **Simulated clock:** scheduler and producers take a `Clock` interface. Run
 **24 simulated hours in seconds** and assert:
@@ -549,6 +619,10 @@ Random selection is chosen for Phase 1 partly because it is easy to test.
 - All §5.2 constraints hold (spacing, expiry, adjacency, genre repeats).
 - Observed segment mix is within tolerance of configured weights.
 - Fallback chain engages correctly when backends are killed mid-run.
+
+- SFX policy: no overlay on news or any non-host type, every overlay inside
+  its host, ≤3 stingers in any 10 s, joke rimshot rate ≈ 50%; field reports
+  never adjacent to news.
 
 **Seeded RNG:** identical seeds produce identical programs.
 
