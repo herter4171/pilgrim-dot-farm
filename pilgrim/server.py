@@ -8,11 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
-import hmac
 import ipaddress
 import logging
-import os
 import time
 from collections import deque
 
@@ -210,33 +207,20 @@ class Station:
             header = peer
         return self._canonical_ip(header)
 
-    def visitor_signature(self, request: Request) -> str | None:
-        """HMAC-SHA256 over the canonical IP using the stable secret. Returns
-        None (skip registration) when disabled, the secret is missing, or no
-        client identity can be established (RADIO §14)."""
-        if not self.cfg.visitors.enabled:
-            return None
-        secret = os.environ.get(self.cfg.visitors.secret_env, "").strip()
-        if not secret:
-            log.warning("visitor.register skipped: missing %s", self.cfg.visitors.secret_env)
-            return None
-        ip = self._client_ip(request)
-        if not ip:
-            log.warning("visitor.register skipped: no canonical client identity")
-            return None
-        return hmac.new(secret.encode(), ip.encode(), hashlib.sha256).hexdigest()
-
-    def register_visitor(self, request: Request) -> int | None:
-        sig = self.visitor_signature(request)
-        if sig is None:
-            return None
+    def register_visitor(self, request: Request) -> int:
+        """Store the raw canonical client IP (deduped) and return the unique
+        count, starting from 0. Disabled, an unresolvable identity, or a store
+        error all just return the current count — the counter never fails and
+        never breaks radio/requests (RADIO §14)."""
+        ip = self._client_ip(request) if self.cfg.visitors.enabled else None
         try:
-            return self.db.register_visitor(sig)
+            if ip:
+                return self.db.register_visitor(ip)
+            log.warning("visitor.register skipped: no canonical client identity")
+            return self.db.unique_visitors()
         except Exception:
-            # Counter must never break radio/requests (RADIO §14). Identify the
-            # failure without ever logging the raw IP.
             log.exception("visitor.register failed")
-            return None
+            return 0
 
     async def startup(self) -> None:
         # warm the program immediately with whatever inventory exists
@@ -391,14 +375,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
 
     @app.post("/api/visitors")
     async def register_visitor(request: Request):
-        """Register one server-derived visitor signature and return the unique
-        count (RADIO §14, COSMETIC_PATCHING §6). Idempotent per client; media
-        fetches / heartbeats / health polls / request submissions never hit this.
-        A missing identity, secret, or disabled feature is a 503 -> the UI shows
-        'Unique visitors: —' rather than a fabricated zero."""
+        """Register the server-derived client IP and return the unique count
+        (RADIO §14). Idempotent per client; media fetches / heartbeats / health
+        polls / request submissions never hit this. Always 200 with a count."""
         n = station.register_visitor(request)
-        if n is None:
-            raise HTTPException(503, "unique visitor count unavailable")
         resp = JSONResponse({"unique_visitors": n},
                             headers={"Cache-Control": "no-store"})
         return resp

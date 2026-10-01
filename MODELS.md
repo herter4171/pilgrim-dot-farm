@@ -1,6 +1,6 @@
 # MODELS.md — Pilgrim Dot Farm Radio
 
-The models this station runs, what each one does, and where it runs. Four
+The models this station runs, what each one does, and where it runs. Five
 production models plus one development model. All endpoints, aliases, and
 hardware targets are declared in `config.yaml` / `pilgrim/config.yaml` (§12);
 this file is the human-readable summary of *which model does what*.
@@ -13,10 +13,11 @@ this file is the human-readable summary of *which model does what*.
 
 | Model | HF repo | Role on air | Runs on | Via |
 |-------|---------|-------------|---------|-----|
-| **qwen38** (Qwen3-8B) | `deepseek-ai/DeepSeek-V3`-class, 8B | News, song briefs, DJ talk, field reports | CUDA cluster | LiteLLM (`<LITELLM_HOST>`) |
+| **qwen38** (Qwen 3.8 27B) | `Qwen/Qwen3.8-27B` | News, song briefs, DJ talk, field reports | CUDA cluster | LiteLLM (`<LITELLM_HOST>`) |
 | **Ornith-1.5-9B** | `ornith-ai/Ornith-1.5-9B` | Commercials, liners | CUDA cluster | LiteLLM (`<LITELLM_HOST>`) |
 | **MiniMax Music 3** | `MiniMaxAI/MiniMax-Music3` | Song generation | **M5 Mac Studio** | mlx-serve (`127.0.0.1:11234`) |
 | **Stable Audio 3 Small SFX** | `stabilityai/stable-audio-3-small-sfx` | Sound-effect stingers | Local CPU box (`127.0.0.1:8500`) | OpenAI-compatible wrapper |
+| **Kokoro-82M** | `hexgrad/Kokoro-82M` | Voices and speech (TTS) | Kokoro host (`192.168.68.89:8001`) | `/tts` HTTP |
 | **DeepSeek-V4-Flash-0731** | `deepseek-ai/DeepSeek-V4-Flash-0731` | Development (coding assistant, not on air) | — | dev environment |
 
 > **Two LLMs, both reasoning models.** `qwen38` and `Ornith-1.5-9B` both
@@ -26,11 +27,10 @@ this file is the human-readable summary of *which model does what*.
 
 ---
 
-## 1. qwen38 — Qwen3-8B (news, briefs, DJ talk)
+## 1. qwen38 — Qwen 3.8 27B (news, briefs, DJ talk)
 
-- **HF repo:** Qwen3-8B (alias `qwen38`). No dedicated HF link is recorded in
-  the project, so the config alias is the stable reference — confirm the exact
-  repo id (canonical: `Qwen/Qwen3-8B`) if you need to push the model locally.
+- **HF repo:** [`Qwen/Qwen3.8-27B`](https://huggingface.co/Qwen/Qwen3.8-27B)
+  (internal config alias `qwen38` is unchanged).
 - **Role (§6):**
   - **News** (`news.py`) — 3–4 headlines, summarized in its own words, sources
     attributed on air ("according to…"). Bounded: **max 3 web searches, 60 s
@@ -117,7 +117,18 @@ this file is the human-readable summary of *which model does what*.
 
 ---
 
-## 5. DeepSeek-V4-Flash-0731 — development
+## 5. Kokoro-82M — voices and speech
+
+- **HF repo:** [`hexgrad/Kokoro-82M`](https://huggingface.co/hexgrad/Kokoro-82M)
+- **Role (§6.3):** renders every spoken item (DJ talk, intros, news,
+  commercials, liners, field reports) from approved copy, after the mandatory
+  TTS cleanup step.
+- **Hardware / transport:** Kokoro TTS service at `192.168.68.89:8001`
+  (`/tts`, `/voices`, `/health`); 16-bit mono 24 kHz.
+
+---
+
+## 6. DeepSeek-V4-Flash-0731 — development
 
 - **HF repo:** `deepseek-ai/DeepSeek-V4-Flash-0731`
 - **Role:** general-purpose coding assistant for building and maintaining the
@@ -127,7 +138,7 @@ this file is the human-readable summary of *which model does what*.
 
 ---
 
-## 6. Hardware map
+## 7. Hardware map
 
 | Box | Type | Runs |
 |-----|------|------|
@@ -149,7 +160,7 @@ on the M5; the SFX model is CPU-only and cheap.
 
 ---
 
-## 7. Cross-cutting notes
+## 8. Cross-cutting notes
 
 - **All hosts, model aliases, and targets live in `config.yaml`** (§12). Do not
   hardcode addresses anywhere else (AGENTS rule 4).

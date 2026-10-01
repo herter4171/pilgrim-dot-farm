@@ -1,9 +1,8 @@
 /* Pilgrim Dot Farm — persistent unique-visitor counter (RADIO §14,
    COSMETIC_PATCHING §6). One POST /api/visitors per page load; the server
-   derives and hashes the client identity (never a client-supplied signature).
-   Counts once per distinct network address browser-wide. A failed or
-   unavailable counter shows "—", never a fabricated zero, and never disturbs
-   playback or the request line. */
+   derives the client IP itself (never client-supplied). Counts once per
+   distinct network address. A failed request falls back to 0 and never
+   disturbs playback or the request line. */
 (() => {
   "use strict";
 
@@ -18,9 +17,9 @@
       const n = Number(d && d.unique_visitors);
       el.textContent = Number.isInteger(n) && n >= 0
         ? "Unique visitors: " + n
-        : "Unique visitors: —";
+        : "Unique visitors: 0";
     } catch (e) {
-      el.textContent = "Unique visitors: —";
+      el.textContent = "Unique visitors: 0";
     }
   }
 

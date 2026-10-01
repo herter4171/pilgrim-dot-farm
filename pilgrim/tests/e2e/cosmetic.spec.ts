@@ -12,8 +12,15 @@ test("page layout: pane order, ON AIR title, credits + hit counter", async ({ pa
   expect(await page.textContent('[data-win="radio"] .win-title')).toBe("ON AIR");
   expect(await page.$('[data-win="credits"]')).toBeTruthy();
   expect(await page.$('[data-win="hit"]')).toBeTruthy();
-  // five documented models + Kokoro = six credit rows
+  // five documented models + Kokoro-82M = six credit rows
   expect(await page.$$eval(".credits-list li", els => els.length)).toBe(6);
+  // every model links to its HF model card in a new tab
+  const links = await page.$$eval(".credits-list a.cred-model",
+    els => els.map(a => [a.textContent, a.getAttribute("href"), a.getAttribute("target")]));
+  expect(links).toHaveLength(6);
+  expect(links[0]).toEqual(["Qwen 3.8 27B", "https://huggingface.co/Qwen/Qwen3.8-27B", "_blank"]);
+  expect(links[4]).toEqual(["Kokoro-82M", "https://huggingface.co/hexgrad/Kokoro-82M", "_blank"]);
+  for (const [, href] of links) expect(href).toMatch(/^https:\/\/huggingface\.co\//);
   expect(await page.textContent(".visitors")).toMatch(/^Unique visitors:/);
 });
 
@@ -48,8 +55,8 @@ test("a failed visitor counter never breaks PLAY or request submission", async (
     status: 503, contentType: "application/json",
     body: JSON.stringify({ detail: "unavailable" }) }));
   await page.goto("/");
-  // counter shows '—', not a fabricated zero
-  await expect(page.locator("#visitors")).toHaveText("Unique visitors: —");
+  // counter falls back to 0, never a hyphen
+  await expect(page.locator("#visitors")).toHaveText("Unique visitors: 0");
   // PLAY still works
   await page.click("#btn-play");
   await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 15_000 });

@@ -41,9 +41,9 @@ without touching the rest of the system.
 | Host | Role | Endpoint |
 |------|------|----------|
 | M5 | Song generation only (MiniMax Music 3 via mlx-serve). Also runs the station server. | `127.0.0.1:11234` `/v1/audio/music-generations` |
-| 5090 | `qwen38` (Qwen3-8B): news (with search tools), song briefs/lyrics, just-in-time DJ talk | `<QWEN_HOST>` via LiteLLM |
+| 5090 | `qwen38` (Qwen 3.8 27B): news (with search tools), song briefs/lyrics, just-in-time DJ talk | `<QWEN_HOST>` via LiteLLM |
 | 4070 Ti | `ornith`: commercials, liners (high volume, low stakes, inventory work) | `<ORNITH_HOST>` via LiteLLM |
-| Kokoro | TTS, 16-bit mono 24 kHz | `192.168.68.89:8001` |
+| Kokoro-82M | TTS, 16-bit mono 24 kHz | `192.168.68.89:8001` |
 | searxng | Web search for news (MCP or JSON API) | `<SEARXNG_HOST>` |
 
 Notes:
@@ -383,12 +383,13 @@ announces a buffered next song early. The site header/browser title retain
 the station name.
 - **REQUEST LINE**: the request form + active queue, then a **RECENTLY PLAYED
   FOR YOU** list of the three most recent serviced/airéd requests.
-- **MODEL CREDITS**: credits the five production/dev models plus Kokoro (see
+- **MODEL CREDITS**: credits the five production/dev models plus Kokoro-82M,
+  each model name linking to its Hugging Face model card in a new tab (see
   MODELS.md for the on-air attribution copy; DeepSeek is a development credit
   and is flagged as such).
 - **HIT COUNTER**: labeled **Unique visitors**, a persistent count of distinct
-  canonical visitor signatures (RADIO §14). Shows `—` when the counter is
-  unavailable; never disturbs playback or requests.
+  canonical client IPs (RADIO §14), starting at 0. Falls back to `0` if the
+  call fails; never disturbs playback or requests.
 
 ### 9.2 Playback engine
 
@@ -447,7 +448,7 @@ voice, measured at setup.
 | GET | `/api/health` | Backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
 | GET | `/api/requests` | Request board: `{queue: [{status}], recent: [{text, song_title, song_artist}], cap}` — queue = queued+producing+ready, oldest first; recent = **last 3** aired/serviced by ID order (COSMETIC_PATCHING §4) |
-| POST | `/api/visitors` | Register one server-derived unique-visitor signature; returns `{unique_visitors: <nonnegative int>}` with `Cache-Control: no-store`. One call per page load; media/heartbeat/health/request calls never hit it. 503 when identity/secret unavailable (RADIO §14) |
+| POST | `/api/visitors` | Register the server-derived client IP; returns `{unique_visitors: <nonnegative int>}` with `Cache-Control: no-store`. One call per page load; media/heartbeat/health/request calls never hit it. Always 200: an unresolvable identity or disabled counter returns the current count without registering (RADIO §14) |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
 
 ---
@@ -519,8 +520,7 @@ requests:
 
 visitors:
   enabled: true
-  trusted_proxies: [127.0.0.1, "::1"]  # peers whose X-Real-IP we trust
-  secret_env: VISITOR_HASH_SECRET    # HMAC key for visitor signatures (§14)
+  trusted_proxies: [127.0.0.1, "::1"]  # peers whose X-Real-IP we trust (§14)
 
 audio:
   lufs: -16
@@ -613,15 +613,17 @@ next"). The request's song and intro enter the library together with the
 `ready` flag, so the song can never air bare as stock first. Only `queued` rows are ever FIFO-evicted; a crash
 mid-generation is reset `producing -> queued` on station start.
 
-**Visitors (COSMETIC_PATCHING §6).** A separate `visitor_signatures
-(signature TEXT PRIMARY KEY)` table stores only HMAC-SHA256 signatures —
-never raw IPs. One distinct canonical public client IP counts once for the
-lifetime of the counter. The signature is derived from the client IP resolved
-through the deployment's trusted-proxy setup (verified: nginx on loopback
-sets `X-Real-IP` to `$remote_addr`; `visitors.trusted_proxies` in config) and
-hashed with the stable secret in `$VISITOR_HASH_SECRET`. When the secret or a
-canonical identity is unavailable, registration is skipped (counter shows
-`—`) — never a fabricated zero, and never breaking radio/requests.
+**Visitors.** A separate `visitor_ips(ip TEXT PRIMARY KEY, first_seen REAL)`
+table stores the **raw canonical client IP** (operator decision, 2026-10-01;
+supersedes the earlier HMAC-only `visitor_signatures` table, which is
+dropped). One distinct canonical public client IP counts once for the
+lifetime of the counter; the count starts at 0. The IP is resolved through
+the deployment's trusted-proxy setup (verified: nginx on loopback sets
+`X-Real-IP` to `$remote_addr`; `visitors.trusted_proxies` in config) — a
+spoofable header from an untrusted peer is ignored. When no canonical identity
+can be resolved, registration is skipped and the current count is returned;
+the counter never breaks radio/requests. Raw IPs are personal data: no
+retention/pruning policy is implemented yet.
 
 ---
 

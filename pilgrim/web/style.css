@@ -70,6 +70,9 @@ body {
 
 .window {
   width: min(94vw, 440px);
+  /* Keep each pane at its natural height: #desktop scrolls instead of
+     squishing panels to fit the tab height (§9.1). */
+  flex: 0 0 auto;
   background: var(--panel);
   border: 1px solid var(--violet);
   border-radius: 8px;
@@ -131,9 +134,9 @@ body {
   font-size: 12px; }
 .cred-model { color: var(--cyan); font-weight: bold; letter-spacing: 1px; }
 .cred-model.dev { color: var(--dim); }
+a.cred-model { text-decoration: none; }
+a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
 .cred-role { color: var(--text); overflow-wrap: anywhere; }
-.cred-dev-note { font-size: 10px; color: var(--dim); line-height: 1.5;
-  margin: 0; }
 
 /* Hit counter pane (COSMETIC_PATCHING §6). */
 .window.hit { width: min(94vw, 440px); }

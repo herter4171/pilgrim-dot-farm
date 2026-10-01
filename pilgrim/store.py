@@ -78,11 +78,13 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_program_seq ON program(seq);
                 CREATE INDEX IF NOT EXISTS idx_airplay_item ON airplay(item_id);
                 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
-                -- Persistent unique-visitor dedup (COSMETIC_PATCHING §6, RADIO §14).
-                -- Only HMAC-SHA256 signatures, never raw IPs.
-                CREATE TABLE IF NOT EXISTS visitor_signatures (
-                    signature TEXT PRIMARY KEY
+                -- Persistent unique-visitor dedup (RADIO §14): raw canonical
+                -- client IPs. Supersedes the HMAC-only visitor_signatures table.
+                CREATE TABLE IF NOT EXISTS visitor_ips (
+                    ip TEXT PRIMARY KEY,
+                    first_seen REAL NOT NULL DEFAULT (strftime('%s','now'))
                 );
+                DROP TABLE IF EXISTS visitor_signatures;
                 """
             )
             # idempotent migration (OVERHAUL 2.2): retire truncated inventory
@@ -258,24 +260,22 @@ class Store:
         return [p["item_type"] for p in program_slice]
 
     # ------------------------------------------------------------ visitors (14)
-    def register_visitor(self, signature: str) -> int:
-        """Idempotently record a canonical visitor signature (insert-on-conflict
-        no-op) and return the unique count, all under the store's lock so a
-        concurrent first-seen signature can't double-count (RADIO §14,
-        COSMETIC_PATCHING §6). """
+    def register_visitor(self, ip: str) -> int:
+        """Idempotently record a canonical client IP (insert-on-conflict no-op)
+        and return the unique count, all under the store's lock so a concurrent
+        first-seen IP can't double-count (RADIO §14)."""
         with self._lock:
             self._conn.execute(
-                "INSERT OR IGNORE INTO visitor_signatures (signature) VALUES (?)",
-                (signature,))
+                "INSERT OR IGNORE INTO visitor_ips (ip) VALUES (?)", (ip,))
             n = self._conn.execute(
-                "SELECT COUNT(*) FROM visitor_signatures").fetchone()[0]
+                "SELECT COUNT(*) FROM visitor_ips").fetchone()[0]
             self._conn.commit()
         return int(n)
 
     def unique_visitors(self) -> int:
         with self._lock:
             n = self._conn.execute(
-                "SELECT COUNT(*) FROM visitor_signatures").fetchone()[0]
+                "SELECT COUNT(*) FROM visitor_ips").fetchone()[0]
         return int(n)
 
     # -------------------------------------------------------------- requests

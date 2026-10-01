@@ -160,11 +160,10 @@ class Visitors(BaseModel):
     One distinct canonical public client IP counts once for the lifetime of the
     counter. `trusted_proxies` names peers whose `X-Real-IP` / first
     `X-Forwarded-For` entry we trust as the real client address (the verified
-    deployment path is nginx setting `X-Real-IP` on loopback). Raw IPs are
-    never stored — only an HMAC-SHA256 signature under `secret_env`."""
+    deployment path is nginx setting `X-Real-IP` on loopback). The raw
+    canonical IP is stored for dedupe."""
     enabled: bool = True
     trusted_proxies: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1"])
-    secret_env: str = "VISITOR_HASH_SECRET"
 
 
 class Requests(BaseModel):

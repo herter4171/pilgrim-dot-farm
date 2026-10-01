@@ -24,7 +24,6 @@ never in the repo.
 |----------|-----------|---------|
 | `LITELLM_TOKEN` | yes (LLM/moderation/news) | Bearer token for the LiteLLM backend. Falls back to a `LITELLM_TOKEN=` line in `.env`. |
 | `LITELLM_URL` | no (optional) | LiteLLM base URL if not in `config.yaml`. |
-| `VISITOR_HASH_SECRET` | for the HIT COUNTER | Stable HMAC-SHA256 key used to derive unique-visitor signatures (RADIO §14). Raw client IPs are never stored. Keep it stable across restarts — rotating it changes deduplication identity. Absent ⇒ the counter shows `Unique visitors: —` and radio/requests keep working. |
 
 ## Layout
 

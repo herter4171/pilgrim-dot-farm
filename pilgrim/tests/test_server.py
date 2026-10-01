@@ -163,7 +163,7 @@ async def test_health_rotation_counts_aired_songs(tmp_env, monkeypatch):
 
 # --------------------------------------------------------------------------- #
 # COSMETIC_PATCHING §6 — persistent unique-visitor counter (RADIO §14).
-# HTTP-level: trusted-proxy identity resolution, dedupe, missing secret,
+# HTTP-level: trusted-proxy identity resolution, raw-IP dedupe, count from 0,
 # unavailable identity, and spoof-ignoring for untrusted peers. Fakes-only.
 # --------------------------------------------------------------------------- #
 
@@ -182,7 +182,6 @@ def test_canonical_ip_folds_mapped_v6_and_takes_first_xff():
 def test_visitors_trusted_proxy_counts_unique(tmp_env, monkeypatch):
     cfg, store, _ = tmp_env
     cfg.visitors.trusted_proxies = ["testclient"]
-    monkeypatch.setenv("VISITOR_HASH_SECRET", "test-secret")
     app = create_app(cfg)
     c = TestClient(app)
     def post(ip=None):
@@ -204,7 +203,6 @@ def test_visitors_trusted_proxy_counts_unique(tmp_env, monkeypatch):
 def test_visitors_persist_across_restart(tmp_env, monkeypatch):
     cfg, store, _ = tmp_env
     cfg.visitors.trusted_proxies = ["testclient"]
-    monkeypatch.setenv("VISITOR_HASH_SECRET", "test-secret")
     cfg.library.db = str(store.path)
     app1 = create_app(cfg)
     assert TestClient(app1).post(
@@ -215,40 +213,39 @@ def test_visitors_persist_across_restart(tmp_env, monkeypatch):
     assert r.json()["unique_visitors"] == 1
 
 
-def test_visitors_missing_secret_is_503_not_zero(tmp_env, monkeypatch):
-    cfg, _, _ = tmp_env
+def test_visitors_stores_raw_ip_without_any_secret(tmp_env, monkeypatch):
+    cfg, store, _ = tmp_env
     cfg.visitors.trusted_proxies = ["testclient"]
     monkeypatch.delenv("VISITOR_HASH_SECRET", raising=False)
     app = create_app(cfg)
     r = TestClient(app).post("/api/visitors", headers={"X-Real-IP": "1.2.3.4"})
-    assert r.status_code == 503
+    assert r.status_code == 200 and r.json()["unique_visitors"] == 1
+    rows = store._conn.execute("SELECT ip FROM visitor_ips").fetchall()
+    assert [row[0] for row in rows] == ["1.2.3.4"]
 
 
 def test_visitors_unavailable_identity_is_503(tmp_env, monkeypatch):
     cfg, _, _ = tmp_env
     cfg.visitors.trusted_proxies = ["testclient"]
-    monkeypatch.setenv("VISITOR_HASH_SECRET", "test-secret")
     app = create_app(cfg)
-    # trusted peer but no usable client identity header -> unavailable, not 0
+    # trusted peer but no usable client identity header -> current count (0)
     r = TestClient(app).post("/api/visitors")
-    assert r.status_code == 503
+    assert r.status_code == 200 and r.json()["unique_visitors"] == 0
 
 
 def test_visitors_untrusted_proxy_ignores_spoofable_header(tmp_env, monkeypatch):
     cfg, _, _ = tmp_env
     cfg.visitors.trusted_proxies = ["10.0.0.1"]  # NOT the connecting peer
-    monkeypatch.setenv("VISITOR_HASH_SECRET", "test-secret")
     app = create_app(cfg)
     # peer "testclient" is untrusted; the X-Real-IP header is discarded as
-    # spoofable, and "testclient" is not a canonical IP -> unavailable
+    # spoofable, and "testclient" is not a canonical IP -> nothing registered
     r = TestClient(app).post("/api/visitors", headers={"X-Real-IP": "1.2.3.4"})
-    assert r.status_code == 503
+    assert r.status_code == 200 and r.json()["unique_visitors"] == 0
 
 
-def test_visitors_disabled_returns_503(tmp_env, monkeypatch):
+def test_visitors_disabled_returns_count_without_registering(tmp_env, monkeypatch):
     cfg, _, _ = tmp_env
     cfg.visitors.enabled = False
-    monkeypatch.setenv("VISITOR_HASH_SECRET", "test-secret")
     app = create_app(cfg)
     r = TestClient(app).post("/api/visitors", headers={"X-Real-IP": "1.2.3.4"})
-    assert r.status_code == 503
+    assert r.status_code == 200 and r.json()["unique_visitors"] == 0

@@ -8,8 +8,6 @@ webServer so the browser can exercise PLAY -> heartbeats -> gapless joins.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import sys
 import tempfile
 import time
@@ -20,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root
 
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pilgrim.config import RNG, Clock, Config, ensure_dirs, load_config
@@ -149,13 +147,11 @@ def build_app() -> FastAPI:
 
     @app.post("/api/visitors")
     async def visitors(request: Request):
-        """e2e mirror of COSMETIC_PATCHING §6: hash the server-derived peer
-        identity and return the unique count. No client-supplied signature."""
+        """e2e mirror of RADIO §14: store the server-derived peer IP and
+        return the unique count (current count when no identity)."""
         peer = request.client.host if (request.client and request.client.host) else None
-        if not peer:
-            raise HTTPException(503, "unique visitor count unavailable")
-        sig = hmac.new(b"e2e-secret", peer.encode(), hashlib.sha256).hexdigest()
-        return JSONResponse({"unique_visitors": store.register_visitor(sig)},
+        n = store.register_visitor(peer) if peer else store.unique_visitors()
+        return JSONResponse({"unique_visitors": n},
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/api/requests")

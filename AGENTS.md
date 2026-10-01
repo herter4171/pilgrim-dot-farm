@@ -53,7 +53,7 @@ If a task cannot be done without breaking one, stop and report.
 | Component | Where | Notes |
 |-----------|-------|-------|
 | Station server + song generation | M5 | mlx-serve at `127.0.0.1:11234`, `/v1/audio/music-generations`. Reuse the existing working generation path; read it before writing new code. |
-| `qwen38` (Qwen3-8B) | 5090 host | via LiteLLM; news, song briefs, DJ talk |
+| `qwen38` (Qwen 3.8 27B) | 5090 host | via LiteLLM; news, song briefs, DJ talk |
 | `ornith` | 4070 Ti host | via LiteLLM; commercials, liners |
 | Kokoro TTS | `192.168.68.89:8001` | `/tts`, `/voices`, `/health`; 16-bit mono 24 kHz |
 | searxng | see config | news search |
