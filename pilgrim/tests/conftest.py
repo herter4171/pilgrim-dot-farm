@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,10 @@ sys.path.insert(0, str(APP))
 
 from pilgrim.config import Config, ensure_dirs, load_config  # noqa: E402
 from pilgrim.store import Store  # noqa: E402
+
+
+def iso_from_epoch(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=UTC).isoformat()
 
 
 @pytest.fixture
@@ -54,3 +59,23 @@ def seed_pool(store, cfg, n_song=40, n_liner=30, n_com=20, n_dj=15):
         make_item(cfg, store, "commercial", 20 + (i % 10))
     for i in range(n_dj):
         make_item(cfg, store, "dj_talk", 15 + (i % 5))
+
+
+def seed_aged_songs(cfg, store, n, epoch, age_h_start, age_h_end=0.0, fresh=False):
+    """Seed `n` songs whose created_at is spread (linearly) from `age_h_start`
+    hours ago to `age_h_end` hours ago, in the sim-clock wall frame `epoch`.
+    id 0 is the OLDEST (created furthest in the past); the newest is the highest
+    id. `fresh=False` marks them already-aired-but-with-no-ledger-history
+    (last_aired_at NULL => wait 1.0), so weighting is purely age-driven. Returns
+    the item ids in creation order."""
+    genres = list(cfg.songs.genres.keys())
+    ids = []
+    span = max(n - 1, 1)
+    for i in range(n):
+        age_h = age_h_start + (age_h_end - age_h_start) * i / span
+        created = iso_from_epoch(epoch - age_h * 3600)
+        ids.append(store.add_item(
+            type_="song", media_path=f"/aged_{i}.flac",
+            duration_s=120.0, genre=genres[i % len(genres)],
+            fresh=fresh, evergreen=True, created_at=created))
+    return ids

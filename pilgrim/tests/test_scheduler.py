@@ -282,7 +282,13 @@ def test_no_song_after_song_even_with_request_ready(cfg, tmp_env):
 
 
 def test_single_song_not_looped(cfg, tmp_env):
-    """One song in stock: it may not recur inside the spacing floor."""
+    """One song in stock: it may not recur inside the spacing floor.
+
+    Spacing is measured on last_aired_at, the persisted wall-clock commit time
+    (PRIORITIES §4). Under a deliberate single-song drought the program-table
+    start times drift from wall time via the starvation offset anchor, so we
+    assert the real invariant: consecutive commit-wall air times are >= floor
+    apart (what the operator actually hears)."""
     _, store, _ = tmp_env
     genres = list(cfg.songs.genres.keys())
     make_item(cfg, store, "song", 60.0, genre=genres[0])
@@ -292,15 +298,24 @@ def test_single_song_not_looped(cfg, tmp_env):
         make_item(cfg, store, "commercial", 25.0)
     floor = min(cfg.playout.song_min_spacing_s)
     # one song can't fill 10 min ahead: droughts bridge, they don't pad (§5.2)
-    prog = run_program(cfg, store, seed=4, hours=2,
-                       min_coverage=cfg.playout.filler_horizon_s)
-    t, starts = 0.0, []
-    for _seq, typ, dur, _g, _iid in prog:
-        if typ == "song":
-            starts.append(t)
-        t += dur
-    assert len(starts) >= 2
-    assert all(b - a >= floor for a, b in zip(starts, starts[1:], strict=False))
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(4), cfg), clock, RNG(4))
+    horizon = cfg.playout.filler_horizon_s
+    wall_airs: list[float] = []
+    last_seq = 0
+    for _ in range(int(2 * 3600) // 30):
+        clock.advance(30)
+        sched.commit_lookahead()
+        for r in store.program_after(last_seq):
+            if r["type"] == "song":
+                it = store.get_item(r["item_id"])
+                wall_airs.append(it["last_aired_at"])
+            last_seq = r["seq"]
+    assert len(wall_airs) >= 2
+    assert all(b - a >= floor - 1.0
+               for a, b in zip(wall_airs, wall_airs[1:], strict=False))
+    # the single song is really all that ever airs (drought bridges otherwise)
+    assert sched.coverage() <= horizon + 45.0
 
 
 def test_thin_liner_pool_does_not_pad_the_lookahead(cfg, tmp_env):
@@ -375,3 +390,112 @@ def test_request_not_taken_right_after_dj_talk(cfg, tmp_env):
     assert types[1] not in ("song", "intro")
     idx = [r["item_id"] for r in rows].index(req_song)
     assert types[idx - 1] == "intro"
+
+
+# --------------------------------------------------------------------------- #
+# PRIORITIES — fresher songs (work the plan top to bottom)
+# --------------------------------------------------------------------------- #
+def test_restart_first_pick_not_lowest_id_and_favors_recent(cfg, tmp_env):
+    """(PRIORITIES §6) A pool of recycled songs with no persisted history must
+    not open with the lowest id after a restart (the old air-clock inversion
+    aired song #1 every time). With no air history the weight is age-driven, so
+    across seeds the first pick favors the newest third."""
+    from conftest import seed_aged_songs
+    _, store, _ = tmp_env
+    epoch = 1_800_000_000.0
+    ids = seed_aged_songs(cfg, store, 30, epoch, 40.0, 0.0, fresh=False)
+    newest_third = set(ids[20:])
+    first_picks = []
+    for seed in range(40):
+        clock = SimClock(epoch=epoch)
+        sched = Scheduler(cfg, store, RandomSelector(RNG(seed), cfg), clock, RNG(seed))
+        st = sched.build_state()
+        first_picks.append(sched._pick_stock_song(st)[0]["item_id"])
+    assert min(first_picks) > ids[0], "some seed opened with the lowest id (old bug)"
+    frac_recent = sum(p in newest_third for p in first_picks) / len(first_picks)
+    assert frac_recent > 0.4, f"first pick favors newest third only {frac_recent:.2f}"
+
+
+def test_no_song_lockup_41_songs_all_air_over_6h(cfg, tmp_env):
+    """(PRIORITIES §6) 41 recycled songs over 6 h: every song airs at least once
+    (today the old code only ever aired #1-#18). Uses last_aired_at as the
+    'aired at least once' flag (rows behind the trim window are gone, but the
+    persisted ledger survives)."""
+    from conftest import seed_aged_songs
+    _, store, _ = tmp_env
+    ids = seed_aged_songs(cfg, store, 41, 1_800_000_000.0, 40.0, 0.0, fresh=False)
+    for i in range(30):
+        make_item(cfg, store, "liner", 3 + i % 12)
+    for i in range(25):
+        make_item(cfg, store, "commercial", 20 + i % 10)
+    for i in range(15):
+        make_item(cfg, store, "dj_talk", 15 + i % 5)
+    clock = SimClock(epoch=1_800_000_000.0)
+    sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
+    for _ in range(int(6 * 3600) // 30):
+        clock.advance(30)
+        sched.commit_lookahead()
+    never = [iid for iid in ids if store.get_item(iid)["last_aired_at"] is None]
+    assert not never, f"songs never aired (lockup): {never}"
+
+
+def test_fresh_songs_lifo(cfg, tmp_env):
+    """(PRIORITIES §6) Two fresh songs: the NEWER airs first (LIFO), and both
+    air before any recycled song."""
+    _, store, _ = tmp_env
+    older = make_item(cfg, store, "song", 90.0, genre="polka")        # lower id
+    newer = make_item(cfg, store, "song", 90.0, genre="bluegrass")    # higher id
+    for i in range(10):
+        make_item(cfg, store, "liner", 3 + i % 7)
+    for _ in range(12):
+        make_item(cfg, store, "commercial", 20.0)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(3), cfg), clock, RNG(3))
+    sched.commit_lookahead()
+    song_ids = [r["item_id"] for r in store.program_since(1) if r["type"] == "song"]
+    # both fresh songs air (newer first) before any non-fresh song can
+    assert song_ids[:2] == [newer, older], f"fresh LIFO violated: {song_ids[:2]}"
+
+
+def test_air_history_persists_across_restart(cfg, tmp_env):
+    """(PRIORITIES §6) Commit a song, build a new Scheduler on the same db: the
+    song's last_aired_at survives and it is still inside its spacing window."""
+    _, store, _ = tmp_env
+    sid = make_item(cfg, store, "song", 90.0, genre="polka")
+    for i in range(15):
+        make_item(cfg, store, "liner", 3 + i % 5)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(1), cfg), clock, RNG(1))
+    sched.commit_lookahead()
+    assert store.get_item(sid)["last_aired_at"] is not None  # aired + persisted
+    # brand-new scheduler over the same db keeps the floor: the song must not
+    # be airable until its spacing window elapses
+    sched2 = Scheduler(cfg, store, RandomSelector(RNG(2), cfg), SimClock(), RNG(2))
+    assert sched2.build_state().available["song"] is False
+
+
+def test_weighting_never_breaks_spacing_floor(cfg, tmp_env):
+    """(PRIORITIES §6) A heavily weighted young song inside its spacing floor is
+    NOT picked: the floor filters it out before weighting. Weighting only orders
+    what already passes spacing; it never overrides it."""
+    from conftest import iso_from_epoch
+    _, store, _ = tmp_env
+    epoch = 1_800_000_000.0
+    # young, high-youth song that aired 10 min ago (inside the 15-min floor)
+    young = store.add_item(type_="song", media_path="/y.flac", duration_s=120.0,
+                           genre="polka", fresh=False, evergreen=True,
+                           created_at=iso_from_epoch(epoch - 0.5 * 3600))
+    store.commit_song_air(young, epoch - 600)
+    # old, low-weight song that cleared the floor (aired 2 h ago)
+    old = store.add_item(type_="song", media_path="/o.flac", duration_s=120.0,
+                         genre="synthwave", fresh=False, evergreen=True,
+                         created_at=iso_from_epoch(epoch - 48 * 3600))
+    store.commit_song_air(old, epoch - 2 * 3600)
+    clock = SimClock(epoch=epoch)
+    sched = Scheduler(cfg, store, RandomSelector(RNG(5), cfg), clock, RNG(5))
+    eligible = [i["id"] for i in sched._eligible_songs()]
+    assert young not in eligible
+    assert eligible == [old]
+    for _ in range(50):
+        pick = sched._pick_stock_song(sched.build_state())[0]["item_id"]
+        assert pick == old, "weighting picked a song inside the spacing floor"

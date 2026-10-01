@@ -160,8 +160,27 @@ Constraints (applied before drawing):
   be a `commercial_break` (avoids satire landing on real tragedy).
 - Same commercial: minimum **30 min** separation.
 - Same song: minimum **4 h** separation, relaxed stepwise (4 h → 2 h → 1 h)
-  only when the pool is too small to satisfy it.
+  only when the pool is too small to satisfy it. (The config ships
+  `[3600, 1800, 900]`, a 1 h → 30 m → 15 m relaxation; the exact rule is open
+  question Q1 in PRIORITIES.md.)
 - Genre: no genre repeated within the last **3** songs.
+- **Song priority (PRIORITIES §2 tier table):**
+
+  | Tier | What | Rule |
+  |------|------|------|
+  | 0 | Ready listener-request song | Jumps the line (unchanged, 4.7). |
+  | 1 | Fresh (never-aired) song | **Newest first** (LIFO); airs at the next song slot. |
+  | 2 | Recycled song | **Weighted random** over songs that clear spacing. |
+
+  Tier-2 weight is `youth * (wait_floor + (1 - wait_floor) * wait)`
+  (`playout.song_rotation`, §12): **youth** halves every `half_life_h` hours
+  (floored at `youth_floor` so no song starves); **wait** grows 0..1 while a
+  song goes unheard, saturating at `wait_target_h` (a never-aired song counts
+  as unheard forever). Recent songs lean up; old songs thin out, they don't
+  disappear. Weighting never breaks spacing — it only orders songs that
+  already pass it. Spacing and the wait factor read the persisted
+  `last_aired_at` wall clock, not an in-memory air map, so a restart keeps the
+  rotation instead of re-airing the oldest song first.
 - `dj_talk` never adjacent to another `dj_talk` or to `news` (either order).
 - `field_report` never adjacent to `news` (either order) or to another
   `field_report`, and is held back after a `serious` bulletin like a
@@ -185,6 +204,7 @@ Constraints (applied before drawing):
   scheduler commits interjections only up to `playout.filler_horizon_s` ahead
   (enough to avoid dead air), never a full lookahead of spots or talk. A song
   that lands mid-drought takes the next open slot, within about that horizon.
+  Among waiting fresh songs the newest airs first (LIFO, PRIORITIES §2).
   The ≥10 min committed lookahead (§5.3) holds only while songs are airable.
 - **Listener-request songs jump the line** (OVERHAUL 4.7): when a ready
   request song exists and a song is allowed right now (the interjection rule
@@ -322,6 +342,13 @@ recorded from client heartbeats, not from what was produced. Prompts receive
 ledger facts ("the Glue-Free Glue sponsor last aired 2 h ago; the medication's
 side-effect list was last extended yesterday") so gags can escalate and
 callbacks make sense.
+
+**Persisted rotation (PRIORITIES §4):** `items` carries `last_aired_at` (wall
+epoch, set at commit) and `play_count` so song spacing and Tier-2 weighting
+survive a restart. A `NULL` `last_aired_at` means never aired (or aired before
+the ledger) and counts as unheard-forever (`wait = 1.0`). These are backfilled
+once from `airplay` (`MAX(recorded_at)`, `COUNT(*)`) for songs that predate
+the columns.
 
 ---
 
@@ -490,6 +517,11 @@ playout:
   commercial_min_spacing_s: 1800
   song_min_spacing_s: [14400, 7200, 3600]
   genre_no_repeat: 3
+  song_rotation:            # PRIORITIES §3 Tier-2 weighting
+    half_life_h: 12         # youth halves every 12 h
+    youth_floor: 0.1        # old songs keep >=10% of a new song's pull
+    wait_target_h: 3        # wait factor saturates after 3 h unheard
+    wait_floor: 0.2         # song just past spacing still has some chance
   rng_seed: null            # set for tests
 
 inventory:
@@ -651,6 +683,21 @@ Random selection is chosen for Phase 1 partly because it is easy to test.
 - SFX policy: no overlay on news or any non-host type, every overlay inside
   its host, ≤3 stingers in any 10 s, joke rimshot rate ≈ 50%; field reports
   never adjacent to news.
+- **PRIORITIES §6 (sim):** with songs produced at a steady rate over 24 h,
+  songs < 12 h old get *more* airtime than their time-averaged pool share; no
+  eligible song goes unheard longer than `max(6 h, pool_size × mean gap)`
+  (starvation guard).
+
+**Scheduler unit tests (PRIORITIES §6):**
+- Restart regression: a recycled pool with no persisted history does not open
+  with the lowest id; across seeds the first pick favors the newest third.
+- No lockup: 41 recycled songs over 6 h — every song airs at least once.
+- Fresh LIFO: the newer of two fresh songs airs first, and both air before any
+  recycled song.
+- Persistence: a committed song's `last_aired_at` survives a fresh Scheduler on
+  the same db (it stays inside its spacing window).
+- Spacing never broken by weighting: a heavily weighted young song inside its
+  floor is not picked.
 
 **Seeded RNG:** identical seeds produce identical programs.
 

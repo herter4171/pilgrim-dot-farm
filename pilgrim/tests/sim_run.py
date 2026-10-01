@@ -13,11 +13,11 @@ _REPO = Path(__file__).resolve().parents[2]      # repo root
 sys.path.insert(0, str(_REPO))
 sys.path.insert(0, str(_TESTDIR))
 
-from conftest import seed_pool  # noqa: E402
+from conftest import iso_from_epoch, seed_aged_songs, seed_pool  # noqa: E402
 from pilgrim.config import RNG, SimClock, ensure_dirs, load_config  # noqa: E402
 from pilgrim.scheduler import Scheduler  # noqa: E402
 from pilgrim.selector import RandomSelector  # noqa: E402
-from pilgrim.store import Store  # noqa: E402
+from pilgrim.store import Store, _parse_epoch  # noqa: E402
 
 
 def _seed_sfx(store) -> set[int]:
@@ -62,7 +62,11 @@ def run(hours=24):
     cfg.library.db = str(tmp / "station.db")
     ensure_dirs(cfg)
     store = Store(tmp / "station.db")
-    seed_pool(store, cfg, n_song=80, n_liner=50, n_com=30, n_dj=25)
+    # Base pool: non-song inventory via seed_pool, plus songs with realistic
+    # sim-frame ages (12 h .. 120 h old, so no base song sits at the youth
+    # floor). New songs are added during the run for the young-song assertions.
+    seed_pool(store, cfg, n_song=0, n_liner=50, n_com=30, n_dj=25)
+    seed_aged_songs(cfg, store, 41, 1_800_000_000.0, 120.0, 12.0, fresh=False)
     # glue intros to a few stock songs so the intro path is exercised (4.7)
     import json as _json
     for s in store.list_items("song")[:4]:
@@ -80,14 +84,62 @@ def run(hours=24):
     min_coverage = float("inf")
     overlays: dict[int, list[dict]] = {}  # seq -> aired SFX overlays
     sched.commit_lookahead()  # the station commits at startup (Station.startup)
+    # PRIORITIES §6: simulate songs produced at a steady rate during the run so
+    # we can assert the young-song preference and the starvation guard. Each
+    # produced song is committed with a sim-frame created_at (fresh=False so it
+    # joins the recycled pool and must earn airtime by weight, not by being
+    # fresh).
+    song_air_age_s: dict[int, float] = {}  # last air wall per song id
+    song_gap: dict[int, float] = {}        # max wall gap between airings
+    song_airtime_young = 0.0
+    song_airtime_total = 0.0
+    young_pool_share_sum = 0.0
+    young_pool_share_n = 0
+    production_every_s = 10800
+    next_produce = production_every_s
+    _genres = list(cfg.songs.genres.keys())
+    _produced_i = 0
     for _ in range(int(hours * 3600) // step):
         clock.advance(step)
+        if clock.now() >= next_produce:  # produce a song at a steady cadence
+            wall = clock.wall()
+            store.add_item(
+                type_="song", media_path=f"/produced_{_produced_i}.flac",
+                duration_s=150.0, genre=_genres[_produced_i % len(_genres)],
+                fresh=False, evergreen=True, created_at=iso_from_epoch(wall))
+            _produced_i += 1
+            next_produce += production_every_s
+        wall = clock.wall()
         sched.commit_lookahead()
+        # time-averaged young fraction of the eligible pool (a song is only
+        # 'young' (<12h) for its first half-life-day, so count-share over the
+        # whole run overstates how much of the pool is ever young at once)
+        elig = sched._eligible_songs()
+        if elig:
+            youth = sum(1 for it in elig
+                        if _parse_epoch(it.get("created_at")) is not None
+                        and wall - _parse_epoch(it.get("created_at")) < 12 * 3600)
+            young_pool_share_sum += youth / len(elig)
+            young_pool_share_n += 1
         min_coverage = min(min_coverage, sched.coverage())
         for r in store.program_after(last_seq):
             seen.append((r["seq"], r["type"], r["duration_s"], r["item_id"]))
             overlays[r["seq"]] = sched.overlays_for(r["seq"])
+            if r["type"] == "song":
+                it = store.get_item(r["item_id"])
+                created = _parse_epoch(it.get("created_at")) if it else None
+                if created is not None:
+                    age_s = wall - created
+                    song_airtime_total += r["duration_s"]
+                    if age_s < 12 * 3600:
+                        song_airtime_young += r["duration_s"]
+                prev = song_air_age_s.get(r["item_id"])
+                if prev is not None:
+                    g = wall - prev
+                    song_gap[r["item_id"]] = max(song_gap.get(r["item_id"], 0.0), g)
+                song_air_age_s[r["item_id"]] = wall
             last_seq = max(last_seq, r["seq"])
+
 
     # ---- assertions ----
     fails = []
@@ -172,11 +224,31 @@ def run(hours=24):
     if not seen:
         fails.append("no program produced")
 
+    # ---- PRIORITIES §6: young songs get more than their share; nobody starves ----
+    total_songs = store.count_usable_of_type("song")
+    young_pool_share = (young_pool_share_sum / young_pool_share_n
+                        if young_pool_share_n else 0.0)
+    young_share = (song_airtime_young / song_airtime_total
+                   if song_airtime_total else 0.0)
+    if young_share <= young_pool_share:
+        fails.append(
+            f"songs <12h old got {young_share:.2f} of airtime, "
+            f"not above their {young_pool_share:.2f} pool share")
+    n_song_airings = len([a for a in seen if a[1] == "song"])
+    mean_gap = (hours * 3600) / n_song_airings if n_song_airings else 0.0
+    guard = max(6 * 3600, total_songs * mean_gap)
+    for iid, gap in song_gap.items():
+        if gap > guard:
+            fails.append(f"song {iid} went {gap/3600:.1f}h between airs "
+                         f"(starvation guard {guard/3600:.1f}h)")
+
     print("=" * 60)
     audio_s = sum(d for _, _, d, _ in seen)
     print(f"24h simulated run: {len(seen)} committed items, {audio_s:.0f}s audio")
     print("segment mix:", dict(mix))
     print(f"minimum committed coverage: {min_coverage:.0f}s")
+    print(f"song fairness: <12h-old got {young_share*100:.0f}% of airtime "
+          f"(young {young_pool_share*100:.0f}% of pool by time)")
     max_run_str = (f"max consecutive non-song: {max_run_non_song} "
                    f"(limit {cfg.playout.max_consecutive_non_song})")
     print(max_run_str)

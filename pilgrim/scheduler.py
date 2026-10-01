@@ -42,7 +42,9 @@ class Scheduler:
         self.clock = clock
         self.rng = rng
         self._start_wall = time.monotonic()
-        self._last_song_air: dict[int, float] = {}  # item_id -> air-clock of last commit
+        # Song air history is PERSISTED on items (last_aired_at, play_count) so a
+        # restart keeps the rotation (§PRIORITIES §4). Only commercials keep an
+        # in-memory air map (they can follow the same pattern later).
         self._last_comm_air: dict[int, float] = {}  # item_id -> air-clock of last commit
         self._air_clock = 0.0  # monotonic committed-program time (independent of trimming)
         # in-memory cumulative mapping built each cycle
@@ -62,6 +64,9 @@ class Scheduler:
         # The committed program is live-only state: old rows refer to a clock
         # that no longer exists, so start clean on every run (OVERHAUL 2.4).
         self.store.clear_program()
+        # Seed rotation history for songs that predate the persistence columns,
+        # so the live pool starts with real last-aired/play-count data (PRIOR §4).
+        self.store.backfill_airplay_history()
         self._rebuild_program()
 
     # ------------------------------------------------------------------ index
@@ -241,6 +246,10 @@ class Scheduler:
         self._plan_sfx(seq, e, host_start)
         if e.get("consume"):
             self.store.mark_aired(item_id)
+        if e["type"] == "song":
+            # persist the wall-clock air (injected clock, never time.time) so
+            # spacing + weighting survive a restart (PRIORITIES §4)
+            self.store.commit_song_air(item_id, self.clock.wall())
         if e.get("request_id"):
             # committed, not yet heard: _settle_aired marks it when it airs
             self._pending_aired[seq] = e["request_id"]
@@ -346,10 +355,12 @@ class Scheduler:
 
     # -------------------------------------------------------------- pickers
     def _pick_song(self, st: PlayoutState) -> list[dict]:
-        """Pick a song. Ready listener-request songs jump the line (oldest
-        first); their pre-made intro is glued on. Otherwise the stock logic
-        (fresh first, then oldest-aired with min spacing). Returns
-        [intro?, song] so the intro airs immediately before its song (4.7)."""
+        """Pick a song (PRIORITIES §2 tier table). Ready listener-request songs
+        jump the line (oldest first) unchanged; their pre-made intro is glued on.
+        Otherwise the stock logic: fresh (never-aired) songs air newest-first
+        (LIFO), then recycled songs are a weighted-random draw over those that
+        clear spacing. Returns [intro?, song] so the intro airs before its song.
+        Air/rotation history is committed to the store at commit time (§4)."""
         reqs = self._uncommitted_ready_requests()
         after_dj = bool(self._items) and self._items[-1]["type"] == "dj_talk"
         # a request's intro is its on-air thank-you: don't take the request in
@@ -366,33 +377,62 @@ class Scheduler:
                 for e in entries:
                     if e["type"] == "song":
                         e["request_id"] = req["id"]
-                self._last_song_air[it["id"]] = self._air_clock  # spacing (§5.2)
                 return entries
+        return self._pick_stock_song(st)
+
+    def _pick_stock_song(self, st: PlayoutState) -> list[dict]:
+        """Tier 1 (fresh, LIFO) then Tier 2 (recycled, weighted random)."""
         pool = self._eligible_songs()
         if not pool:
             return []
-        now = self._air_clock  # monotonic air-clock: where this song will start
-        min_gap = float(self.cfg.playout.song_min_spacing_s[0])
-        last = st.recent_song_genres
-
-        def key(it):
-            aired = self._last_song_air.get(it["id"], float("inf"))
-            return (it.get("genre") in last,    # soft: genre freshness
-                    0 if it["fresh"] else aired,  # fresh first, else oldest air
-                    it["id"])
-
         fresh = [i for i in pool if i["fresh"]]
-        recycled = [i for i in pool if not i["fresh"]]
         if fresh:
-            cand = min(fresh, key=key)
-        else:
-            spaced = [
-                i for i in recycled
-                if now - self._last_song_air.get(i["id"], -1e9) >= min_gap
-            ]
-            cand = min(spaced or recycled, key=key)  # relax toward the floor only
-        self._last_song_air[cand["id"]] = now
+            # tier 1: never-aired songs air newest-first (LIFO) at the next song
+            # slot; the drought rule (§5.2) decides when that slot opens
+            cand = max(fresh, key=lambda i: i["id"])
+            return self._glue_intro(cand["id"], cand["duration_s"])
+        # tier 2: weighted random over recycled songs that clear spacing. The
+        # full first spacing step (song_min_spacing_s[0], the 1 h preference) is
+        # honored whenever the pool allows; only when nothing clears it do we
+        # relax toward the 15-min floor (same relaxation as today). Weighting
+        # never breaks the floor — it only orders what already passes.
+        now = self.clock.wall()
+        min_gap = float(self.cfg.playout.song_min_spacing_s[0])
+        spaced = [i for i in pool
+                  if i.get("last_aired_at") is None or now - i["last_aired_at"] >= min_gap]
+        candidates = self._genre_filtered(spaced or pool, st.recent_song_genres)
+        cand = self._weighted_pick(candidates, now)
         return self._glue_intro(cand["id"], cand["duration_s"])
+
+    def _genre_filtered(self, items: list[dict], recent_genres: list[str]) -> list[dict]:
+        """Soft genre no-repeat (§5.2): drop songs whose genre is among the last
+        3 aired, but if that empties the pool keep them (a soft rule, not a wall)."""
+        if not recent_genres:
+            return items
+        kept = [i for i in items if (i.get("genre") or "") not in recent_genres]
+        return kept or items
+
+    def _song_weight(self, it: dict, now_wall: float) -> float:
+        """PRIORITIES §3 recycled-song weight. youth halves every half_life_h
+        hours (floored at youth_floor so old songs never starve); wait grows 0..1
+        while unheard, saturating at wait_target_h. NULL last_aired_at = unheard
+        forever (wait 1.0)."""
+        rot = self.cfg.playout.song_rotation
+        created = _parse_iso(it.get("created_at")) or now_wall
+        age_h = max(0.0, (now_wall - created) / 3600.0)
+        last = it.get("last_aired_at")
+        since_h = float("inf") if last is None else max(0.0, (now_wall - last) / 3600.0)
+        youth = max(rot.youth_floor, 0.5 ** (age_h / rot.half_life_h))
+        wait = min(1.0, since_h / rot.wait_target_h)
+        return youth * (rot.wait_floor + (1 - rot.wait_floor) * wait)
+
+    def _weighted_pick(self, candidates: list[dict], now_wall: float) -> dict:
+        """Weighted random over eligible recycled songs (injected RNG, pure)."""
+        weights = [self._song_weight(i, now_wall) for i in candidates]
+        total = sum(weights)
+        if total <= 0:
+            return self.rng.choice(candidates)
+        return self.rng.choices(candidates, weights=weights, k=1)[0]
 
     def _uncommitted_ready_requests(self) -> list[dict]:
         """Ready requests not already committed (they stay 'ready' until the
@@ -403,12 +443,15 @@ class Scheduler:
     def _eligible_songs(self) -> list[dict]:
         """Fresh songs, plus recycled songs last aired at least the smallest
         song_min_spacing_s ago (the relaxation floor, §5.2). Below that a song
-        is not airable; the slot goes to a commercial, DJ talk, news or liner."""
+        is not airable; the slot goes to a commercial, DJ talk, news or liner.
+        A NULL last_aired_at (never aired, or aired before the ledger) counts
+        as unheard forever, so it is always airable (PRIORITIES §4, root 1)."""
         floor = float(min(self.cfg.playout.song_min_spacing_s))
-        now = self._air_clock
+        now = self.clock.wall()
         return [i for i in self.store.list_items("song")
                 if not i["emergency"] and (
-                    i["fresh"] or now - self._last_song_air.get(i["id"], -1e9) >= floor)]
+                    i["fresh"] or i.get("last_aired_at") is None or
+                    now - i["last_aired_at"] >= floor)]
 
     def _glue_intro(self, song_id: int, song_dur: float) -> list[dict]:
         """If this song has an unaired intro, materialize [intro, song] with the

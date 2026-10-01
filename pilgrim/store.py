@@ -12,6 +12,16 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _parse_epoch(iso: str | None) -> float | None:
+    """Parse an ISO-8601 timestamp into a wall-clock epoch (PRIORITIES §4)."""
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except Exception:
+        return None
+
+
 class Store:
     """Thin wrapper over SQLite. All writes go through a single connection per thread."""
 
@@ -92,6 +102,15 @@ class Store:
             if "retired" not in cols:
                 self._conn.execute(
                     "ALTER TABLE items ADD COLUMN retired INTEGER DEFAULT 0")
+            # idempotent migration (PRIORITIES §4): persisted airplay so a
+            # restart doesn't reset song rotation (replaces the in-memory map).
+            # last_aired_at is a wall-clock epoch set at commit; NULL = never aired
+            # (or aired before the ledger existed) -> treated as unheard forever.
+            if "last_aired_at" not in cols:
+                self._conn.execute("ALTER TABLE items ADD COLUMN last_aired_at REAL")
+            if "play_count" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE items ADD COLUMN play_count INTEGER DEFAULT 0")
             # idempotent migration (OVERHAUL 4.4): request lifecycle columns
             req_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(requests)")}
             for col, ddl in (("attempts", "INTEGER DEFAULT 0"),
@@ -109,7 +128,8 @@ class Store:
                  channels: int | None = None, role: str | None = None,
                  evergreen: bool = False, emergency: bool = False,
                  fresh: bool = True, expires_at: str | None = None,
-                 gravity: str | None = None, meta: dict | None = None) -> int:
+                 gravity: str | None = None, meta: dict | None = None,
+                 created_at: str | None = None) -> int:
         with self._lock:
             cur = self._conn.execute(
                 """INSERT INTO items
@@ -120,7 +140,7 @@ class Store:
                 (type_, media_path, duration_s, title, artist, genre, sample_rate,
                  channels, role, 1 if evergreen else 0, 1 if emergency else 0,
                  1 if fresh else 0, expires_at, gravity,
-                 json.dumps(meta) if meta else None, _now_iso()))
+                 json.dumps(meta) if meta else None, created_at or _now_iso()))
             self._conn.commit()
             rid = cur.lastrowid
             assert rid is not None
@@ -177,6 +197,35 @@ class Store:
     def mark_aired(self, item_id: int) -> None:
         with self._lock:
             self._conn.execute("UPDATE items SET fresh=0 WHERE id=?", (item_id,))
+            self._conn.commit()
+
+    def commit_song_air(self, item_id: int, wall: float) -> None:
+        """Persist a song's air at commit time (PRIORITIES §4). `wall` is the
+        injected clock's wall epoch (never time.time()). Spacing and the
+        recycled-song weighting read last_aired_at, so a restart keeps the
+        rotation instead of resetting it. play_count feeds the stats endpoint."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE items SET last_aired_at=?, play_count=play_count+1 WHERE id=?",
+                (wall, item_id))
+            self._conn.commit()
+
+    def backfill_airplay_history(self) -> None:
+        """One-time backfill (PRIORITIES §4): for items that predate the
+        last_aired_at/play_count columns, seed them from the airplay ledger so
+        the live pool starts with real history rather than all-NULL. Rerunnable
+        and safe: only NULL last_aired_at rows are touched, so live values set
+        by read/replay of a given song survive."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT item_id, COUNT(*) AS plays, MAX(recorded_at) AS last "
+                "FROM airplay GROUP BY item_id").fetchall()
+            for r in rows:
+                last = _parse_epoch(r["last"])
+                self._conn.execute(
+                    "UPDATE items SET last_aired_at=?, play_count=? "
+                    "WHERE id=? AND last_aired_at IS NULL",
+                    (last, r["plays"], r["item_id"]))
             self._conn.commit()
 
     def last_played_at(self, item_id: int) -> float | None:

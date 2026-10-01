@@ -113,6 +113,21 @@ class Voices(BaseModel):
     speed: float = 1.0
 
 
+class SongRotation(BaseModel):
+    """Recycled-song weighting (PRIORITIES §3, RADIO.md §5.2 Tier 2).
+
+    weight = youth * (wait_floor + (1 - wait_floor) * wait):
+    - youth  halves every `half_life_h` hours, floored at `youth_floor` so no
+      song ever starves; recent songs pull more airtime than old ones.
+    - wait  grows 0..1 while a song goes unheard, saturating at
+      `wait_target_h`; a never-aired song counts as unheard forever.
+    """
+    half_life_h: float = 12.0
+    youth_floor: float = 0.1
+    wait_target_h: float = 3.0
+    wait_floor: float = 0.2
+
+
 class Playout(BaseModel):
     committed_lookahead_s: int = 600
     filler_horizon_s: int = 60  # spacing-breaking repeats only below this coverage
@@ -127,6 +142,7 @@ class Playout(BaseModel):
     commercial_min_spacing_s: int = 1800
     song_min_spacing_s: list[int] = Field(default_factory=lambda: [14400, 7200, 3600])
     genre_no_repeat: int = 3
+    song_rotation: SongRotation = Field(default_factory=SongRotation)
 
 
 class Inventory(BaseModel):

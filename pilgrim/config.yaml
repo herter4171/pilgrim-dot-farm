@@ -45,6 +45,16 @@ playout:
   commercial_min_spacing_s: 1800
   song_min_spacing_s: [3600, 1800, 900]   # hard floor 1h per operator; relax stepwise
   genre_no_repeat: 3
+  # Recycled-song weighting (PRIORITIES §3, RADIO §5.2 Tier 2):
+  #   weight = youth * (wait_floor + (1 - wait_floor) * wait)
+  # youth halves every half_life_h hours (floored at youth_floor); wait grows
+  # 0..1 while unheard, saturating at wait_target_h. Young/recent songs lean up;
+  # no song starves (old songs thin out, they don't disappear).
+  song_rotation:
+    half_life_h: 12        # a song's youth boost halves every 12 h (Q2: 6 or 24?)
+    youth_floor: 0.1       # old songs keep >=10% of a new song's pull
+    wait_target_h: 3       # after 3 h unheard a song's wait factor maxes out
+    wait_floor: 0.2        # a song just past spacing still has some chance
 
 inventory:
   fresh_songs_ready: 2
