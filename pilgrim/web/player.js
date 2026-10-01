@@ -11,6 +11,7 @@
   const btn = $("btn-play"), ind = $("indicator"), indLabel = $("ind-label");
   const level = $("level"); const lctx = level.getContext("2d");
   const offairEl = $("offair"), statusEl = $("status");
+  const songLabel = $("song-label");
 
   let ctx = null, analyser = null, raf = null;
   let items = [];            // {seq, media_id, type, duration_s, sfx[], buffer}
@@ -70,11 +71,6 @@
         setStatus(""); return h;
       }
       offairEl.classList.add("hidden"); btn.disabled = false;
-      // rotation = what can air now; inventory.song.have = unaired new songs
-      const rot = h.rotation || {}, inv = h.inventory || {};
-      setStatus(`songs ${rot.song||0} (${inv.song?.have||0} new) · ` +
-                `spots ${rot.commercial||0} · liners ${rot.liner||0} · ` +
-                `dj ${rot.dj_talk||0} · news ${rot.news||0}`);
       return h;
     } catch (e) {
       if (playing) return null;
@@ -185,6 +181,15 @@
     hg.linearRampToValueAtTime(1, Math.min(end + r, it._end));
   }
 
+  /* Song label under the meter — the audible item only, driven from the
+     audio-clock playhead (RADIO §9.1 / COSMETIC_PATCHING §3). Shown exactly
+     `title - artist` for a song with both fields; otherwise empty. Fetching,
+     decoding, or scheduling the NEXT song must never announce it early. */
+  function setSongLabel(it) {
+    songLabel.textContent = (it && it.type === "song" && it.title && it.artist)
+      ? (it.title + " - " + it.artist) : "";
+  }
+
   function advancePlayhead() {
     while (cursor < scheduleCursor && items[cursor]._end <= ctx.currentTime) {
       items[cursor].buffer = null;
@@ -196,6 +201,8 @@
       sendHeartbeat(it.seq, it._offset + ctx.currentTime - it._when);
       setState("onair");
     }
+    // label mirrors the on-air item; a gap / buffering / non-song shows ""
+    setSongLabel(it && it._started ? it : null);
   }
 
   /* The audio clock advances the decode window as clips finish. Keep current
@@ -311,6 +318,7 @@
     if (ctx) { try { ctx.close(); } catch (e) {} ctx = null; }
     analyser = null;
     items = []; cursor = 0; scheduleCursor = 0;
+    songLabel.textContent = "";
     btn.textContent = "▶  PLAY"; btn.classList.remove("stop");
     setState("idle"); lctx.clearRect(0, 0, level.width, level.height);
   }

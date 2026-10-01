@@ -263,3 +263,28 @@ def _store_add_song(s):
             "VALUES ('song','/x.flac',60,'Night Shift','The Night Owls', datetime('now'))")
         s._conn.commit()
         return int(cur.lastrowid)
+
+
+def test_request_board_recent_shows_latest_three(cfg):
+    """COSMETIC_PATCHING §4: the 'recently played' history is the latest 3 by
+    the existing ID ordering, not a reduction of the live queue capacity."""
+    s = _store()
+    ids = []
+    for i in range(5):
+        rid = s.add_request(f"played {i}", cap=10)["id"]
+        s.mark_request_aired(rid)
+        ids.append(rid)
+    board = s.request_board(cap=10)
+    recent = board["recent"]
+    assert len(recent) == 3
+    assert [r["id"] for r in recent] == [ids[4], ids[3], ids[2]]  # newest 3, desc id
+    # queue capacity and ordering are untouched
+    assert board["queue"] == []
+
+
+def test_request_board_recent_zero_to_two_renders(cfg):
+    s = _store()
+    assert s.request_board(cap=10)["recent"] == []
+    r = s.add_request("only one", cap=10)
+    s.mark_request_aired(r["id"])
+    assert len(s.request_board(cap=10)["recent"]) == 1

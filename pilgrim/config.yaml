@@ -85,6 +85,15 @@ requests:
   moderation_max_tokens: 4096  # cap for the moderation call (OVERHAUL 4.2)
   per_client_per_10min: 3   # request-line rate limit (OVERHAUL 4.3)
 
+# Persistent unique-visitor counter (COSMETIC_PATCHING §6, RADIO §14).
+# Raw IPs are never stored; only an HMAC-SHA256 signature under secret_env.
+visitors:
+  enabled: true
+  # Peers whose X-Real-IP / first X-Forwarded-For we trust as the real client.
+  # Verified deployment: nginx on loopback sets X-Real-IP to $remote_addr.
+  trusted_proxies: [127.0.0.1, "::1"]
+  secret_env: VISITOR_HASH_SECRET
+
 audio:
   lufs: -16.0
   true_peak_db: -1.0

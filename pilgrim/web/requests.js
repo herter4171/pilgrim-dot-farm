@@ -45,7 +45,8 @@
     const recentEl = $("req-recent");
     if (!recentEl) return;
     recentEl.textContent = "";
-    (recent || []).forEach((r) => {
+    // defensive: server may send more than 3 during mixed-version deploy (§4)
+    ((recent || []).slice(0, 3)).forEach((r) => {
       const li = document.createElement("li");
       li.className = "req-recent-item";
       const t = document.createElement("span");

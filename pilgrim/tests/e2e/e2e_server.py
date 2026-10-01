@@ -8,6 +8,8 @@ webServer so the browser can exercise PLAY -> heartbeats -> gapless joins.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import sys
 import tempfile
 import time
@@ -18,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root
 
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pilgrim.config import RNG, Clock, Config, ensure_dirs, load_config
 from pilgrim.scheduler import Scheduler
@@ -43,7 +45,8 @@ def _seed(cfg: Config, store: Store, tmp: Path) -> None:
         f = lib / f"song_{i}.flac"
         _make_flac(f, 1.5 + (i % 3) * 0.5)
         store.add_item(type_="song", media_path=str(f), duration_s=1.5 + (i % 3) * 0.5,
-                       genre=genres[i % len(genres)], evergreen=True, fresh=True)
+                       genre=genres[i % len(genres)], evergreen=True, fresh=True,
+                       title=f"Song {i}", artist="The Fakes")
     # one short SFX stinger that rides on talk clips (SFX.md §7.4): exercises
     # the client's overlay path without touching the host joins
     sfx = lib / "sfx_0.flac"
@@ -115,7 +118,9 @@ def build_app() -> FastAPI:
             start_offset = 0.0
         return {"items": [{"seq": it["seq"], "media_id": it["item_id"],
                            "type": it["type"], "duration_s": it["duration_s"],
-                           "sfx": sched.overlays_for(it["seq"])}
+                           "sfx": sched.overlays_for(it["seq"]),
+                           "title": (store.get_item(it["item_id"]) or {}).get("title") or "",
+                           "artist": (store.get_item(it["item_id"]) or {}).get("artist") or ""}
                           for it in items], "start_offset_s": start_offset}
 
     @app.post("/api/station/heartbeat")
@@ -141,6 +146,30 @@ def build_app() -> FastAPI:
     async def health():
         return {"on_air": True, "committed_coverage_s": sched.coverage(),
                 "inventory": {}, "time": time.time()}
+
+    @app.post("/api/visitors")
+    async def visitors(request: Request):
+        """e2e mirror of COSMETIC_PATCHING §6: hash the server-derived peer
+        identity and return the unique count. No client-supplied signature."""
+        peer = request.client.host if (request.client and request.client.host) else None
+        if not peer:
+            raise HTTPException(503, "unique visitor count unavailable")
+        sig = hmac.new(b"e2e-secret", peer.encode(), hashlib.sha256).hexdigest()
+        return JSONResponse({"unique_visitors": store.register_visitor(sig)},
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/requests")
+    async def list_requests():
+        return {"queue": [], "recent": [], "cap": 10}
+
+    @app.post("/api/requests")
+    async def submit_request(payload: dict):
+        # five recents let the client exercise its defensive .slice(0, 3)
+        recent = [{"id": i, "text": f"played {i}",
+                   "song_title": f"Song {i}", "song_artist": "Artist"}
+                  for i in range(1, 6)]
+        return {"ok": True, "rejected": False, "queue": [],
+                "recent": recent, "cap": 10}
 
     @app.get("/api/test/report")
     async def report():

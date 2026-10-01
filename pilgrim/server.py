@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
+import ipaddress
 import logging
+import os
 import time
 from collections import deque
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -164,10 +168,75 @@ class Station:
             start_offset = 0.0
         out = []
         for it in items:
+            inv = self.db.get_item(it["item_id"])
+            title = (inv.get("title") if inv else None) or ""
+            artist = (inv.get("artist") if inv else None) or ""
             out.append({"seq": it["seq"], "media_id": it["item_id"],
                         "type": it["type"], "duration_s": it["duration_s"],
-                        "sfx": scheduler.overlays_for(it["seq"])})
+                        "sfx": scheduler.overlays_for(it["seq"]),
+                        "title": title, "artist": artist})
         return {"items": out, "start_offset_s": start_offset}
+
+    # -------------------------------------------------------------- visitors
+    @staticmethod
+    def _canonical_ip(raw: str | None) -> str | None:
+        """Canonicalize a client IP string via stdlib ipaddress, folding
+        IPv4-mapped IPv6 into IPv4 and taking the first of an XFF list (13)."""
+        if not raw:
+            return None
+        raw = raw.strip()
+        if "," in raw:
+            raw = raw.split(",")[0].strip()  # leftmost = the client we saw
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            return None
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
+        return ip.compressed
+
+    def _client_ip(self, request: Request) -> str | None:
+        """Resolve the canonical public client IP through the deployment's
+        verified trusted-proxy setup (nginx sets X-Real-IP to $remote_addr on
+        loopback; COSMETIC_PATCHING §6). Never trust a spoofable header from an
+        untrusted peer — use the socket peer address directly."""
+        peer = request.client.host if (request.client and request.client.host) else None
+        trusted = set(self.cfg.visitors.trusted_proxies)
+        if peer in trusted:
+            header = (request.headers.get("x-real-ip")
+                      or request.headers.get("x-forwarded-for"))
+        else:
+            header = peer
+        return self._canonical_ip(header)
+
+    def visitor_signature(self, request: Request) -> str | None:
+        """HMAC-SHA256 over the canonical IP using the stable secret. Returns
+        None (skip registration) when disabled, the secret is missing, or no
+        client identity can be established (RADIO §14)."""
+        if not self.cfg.visitors.enabled:
+            return None
+        secret = os.environ.get(self.cfg.visitors.secret_env, "").strip()
+        if not secret:
+            log.warning("visitor.register skipped: missing %s", self.cfg.visitors.secret_env)
+            return None
+        ip = self._client_ip(request)
+        if not ip:
+            log.warning("visitor.register skipped: no canonical client identity")
+            return None
+        return hmac.new(secret.encode(), ip.encode(), hashlib.sha256).hexdigest()
+
+    def register_visitor(self, request: Request) -> int | None:
+        sig = self.visitor_signature(request)
+        if sig is None:
+            return None
+        try:
+            return self.db.register_visitor(sig)
+        except Exception:
+            # Counter must never break radio/requests (RADIO §14). Identify the
+            # failure without ever logging the raw IP.
+            log.exception("visitor.register failed")
+            return None
 
     async def startup(self) -> None:
         # warm the program immediately with whatever inventory exists
@@ -319,6 +388,20 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     async def list_requests():
         board = station.db.request_board(cfg.requests.queue_cap)
         return {**board, "cap": cfg.requests.queue_cap}
+
+    @app.post("/api/visitors")
+    async def register_visitor(request: Request):
+        """Register one server-derived visitor signature and return the unique
+        count (RADIO §14, COSMETIC_PATCHING §6). Idempotent per client; media
+        fetches / heartbeats / health polls / request submissions never hit this.
+        A missing identity, secret, or disabled feature is a 503 -> the UI shows
+        'Unique visitors: —' rather than a fabricated zero."""
+        n = station.register_visitor(request)
+        if n is None:
+            raise HTTPException(503, "unique visitor count unavailable")
+        resp = JSONResponse({"unique_visitors": n},
+                            headers={"Cache-Control": "no-store"})
+        return resp
 
     @app.on_event("startup")
     async def _startup():

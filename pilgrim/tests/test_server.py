@@ -18,9 +18,14 @@ def test_site_served(tmp_env):
     c = TestClient(app)
     r = c.get("/")
     assert r.status_code == 200
-    assert "Pilgrim" in r.text
+    # station name retained in the browser title + header; ON AIR title is exact
+    assert "PILGRIM" in r.text
+    assert "ON AIR" in r.text
+    assert "MODEL CREDITS" in r.text
+    assert "HIT COUNTER" in r.text
     assert c.get("/style.css").status_code == 200
     assert c.get("/player.js").status_code == 200
+    assert c.get("/visitors.js").status_code == 200
 
 
 def test_program_endpoint_empty_inventory(tmp_env):
@@ -31,6 +36,38 @@ def test_program_endpoint_empty_inventory(tmp_env):
     r = c.get("/api/station/program")
     assert r.status_code == 200
     assert r.json() == {"items": [], "start_offset_s": 0.0}
+
+
+def test_program_endpoint_emits_title_artist(tmp_env):
+    """COSMETIC_PATCHING §3: program items carry title/artist from the inventory
+    item; absent values normalize to empty strings. (Rows are appended to the
+    app's store AFTER create_app — a fresh Scheduler clears stale program rows
+    on init, OVERHAUL 2.4.) Both the incremental and the initial (on-air) paths
+    join the same metadata."""
+    cfg, store, _ = tmp_env
+    app = create_app(cfg)
+    sdb = app.state.station.db
+    sid = sdb.add_item(type_="song", media_path="s.flac", duration_s=120,
+                       title="Night Shift", artist="The Night Owls")
+    lid = sdb.add_item(type_="liner", media_path="l.flac", duration_s=5)
+    sid2 = sdb.add_item(type_="song", media_path="s2.flac", duration_s=120,
+                        title="Asteroid", artist="Spring Rods")
+    sdb.append_program(sid, "song", 120)
+    sdb.append_program(lid, "liner", 5)
+    sdb.append_program(sid2, "song", 120)
+    c = TestClient(app)
+    # incremental: all committed rows after seq 0
+    items = c.get("/api/station/program?after_seq=0").json()["items"]
+    assert items[0]["title"] == "Night Shift" and items[0]["artist"] == "The Night Owls"
+    # liner has no title/artist -> normalized to empty, never None/undefined
+    assert items[1]["title"] == "" and items[1]["artist"] == ""
+    assert items[2]["title"] == "Asteroid" and items[2]["artist"] == "Spring Rods"
+    # initial path (no on-air scheduler state -> the retained tail window)
+    initial = c.get("/api/station/program").json()["items"]
+    assert initial and initial[-1]["title"] == "Asteroid"
+    assert initial[-1]["artist"] == "Spring Rods"
+    # the fixture store sees the same committed rows (same db file)
+    assert store.max_seq() == 3
 
 
 def test_media_unknown_item_404(tmp_env):
@@ -122,3 +159,96 @@ async def test_health_rotation_counts_aired_songs(tmp_env, monkeypatch):
     h = await station.health()
     assert h["rotation"]["song"] == 2
     assert h["inventory"]["song"]["have"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# COSMETIC_PATCHING §6 — persistent unique-visitor counter (RADIO §14).
+# HTTP-level: trusted-proxy identity resolution, dedupe, missing secret,
+# unavailable identity, and spoof-ignoring for untrusted peers. Fakes-only.
+# --------------------------------------------------------------------------- #
+
+def test_canonical_ip_folds_mapped_v6_and_takes_first_xff():
+    Station = __import__("pilgrim.server", fromlist=["Station"]).Station
+    canon = Station._canonical_ip
+    assert canon("1.2.3.4") == "1.2.3.4"
+    assert canon("::ffff:1.2.3.4") == "1.2.3.4"   # IPv4-mapped IPv6 -> IPv4
+    assert canon("2001:db8::1") == "2001:db8::1"
+    assert canon("1.2.3.4, 5.6.7.8") == "1.2.3.4"  # leftmost of an XFF list
+    assert canon("not-an-ip") is None
+    assert canon("") is None
+    assert canon(None) is None
+
+
+def test_visitors_trusted_proxy_counts_unique(tmp_env, monkeypatch):
+    cfg, store, _ = tmp_env
+    cfg.visitors.trusted_proxies = ["testclient"]
+    monkeypatch.setenv("VISITOR_HASH_SECRET", "test-secret")
+    app = create_app(cfg)
+    c = TestClient(app)
+    def post(ip=None):
+        h = {"X-Real-IP": ip} if ip else None
+        return c.post("/api/visitors", headers=h)
+    r = post("1.2.3.4")
+    assert r.status_code == 200 and r.json()["unique_visitors"] == 1
+    assert r.headers.get("cache-control") == "no-store"
+    # repeat / concurrent-first-seen same IP counts once
+    assert post("1.2.3.4").json()["unique_visitors"] == 1
+    # a second distinct address increments
+    assert post("5.6.7.8").json()["unique_visitors"] == 2
+    # equivalent IPv6 spelling of the first dedupes
+    assert post("::ffff:1.2.3.4").json()["unique_visitors"] == 2
+    # no existing station tables were touched
+    assert store.list_items() == []
+
+
+def test_visitors_persist_across_restart(tmp_env, monkeypatch):
+    cfg, store, _ = tmp_env
+    cfg.visitors.trusted_proxies = ["testclient"]
+    monkeypatch.setenv("VISITOR_HASH_SECRET", "test-secret")
+    cfg.library.db = str(store.path)
+    app1 = create_app(cfg)
+    assert TestClient(app1).post(
+        "/api/visitors", headers={"X-Real-IP": "9.9.9.9"}).json()["unique_visitors"] == 1
+    # a fresh app/connection on the same db keeps the count
+    app2 = create_app(cfg)
+    r = TestClient(app2).post("/api/visitors", headers={"X-Real-IP": "9.9.9.9"})
+    assert r.json()["unique_visitors"] == 1
+
+
+def test_visitors_missing_secret_is_503_not_zero(tmp_env, monkeypatch):
+    cfg, _, _ = tmp_env
+    cfg.visitors.trusted_proxies = ["testclient"]
+    monkeypatch.delenv("VISITOR_HASH_SECRET", raising=False)
+    app = create_app(cfg)
+    r = TestClient(app).post("/api/visitors", headers={"X-Real-IP": "1.2.3.4"})
+    assert r.status_code == 503
+
+
+def test_visitors_unavailable_identity_is_503(tmp_env, monkeypatch):
+    cfg, _, _ = tmp_env
+    cfg.visitors.trusted_proxies = ["testclient"]
+    monkeypatch.setenv("VISITOR_HASH_SECRET", "test-secret")
+    app = create_app(cfg)
+    # trusted peer but no usable client identity header -> unavailable, not 0
+    r = TestClient(app).post("/api/visitors")
+    assert r.status_code == 503
+
+
+def test_visitors_untrusted_proxy_ignores_spoofable_header(tmp_env, monkeypatch):
+    cfg, _, _ = tmp_env
+    cfg.visitors.trusted_proxies = ["10.0.0.1"]  # NOT the connecting peer
+    monkeypatch.setenv("VISITOR_HASH_SECRET", "test-secret")
+    app = create_app(cfg)
+    # peer "testclient" is untrusted; the X-Real-IP header is discarded as
+    # spoofable, and "testclient" is not a canonical IP -> unavailable
+    r = TestClient(app).post("/api/visitors", headers={"X-Real-IP": "1.2.3.4"})
+    assert r.status_code == 503
+
+
+def test_visitors_disabled_returns_503(tmp_env, monkeypatch):
+    cfg, _, _ = tmp_env
+    cfg.visitors.enabled = False
+    monkeypatch.setenv("VISITOR_HASH_SECRET", "test-secret")
+    app = create_app(cfg)
+    r = TestClient(app).post("/api/visitors", headers={"X-Real-IP": "1.2.3.4"})
+    assert r.status_code == 503

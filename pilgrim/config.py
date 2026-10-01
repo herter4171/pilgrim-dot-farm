@@ -154,6 +154,19 @@ class News(BaseModel):
     budget_s: int = 60
 
 
+class Visitors(BaseModel):
+    """Persistent unique-visitor counter (COSMETIC_PATCHING §6, RADIO §14).
+
+    One distinct canonical public client IP counts once for the lifetime of the
+    counter. `trusted_proxies` names peers whose `X-Real-IP` / first
+    `X-Forwarded-For` entry we trust as the real client address (the verified
+    deployment path is nginx setting `X-Real-IP` on loopback). Raw IPs are
+    never stored — only an HMAC-SHA256 signature under `secret_env`."""
+    enabled: bool = True
+    trusted_proxies: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1"])
+    secret_env: str = "VISITOR_HASH_SECRET"
+
+
 class Requests(BaseModel):
     """Listener request line (FIFO + LLM moderation)."""
     queue_cap: int = 10
@@ -254,6 +267,7 @@ class Config(BaseModel):
     songs: Songs = Field(default_factory=Songs)
     news: News = Field(default_factory=News)
     requests: Requests = Field(default_factory=Requests)
+    visitors: Visitors = Field(default_factory=Visitors)
     audio: Audio = Field(default_factory=Audio)
     logging: Logging = Field(default_factory=Logging)
     talk: Talk = Field(default_factory=Talk)

@@ -16,7 +16,7 @@
 <main id="desktop">
   <section class="window" data-win="radio">
     <div class="win-bar">
-      <span class="win-title">◉ ON AIR — Pilgrim Dot Farm</span>
+      <span class="win-title">ON AIR</span>
     </div>
     <div class="win-body">
       <div id="indicator" class="indicator idle">
@@ -25,6 +25,7 @@
       </div>
       <button id="btn-play" class="big-btn">▶&nbsp; PLAY</button>
       <canvas id="level" width="320" height="40"></canvas>
+      <div id="song-label" class="song-label"></div>
       <div id="offair" class="offair hidden">⚠ OFF THE AIR — waiting for playable audio. Retrying…</div>
       <div id="status" class="status"></div>
     </div>
@@ -49,9 +50,36 @@
       <ol id="req-recent" class="req-queue"></ol>
     </div>
   </section>
+
+  <section class="window credits" data-win="credits">
+    <div class="win-bar">
+      <span class="win-title">MODEL CREDITS</span>
+    </div>
+    <div class="win-body credits">
+      <ul class="credits-list">
+        <li><span class="cred-model">Qwen3-8B</span><span class="cred-role">News, song briefs, DJ talk, and field reports</span></li>
+        <li><span class="cred-model">Ornith-1.5-9B</span><span class="cred-role">Commercials and station liners</span></li>
+        <li><span class="cred-model">MiniMax Music 3</span><span class="cred-role">Song generation</span></li>
+        <li><span class="cred-model">Stable Audio 3 Small SFX</span><span class="cred-role">Sound effects</span></li>
+        <li><span class="cred-model">Kokoro</span><span class="cred-role">Voices and speech</span></li>
+        <li><span class="cred-model dev">DeepSeek-V4-Flash-0731</span><span class="cred-role">Development and coding assistance</span></li>
+      </ul>
+      <p class="cred-dev-note">DeepSeek-V4-Flash is a development credit — it never produces on-air content.</p>
+    </div>
+  </section>
+
+  <section class="window hit" data-win="hit">
+    <div class="win-bar">
+      <span class="win-title">HIT COUNTER</span>
+    </div>
+    <div class="win-body hit">
+      <div id="visitors" class="visitors">Unique visitors: —</div>
+    </div>
+  </section>
 </main>
 
 <script src="requests.js"></script>
+<script src="visitors.js"></script>
 <script src="player.js"></script>
 </body>
 </html>

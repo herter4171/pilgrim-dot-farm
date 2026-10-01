@@ -370,15 +370,25 @@ when everything else is unavailable.
 
 ### 9.1 UI
 
-The only elements:
-- **PLAY / STOP** button.
-- **Streaming indicator** with three states: *idle*, *buffering*, *on air*.
-  On air shows a pulsing dot and a small live level meter driven by an
-  `AnalyserNode`, so it proves audio is actually flowing rather than just
-  that the button was pressed.
+Retro window shell on a vertical stack, scrollable `#desktop` so every pane
+stays reachable on small screens:
 
-The retro window frame may stay as styling, but nothing else goes in it for
-Phase 1 (no now-playing, schedule, or log windows).
+- **ON AIR** (title exactly `ON AIR`): streaming indicator (idle / buffering /
+on air, with the pulsing dot), PLAY/STOP, a horizontal live level meter driven
+by an `AnalyserNode` (proves audio flows), and a centered **song label**
+below the meter showing exactly `` ${title} - ${artist} `` for the audible
+song (_both_ fields nonempty); any other segment, a gap, or STOP shows an
+empty label. The label is driven off the audio-clock playhead and never
+announces a buffered next song early. The site header/browser title retain
+the station name.
+- **REQUEST LINE**: the request form + active queue, then a **RECENTLY PLAYED
+  FOR YOU** list of the three most recent serviced/airéd requests.
+- **MODEL CREDITS**: credits the five production/dev models plus Kokoro (see
+  MODELS.md for the on-air attribution copy; DeepSeek is a development credit
+  and is flagged as such).
+- **HIT COUNTER**: labeled **Unique visitors**, a persistent count of distinct
+  canonical visitor signatures (RADIO §14). Shows `—` when the counter is
+  unavailable; never disturbs playback or requests.
 
 ### 9.2 Playback engine
 
@@ -431,12 +441,13 @@ voice, measured at setup.
 | GET | `/` | Static UI |
 | POST | `/api/station/start` | Start playout session |
 | POST | `/api/station/stop` | Stop playout session |
-| GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, type, duration_s, sfx}`. `sfx` is a list (usually empty) of overlays to play over that item: `{media_id, cue, kind, offset_s, duration_s, gain, duck}`; overlay audio is served by `/api/media/<id>` |
+| GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, type, duration_s, sfx, title, artist}`. `sfx` is a list (usually empty) of overlays to play over that item: `{media_id, cue, kind, offset_s, duration_s, gain, duck}`; overlay audio is served by `/api/media/<id>`. `title`/`artist` come from the referenced inventory item on both initial and incremental responses, normalized to empty strings when absent (song label, COSMETIC_PATCHING §3). |
 | POST | `/api/station/heartbeat` | `{seq, media_id, position, type}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events |
 | GET | `/api/media/<id>` | FLAC file |
 | GET | `/api/health` | Backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
-| GET | `/api/requests` | Request board: `{queue: [{status}], recent: [{text, song_title, song_artist}], cap}` — queue = queued+producing+ready, oldest first; recent = last 5 aired (OVERHAUL 4.8) |
+| GET | `/api/requests` | Request board: `{queue: [{status}], recent: [{text, song_title, song_artist}], cap}` — queue = queued+producing+ready, oldest first; recent = **last 3** aired/serviced by ID order (COSMETIC_PATCHING §4) |
+| POST | `/api/visitors` | Register one server-derived unique-visitor signature; returns `{unique_visitors: <nonnegative int>}` with `Cache-Control: no-store`. One call per page load; media/heartbeat/health/request calls never hit it. 503 when identity/secret unavailable (RADIO §14) |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
 
 ---
@@ -505,6 +516,11 @@ requests:
   moderation_model: qwen38
   moderation_max_tokens: 4096
   per_client_per_10min: 3   # request-line rate limit
+
+visitors:
+  enabled: true
+  trusted_proxies: [127.0.0.1, "::1"]  # peers whose X-Real-IP we trust
+  secret_env: VISITOR_HASH_SECRET    # HMAC key for visitor signatures (§14)
 
 audio:
   lufs: -16
@@ -597,6 +613,16 @@ next"). The request's song and intro enter the library together with the
 `ready` flag, so the song can never air bare as stock first. Only `queued` rows are ever FIFO-evicted; a crash
 mid-generation is reset `producing -> queued` on station start.
 
+**Visitors (COSMETIC_PATCHING §6).** A separate `visitor_signatures
+(signature TEXT PRIMARY KEY)` table stores only HMAC-SHA256 signatures —
+never raw IPs. One distinct canonical public client IP counts once for the
+lifetime of the counter. The signature is derived from the client IP resolved
+through the deployment's trusted-proxy setup (verified: nginx on loopback
+sets `X-Real-IP` to `$remote_addr`; `visitors.trusted_proxies` in config) and
+hashed with the stable secret in `$VISITOR_HASH_SECRET`. When the secret or a
+canonical identity is unavailable, registration is skipped (counter shows
+`—`) — never a fabricated zero, and never breaking radio/requests.
+
 ---
 
 ## 15. Testing
@@ -660,8 +686,10 @@ normalization, seed script, fakes and simulation tests, minimal UI.
 - Music beds pre-mixed under voice spots (short instrumental loops from
   MiniMax, mixed offline at render time).
 - Continuity step proposing station bible additions.
-- Now-playing metadata in the UI.
-- Evaluate a larger news model on the 5090.
+- A larger news model on the 5090.
+- (Now-playing metadata was pulled forward into Phase 1, §9.1 — program
+  `title`/`artist` and the audio-clock-driven song label. The multi-listener
+  wall-clock timeline remains Phase 3.)
 
 **Phase 3 — production**
 - Multi-listener shared timeline (wall-clock program, drift reconciliation).

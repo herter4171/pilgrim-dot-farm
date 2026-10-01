@@ -78,6 +78,11 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_program_seq ON program(seq);
                 CREATE INDEX IF NOT EXISTS idx_airplay_item ON airplay(item_id);
                 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
+                -- Persistent unique-visitor dedup (COSMETIC_PATCHING §6, RADIO §14).
+                -- Only HMAC-SHA256 signatures, never raw IPs.
+                CREATE TABLE IF NOT EXISTS visitor_signatures (
+                    signature TEXT PRIMARY KEY
+                );
                 """
             )
             # idempotent migration (OVERHAUL 2.2): retire truncated inventory
@@ -252,6 +257,27 @@ class Store:
         """Map most recent committed items to their types in program order."""
         return [p["item_type"] for p in program_slice]
 
+    # ------------------------------------------------------------ visitors (14)
+    def register_visitor(self, signature: str) -> int:
+        """Idempotently record a canonical visitor signature (insert-on-conflict
+        no-op) and return the unique count, all under the store's lock so a
+        concurrent first-seen signature can't double-count (RADIO §14,
+        COSMETIC_PATCHING §6). """
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO visitor_signatures (signature) VALUES (?)",
+                (signature,))
+            n = self._conn.execute(
+                "SELECT COUNT(*) FROM visitor_signatures").fetchone()[0]
+            self._conn.commit()
+        return int(n)
+
+    def unique_visitors(self) -> int:
+        with self._lock:
+            n = self._conn.execute(
+                "SELECT COUNT(*) FROM visitor_signatures").fetchone()[0]
+        return int(n)
+
     # -------------------------------------------------------------- requests
     def add_request(self, text: str, cap: int, status: str = "queued",
                     reason: str | None = None) -> dict[str, Any]:
@@ -381,7 +407,7 @@ class Store:
                 "i.artist AS song_artist FROM requests r "
                 "LEFT JOIN items i ON i.id = r.song_item_id "
                 "WHERE r.status IN ('aired','serviced') "
-                "ORDER BY r.id DESC LIMIT 5").fetchall()]
+                "ORDER BY r.id DESC LIMIT 3").fetchall()]
         return {"queue": queue, "recent": recent}
 
     def mark_serviced(self, request_id: int) -> None:
