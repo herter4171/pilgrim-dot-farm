@@ -147,6 +147,15 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   text-align: center; }
 .hit-link:hover { color: var(--cyan); }
 
+/* SoundCloud pane (COSMETIC_PATCHING §7). */
+.window.soundcloud { width: min(94vw, 440px); }
+.win-body.soundcloud { align-items: stretch; text-align: left; gap: 12px; }
+.sc-list { list-style: none; margin: 0; padding: 0; display: flex;
+  flex-direction: column; gap: 8px; }
+.sc-track { color: var(--cyan); font-size: 12px; letter-spacing: 1px;
+  text-decoration: none; overflow-wrap: anywhere; }
+.sc-track:hover, .sc-track:focus-visible { text-decoration: underline; color: var(--magenta); }
+
 .offair { color: var(--warn); border: 1px solid var(--warn); border-radius: 6px;
   padding: 10px 14px; font-size: 12px; letter-spacing: 1px; text-align: center; }
 .status { font-size: 12px; color: var(--dim); min-height: 14px; letter-spacing: 1px; }

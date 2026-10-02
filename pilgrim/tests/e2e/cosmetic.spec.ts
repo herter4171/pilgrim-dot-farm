@@ -1,17 +1,18 @@
 /** Cosmetic page tests (COSMETIC_PATCHING). Backend-free; the e2e server seeds
  *  a temp library with fake FLAC + song titles. Verifies pane order/labels,
  *  the song label under the meter, the three-row recent history, the model
- *  credits + hit counter panes, and that a failing visitor counter never
+ *  credits, hit counter, and SoundCloud panes, and that a failing visitor counter never
  *  disturbs PLAY or the request line. */
 import { test, expect } from "@playwright/test";
 
 test("page layout: pane order, ON AIR title, credits + hit counter", async ({ page }) => {
   await page.goto("/");
   const order = await page.$$eval(".window", els => els.map(e => e.getAttribute("data-win")));
-  expect(order).toEqual(["radio", "requests", "credits", "hit"]);
+  expect(order).toEqual(["radio", "requests", "credits", "hit", "soundcloud"]);
   expect(await page.textContent('[data-win="radio"] .win-title')).toBe("ON AIR");
   expect(await page.$('[data-win="credits"]')).toBeTruthy();
   expect(await page.$('[data-win="hit"]')).toBeTruthy();
+  expect(await page.textContent('[data-win="soundcloud"] .win-title')).toBe("SOUNDCLOUD");
   // five documented models + Kokoro-82M = six credit rows
   expect(await page.$$eval(".credits-list li", els => els.length)).toBe(6);
   // every model links to its HF model card in a new tab
@@ -30,6 +31,15 @@ test("page layout: pane order, ON AIR title, credits + hit counter", async ({ pa
     "https://www.reddit.com/user/jwhh91/comments/1wvjsno/pilgrim_dot_farm/",
     "_blank",
     "noopener noreferrer",
+  ]);
+  // the SoundCloud pane lists both tracks as "Title - Artist" links, new tab
+  const scLinks = await page.$$eval(".sc-list a.sc-track",
+    els => els.map(a => [a.textContent, a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")]));
+  expect(scLinks).toEqual([
+    ["My Girl Carrying Big Melons - user6464167",
+     "https://soundcloud.com/user6464167/my-girl-carrying-big-melons", "_blank", "noopener noreferrer"],
+    ["Goblin's Furlong - user6464167",
+     "https://soundcloud.com/user6464167/goblins-furlong", "_blank", "noopener noreferrer"],
   ]);
 });
 
