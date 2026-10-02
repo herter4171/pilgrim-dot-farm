@@ -29,3 +29,5 @@ never in the repo.
 
 All application and test code lives under `pilgrim/`; the repo root holds only
 repo-level files and `docs/`.
+
+![alt text](image.png)
