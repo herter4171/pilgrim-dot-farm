@@ -108,8 +108,9 @@ async def test_render_produces_normalized_flac(tmp_env):
     # a cue's own fixed seed wins over the caller's
     await pipe.render("slide_whistle", seed=5)
     assert fake.calls[-1][2] == cfg.sfx.cues["slide_whistle"].seed
+    cfg.sfx.cues["rimshot"].approved = False  # pulled by ear
     with pytest.raises(ValueError):
-        await pipe.render("rimshot")  # not approved by ear yet
+        await pipe.render("rimshot")
 
 
 # ---------------------------------------------------------------- producer
@@ -137,6 +138,13 @@ def _producer(cfg, store, tmp, voice, sfx_fake=None) -> tuple[Producer, FakeSfx]
     return prod, fake
 
 
+async def _drain(prod) -> None:
+    """Run the SFX worker until it has nothing left to do."""
+    for _ in range(100):
+        if not await prod.sfx_step():
+            return
+
+
 def _meta(store, type_):
     it = store.list_items(type_)[-1]
     return json.loads(it["meta_json"] or "{}")
@@ -144,8 +152,10 @@ def _meta(store, type_):
 
 async def test_sfx_pool_renders_only_approved_evergreen_once(tmp_env):
     cfg, store, tmp = tmp_env
+    for name, c in cfg.sfx.cues.items():               # slide whistle only
+        c.approved = name == "slide_whistle" or not c.evergreen
     prod, fake = _producer(cfg, store, tmp, CueVoice())
-    assert await prod.ensure_sfx_pool() == 1          # slide whistle only
+    assert await prod.ensure_sfx_pool() == 1
     assert await prod.ensure_sfx_pool() == 0          # idempotent
     assert prod.counts()["sfx"] == prod.sfx_stock_target() == 1
     assert len(fake.calls) == 1
@@ -155,9 +165,12 @@ async def test_dj_talk_gets_contextual_and_joke_overlays(tmp_env):
     cfg, store, tmp = tmp_env
     _approve_all(cfg)
     voice = CueVoice(cues=[{"cue": "rooster", "after_sentence": 1}], joke=3)
-    prod, _ = _producer(cfg, store, tmp, voice)
-    await prod.ensure_sfx_pool()                       # stock rimshot etc.
+    prod, fake = _producer(cfg, store, tmp, voice)
     await prod.ensure_dj()
+    # stored airable before any SFX render: talk never waits on the backend
+    assert _meta(store, "dj_talk").get("sfx_pending") and fake.calls == []
+    await _drain(prod)                                 # rooster + stock rimshot
+    assert "sfx_pending" not in _meta(store, "dj_talk")
     sfx = _meta(store, "dj_talk")["sfx"]
     kinds = {s["kind"]: s for s in sfx}
     assert set(kinds) == {"stinger", "joke"}
@@ -173,6 +186,7 @@ async def test_field_report_gets_a_bed_and_news_never_gets_sfx(tmp_env):
     _approve_all(cfg)
     prod, _ = _producer(cfg, store, tmp, CueVoice(cues=[{"cue": "pig", "after_sentence": 1}]))
     await prod.ensure_field_reports()
+    await _drain(prod)
     sfx = _meta(store, "field_report")["sfx"]
     assert {s["kind"] for s in sfx} == {"stinger", "bed"}
     item: dict = {"duration_s": 15.0, "meta": {"text": TEXT, "sfx_cues": [
@@ -188,8 +202,10 @@ async def test_sfx_outage_means_the_host_airs_dry(tmp_env):
                         CueVoice(cues=[{"cue": "cow", "after_sentence": 1}]),
                         sfx_fake=FakeSfx(fail=True))
     await prod.ensure_field_reports()
+    await _drain(prod)
     assert store.list_items("field_report")
     assert "sfx" not in _meta(store, "field_report")
+    assert "sfx_pending" not in _meta(store, "field_report")  # tried once, airs dry
 
 
 # ------------------------------------------------------------------- voice
@@ -287,6 +303,7 @@ async def test_last_sentence_beat_is_pulled_inside_the_clip(tmp_env):
     _approve_all(cfg)
     prod, _ = _producer(cfg, store, tmp, CueVoice(cues=[{"cue": "cow", "after_sentence": 4}]))
     await prod.ensure_dj()
+    await _drain(prod)
     o = _meta(store, "dj_talk")["sfx"][0]
     assert o["offset_s"] + o["duration_s"] <= 15.0
     assert o["offset_s"] >= cfg.audio.edge_pad_ms / 1000.0

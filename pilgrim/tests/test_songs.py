@@ -79,3 +79,49 @@ def test_brief_includes_json_escaped_request_text(cfg):
     sp.llm = _Rec()
     asyncio.run(sp.brief([], request_text='say "hi" & more <script>'))
     assert _json.dumps('say "hi" & more <script>') in sp.llm.user
+
+
+def test_request_genre_overrides_station_list(cfg):
+    """A request's style wins over the fixed genre list: the list is offered
+    only as a fallback and there is no recency-avoid line for requests."""
+    class _Rec:
+        def __init__(self):
+            self.user = ""
+
+        async def chat_json(self, model, system, user, max_tokens=800):
+            self.user = user
+            return {"title": "T", "artist": "A", "genre": "grunge",
+                    "style_prompt": "p", "lyrics": ""}
+
+        async def close(self):
+            pass
+
+    sp = SongPipeline.__new__(SongPipeline)
+    sp.cfg = cfg
+    sp.prompts = {"song_brief": "write a song"}
+    sp.llm = _Rec()
+    asyncio.run(sp.brief(["polka"], request_text="grunge rock about plowing"))
+    assert "OVERRIDES" in sp.llm.user
+    assert "Genres to pick from" not in sp.llm.user
+    assert "Avoid genres (recently aired)" not in sp.llm.user
+    asyncio.run(sp.brief(["polka"]))
+    assert "Genres to pick from" in sp.llm.user and "polka" in sp.llm.user
+
+
+def test_short_brief_asks_for_short_song(cfg):
+    class _Rec:
+        user = ""
+
+        async def chat_json(self, model, system, user, max_tokens=800):
+            self.user = user
+            return {"title": "T", "artist": "A", "genre": "g",
+                    "style_prompt": "p", "lyrics": ""}
+
+    sp = SongPipeline.__new__(SongPipeline)
+    sp.cfg = cfg
+    sp.prompts = {"song_brief": "write a song"}
+    sp.llm = _Rec()
+    asyncio.run(sp.brief([], request_text="x", short=True))
+    assert "SHORT" in sp.llm.user
+    asyncio.run(sp.brief([], request_text="x"))
+    assert "SHORT" not in sp.llm.user

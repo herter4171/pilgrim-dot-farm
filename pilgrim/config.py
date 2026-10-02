@@ -92,7 +92,7 @@ class Hosts(BaseModel):
     kokoro: str
     litellm: str
     searxng: str
-    sfx: str = "http://127.0.0.1:8500"  # Stable Audio SFX wrapper (SFX.md §1)
+    sfx: str = "http://127.0.0.1:8000"  # MOSS-SoundEffect v2.0 (docs/backends.md §7)
 
 
 class Models(BaseModel):
@@ -137,6 +137,7 @@ class Playout(BaseModel):
                                  "commercial_break": .15, "liner": .10, "news": .08,
                                  "field_report": .05})
     max_consecutive_non_song: int = 2
+    top_of_hour_window_s: float = 240.0  # a song gap this close to :00 leads with words
     news_min_spacing_s: int = 1200
     news_ttl_s: int = 2700
     commercial_min_spacing_s: int = 1800
@@ -153,6 +154,7 @@ class Inventory(BaseModel):
     liner_buckets_s: list[int] = Field(default_factory=lambda: [3, 5, 10, 15, 30])
     dj_talk_min: int = 2
     field_reports_min: int = 1  # unaired field reports kept ready (SFX.md §4.2)
+    station_ids_min: int = 3  # emergency station IDs: words between songs from cold start
 
 
 class Songs(BaseModel):
@@ -161,6 +163,9 @@ class Songs(BaseModel):
     min_duration_s: float = 20.0  # sanity floor (OVERHAUL 3.2)
     max_duration_s: float = 360.0  # sent as duration_seconds; also the song QC ceiling
     abrupt_fade_s: float = 2.5  # fade-out applied to songs with hard endings (3.2)
+    # idle gap between STOCK song generations (finish -> next start); queued
+    # listener requests skip it. 0 = back to back (§6.1)
+    stock_gap_s: float = 600.0
 
 
 class News(BaseModel):
@@ -177,9 +182,15 @@ class Visitors(BaseModel):
     counter. `trusted_proxies` names peers whose `X-Real-IP` / first
     `X-Forwarded-For` entry we trust as the real client address (the verified
     deployment path is nginx setting `X-Real-IP` on loopback). The raw
-    canonical IP is stored for dedupe."""
+    canonical IP is stored for dedupe.
+
+    The live listener count is in-memory: a player counts while its heartbeats
+    (every 5 s) arrive within `listener_timeout_s`; `max_listeners` bounds the
+    tracked player IDs."""
     enabled: bool = True
     trusted_proxies: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1"])
+    listener_timeout_s: float = 15.0
+    max_listeners: int = 1000
 
 
 class Requests(BaseModel):
@@ -215,6 +226,36 @@ class Logging(BaseModel):
     file: str = "station.log"
     max_bytes: int = 10485760  # 10 MB
     backups: int = 5
+
+
+class DjCharacter(BaseModel):
+    """Operator-only character (TUI.md §6, §10; RADIO.md §12).
+
+    The operator picks the name and **listens before choosing the voice** (a
+    human decision, AGENTS §9); empty until then. No random-selector weight and
+    no inventory refill target."""
+    id: str = "dj_operator"
+    name: str = ""
+    voice: str = ""
+    speed: float = 1.0
+
+
+class Dj(BaseModel):
+    """DJ console (TUI.md §7, RADIO.md §12). `enabled` gates the control
+    mutations; read-only console endpoints are available behind the operator
+    token once access setup is complete."""
+    enabled: bool = False
+    state_poll_s: float = 1.0       # cheap state poll interval (console)
+    backoff_max_s: float = 10.0     # reconnect backoff ceiling on disconnects
+    request_timeout_s: float = 5.0
+    cutover_deadline_s: float = 2.0  # acknowledged-skip budget for healthy clients
+    cutover_lead_s: float = 1.0      # client-notification lead before activation
+    cutover_fade_s: float = 0.02     # anti-click fade at the cutover boundary
+    queue_max: int = 20
+    phrase_max_chars: int = 280
+    phrase_ttl_s: int = 7200         # unqueued ready phrase lifetime
+    job_timeout_s: int = 300
+    character: DjCharacter = Field(default_factory=DjCharacter)
 
 
 class Library(BaseModel):
@@ -255,10 +296,13 @@ class SfxCue(BaseModel):
 class Sfx(BaseModel):
     """Sound-effect overlays on non-news talk (SFX.md §0, §7)."""
     enabled: bool = True
-    model: str = "stable-audio-3-small-sfx"
-    steps: int = 8
+    model: str = "moss-soundeffect-v2.0"
+    steps: int = 100  # flow-match solver steps (`num_inference_steps`)
     cfg_scale: float = 4.0
-    timeout_s: float = 60.0
+    sigma_shift: float = 5.0
+    negative_prompt: str = ""
+    max_seconds: float = 30.0  # backend hard cap per request
+    timeout_s: float = 180.0
     stinger_gain: float = 0.5  # undecided by ear (SFX.md §10.3): a knob, not baked in
     bed_gain: float = 0.15
     host_duck: float = 0.7  # host gain under a stinger, so the sum doesn't clip
@@ -287,6 +331,7 @@ class Config(BaseModel):
     logging: Logging = Field(default_factory=Logging)
     talk: Talk = Field(default_factory=Talk)
     sfx: Sfx = Field(default_factory=Sfx)
+    dj: Dj = Field(default_factory=Dj)
     library: Library = Field(default_factory=Library)
 
 

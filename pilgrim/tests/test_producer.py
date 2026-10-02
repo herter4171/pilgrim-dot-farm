@@ -107,7 +107,12 @@ def test_ensure_commercials_produces_when_below_target(cfg, tmp_env):
     voice = FakeVoice()
     prod = make_producer(cfg, store, voice)
     import asyncio
+    # a few per cycle (callouts come first in the voice worker), so it takes
+    # several cycles to reach the target; it never overshoots
     asyncio.run(prod.ensure_commercials())
+    assert voice.calls == min(3, target - 2)
+    for _ in range(target):
+        asyncio.run(prod.ensure_commercials())
     assert store.count_usable_of_type("commercial") == target
     assert voice.calls == target - 2
 
@@ -165,8 +170,9 @@ class FakeSong:
         self.calls = []
         self.fail = fail
 
-    async def brief(self, genres, request_text=None):
+    async def brief(self, genres, request_text=None, short=False):
         self.calls.append(("brief", request_text))
+        self.short = short
         return {"title": "Mittens the Night", "artist": "The Barn Cats",
                 "genre": "polka", "style_prompt": "a jaunty polka", "lyrics": "[verse] meow"}
 
@@ -363,3 +369,152 @@ def test_song_not_in_library_while_its_intro_renders(cfg, tmp_env):
     assert store.get_request(req["id"])["status"] == "ready"
     stock_intro = [c for c in voice.contexts if c and "Listener request" not in c][0]
     assert "Thank the listener" not in stock_intro  # nobody to thank
+
+
+def test_ensure_station_ids_builds_the_emergency_pack_once(cfg, tmp_env):
+    _, store, _ = tmp_env
+    voice = FakeVoice()
+    prod = make_producer(cfg, store, voice)
+    import asyncio
+    asyncio.run(prod.ensure_station_ids())
+    asyncio.run(prod.ensure_station_ids())  # idempotent
+    ids = store.list_items("station_id")
+    assert len(ids) == cfg.inventory.station_ids_min == voice.calls
+    assert all(i["emergency"] and i["evergreen"] for i in ids)
+    # emergency items never count as ordinary liner stock (§8.3)
+    assert store.count_usable_of_type("station_id") == 0
+
+
+class _DownSong(FakeSong):
+    async def produce_song(self, brief):
+        self.calls.append(("produce", brief.get("request_id")))
+        import httpx
+        raise httpx.ReadError("connection dropped")
+
+
+def test_backend_outage_does_not_burn_request_attempts(cfg, tmp_env):
+    """A transport error (generator down) re-queues the request without
+    spending an attempt, however many times it happens; the brief carries the
+    request_id for log tracing."""
+    import asyncio
+
+    import httpx
+    import pytest
+    _, store, _ = tmp_env
+    req = store.add_request("grunge song about plowing", cap=10)
+    songs = _DownSong()
+    prod = make_song_producer(cfg, store, FakeVoice(), songs)
+    for _ in range(5):
+        with pytest.raises(httpx.TransportError):
+            asyncio.run(prod.song_step())
+    r = store.get_request(req["id"])
+    assert r["status"] == "queued"
+    assert int(r["attempts"] or 0) == 0
+    assert ("produce", req["id"]) in songs.calls
+
+
+def test_real_failure_still_counts_attempts(cfg, tmp_env):
+    import asyncio
+
+    import pytest
+    _, store, _ = tmp_env
+    req = store.add_request("a song", cap=10)
+    prod = make_song_producer(cfg, store, FakeVoice(), FakeSong(fail=True))
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            asyncio.run(prod.song_step())
+    assert store.get_request(req["id"])["status"] == "failed"
+
+
+class _FailingVoice(FakeVoice):
+    """LLM-written intros always fail; direct render (the scripted fallback)
+    works."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rendered: list[str] = []
+
+    async def produce_item(self, role, target_s, context=None):
+        self.calls += 1
+        raise ValueError("voice speech rate 3.9 w/s outside [1.2,3.6]")
+
+    async def render(self, copy, role, target_s):
+        self.rendered.append(copy["text"])
+        return {"path": "/tmp/fallback.flac", "duration_s": 4.0,
+                "sample_rate": 24000, "channels": 1}
+
+
+def test_request_intro_always_exists_via_scripted_fallback(cfg, tmp_env):
+    """A request song never airs without its 'you asked, we made it' intro:
+    two LLM tries, then a scripted shout-out naming the song."""
+    import asyncio
+    _, store, _ = tmp_env
+    req = store.add_request("grunge about plowing", cap=None)
+    voice = _FailingVoice()
+    prod = make_song_producer(cfg, store, voice, FakeSong())
+    assert asyncio.run(prod.song_step()) is True
+    r = store.get_request(req["id"])
+    assert r["status"] == "ready" and r["intro_item_id"] is not None
+    assert voice.calls == 2
+    assert voice.rendered and "Request line!" in voice.rendered[0]
+    assert "Mittens the Night" in voice.rendered[0]
+
+
+def test_request_intro_prompt_demands_shout_out(cfg, tmp_env):
+    import asyncio
+    _, store, _ = tmp_env
+    store.add_request("a song for Mittens", cap=None)
+    voice = FakeVoice()
+    asyncio.run(make_song_producer(cfg, store, voice, FakeSong()).song_step())
+    assert any(c and "listener request" in c.lower() and "shout-out" in c
+               for c in voice.contexts)
+
+
+def test_request_backlog_asks_for_short_songs(cfg, tmp_env):
+    import asyncio
+    _, store, _ = tmp_env
+    for i in range(4):
+        store.add_request(f"request {i}", cap=None)
+    songs = FakeSong()
+    asyncio.run(make_song_producer(cfg, store, FakeVoice(), songs).song_step())
+    assert songs.short is True
+
+
+# --------------------------------------------------------------------------- #
+# RADIO §6.1 — stock songs are spaced by songs.stock_gap_s; requests skip it.
+# --------------------------------------------------------------------------- #
+
+def test_stock_songs_wait_stock_gap_between_generations(cfg, tmp_env):
+    import asyncio
+    cfg, store, _ = tmp_env
+    assert cfg.songs.stock_gap_s == 600  # default from config.yaml
+    prod = make_song_producer(cfg, store, FakeVoice(), FakeSong())
+    assert asyncio.run(prod.song_step()) is True  # first stock song: no wait
+    assert asyncio.run(prod.song_step()) is False  # below target, but inside the gap
+    prod.clock.advance(599)
+    assert asyncio.run(prod.song_step()) is False
+    prod.clock.advance(1)
+    assert asyncio.run(prod.song_step()) is True
+    assert len(store.list_items("song")) == 2
+
+
+def test_request_skips_stock_gap_and_does_not_reset_it(cfg, tmp_env):
+    import asyncio
+    cfg, store, _ = tmp_env
+    cfg.inventory.fresh_songs_ready = 5  # keep the fresh target out of the way
+    prod = make_song_producer(cfg, store, FakeVoice(), FakeSong())
+    assert asyncio.run(prod.song_step()) is True  # stock song starts the gap
+    req = store.add_request("play a song for Mittens", cap=10)
+    assert asyncio.run(prod.song_step()) is True  # request jumps the gap
+    assert store.get_request(req["id"])["status"] == "ready"
+    prod.clock.advance(600)  # gap counts from the stock song, not the request
+    assert asyncio.run(prod.song_step()) is True
+
+
+def test_stock_gap_zero_means_back_to_back(cfg, tmp_env):
+    import asyncio
+    cfg, store, _ = tmp_env
+    cfg.songs.stock_gap_s = 0
+    prod = make_song_producer(cfg, store, FakeVoice(), FakeSong())
+    assert asyncio.run(prod.song_step()) is True
+    assert asyncio.run(prod.song_step()) is True

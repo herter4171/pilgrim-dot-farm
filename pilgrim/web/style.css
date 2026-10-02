@@ -141,8 +141,11 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
 /* Hit counter pane (COSMETIC_PATCHING §6). */
 .window.hit { width: min(94vw, 440px); }
 .win-body.hit { gap: 8px; }
-.visitors { font-size: 14px; letter-spacing: 2px; color: var(--ok);
+.visitors, .listeners { font-size: 14px; letter-spacing: 2px; color: var(--ok);
   text-align: center; min-height: 1.2em; }
+.hit-link { font-size: 11px; letter-spacing: 1px; color: var(--dim);
+  text-align: center; }
+.hit-link:hover { color: var(--cyan); }
 
 .offair { color: var(--warn); border: 1px solid var(--warn); border-radius: 6px;
   padding: 10px 14px; font-size: 12px; letter-spacing: 1px; text-align: center; }

@@ -1,0 +1,74 @@
+/* Pilgrim DJ console theme (TUI.md §2) — dark, retro-glow. */
+
+Screen {
+    background: #12081b;
+    color: #d8e7ff;
+}
+
+.bar {
+    background: #1d1030;
+    height: 1;
+    padding: 0 1;
+}
+
+#status {
+    color: #9fd3ff;
+    background: #241339;
+}
+
+#onair {
+    background: #2b1444;
+    color: #ffcf5c;
+    text-style: bold;
+    height: 1;
+}
+
+.section {
+    color: #8f7bd8;
+    text-style: bold;
+    padding: 0 1;
+    margin-top: 1;
+}
+
+#catinfo {
+    color: #7ea8ff;
+    height: 1;
+}
+
+Input {
+    border: round #6b3fa0;
+    background: #191028;
+}
+
+DataTable {
+    border: round #6b3fa0;
+    height: 1fr;
+}
+
+DataTable > .datatable--header {
+    background: #3a1f5c;
+    color: #ffcf5c;
+    text-style: bold;
+}
+
+#upcoming {
+    background: #150d22;
+}
+
+#charbar {
+    color: #8faeff;
+    background: #241339;
+}
+
+#mid {
+    height: 1fr;
+}
+
+#left {
+    width: 2fr;
+}
+
+#right {
+    width: 1fr;
+    margin-left: 1;
+}

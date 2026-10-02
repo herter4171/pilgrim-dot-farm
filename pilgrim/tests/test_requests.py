@@ -288,3 +288,13 @@ def test_request_board_recent_zero_to_two_renders(cfg):
     r = s.add_request("only one", cap=10)
     s.mark_request_aired(r["id"])
     assert len(s.request_board(cap=10)["recent"]) == 1
+
+
+def test_cap_none_never_evicts(cfg):
+    """The public request line passes cap=None: every accepted request stays
+    queued until it is made, however long the line gets."""
+    s = _store()
+    for i in range(25):
+        s.add_request(f"request {i}", cap=None)
+    assert len(s.queued_requests()) == 25
+    assert not [r for r in s.all_requests() if r["status"] == "evicted"]

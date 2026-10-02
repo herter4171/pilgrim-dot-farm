@@ -9,6 +9,8 @@ import asyncio
 import json
 import logging
 import time
+import uuid
+from collections import deque
 from datetime import UTC, datetime
 
 from pilgrim.config import RNG, Clock, Config
@@ -16,6 +18,15 @@ from pilgrim.pipelines.sfx import SFX_HOST_TYPES
 from pilgrim.selector import PlayoutState, Selector
 from pilgrim.sfx_plan import plan_overlays
 from pilgrim.store import Store
+
+# Committed types that put words between songs (§5.2). `intro` counts: it
+# names the song that follows it.
+CALLOUT_TYPES = frozenset({"liner", "station_id", "dj_talk", "field_report", "intro"})
+
+# Types a manually-placed operator phrase must never sit adjacent to in either
+# order (RADIO §11: "DJ-like news adjacency", TUI.md §6). A song is the only
+# guaranteed separator.
+PHRASE_ADJACENT = frozenset({"dj_talk", "news", "operator_phrase"})
 
 log = logging.getLogger("radio.scheduler")
 
@@ -35,12 +46,20 @@ def _parse_iso(iso: str | None) -> float | None:
 
 class Scheduler:
     def __init__(self, cfg: Config, store: Store, selector: Selector,
-                 clock: Clock, rng: RNG) -> None:
+                 clock: Clock, rng: RNG, epoch: str | None = None) -> None:
         self.cfg = cfg
         self.store = store
         self.selector = selector
         self.clock = clock
         self.rng = rng
+        # Station identity for the DJ protocol (TUI.md §5, RADIO §5.3): the
+        # `epoch` changes on restart; the programme `revision` bumps whenever
+        # already-published future playback changes (cutovers bump it, §5.5).
+        self.epoch = epoch or uuid.uuid4().hex[:12]
+        self.revision = 1
+        # Operator phrases ready to air (RADIO §11): placed at the earliest legal
+        # boundary by the run loop; none wait on production (AGENTS rule 1).
+        self.pending_phrases: deque[dict] = deque()
         self._start_wall = time.monotonic()
         # Song air history is PERSISTED on items (last_aired_at, play_count) so a
         # restart keeps the rotation (§PRIORITIES §4). Only commercials keep an
@@ -84,6 +103,12 @@ class Scheduler:
         """Live playhead in program-seconds (advances on the real clock)."""
         return min(self.clock.now() - self._offset, self._total)
 
+    def advance_revision(self) -> int:
+        """Bump the programme revision (an edit changed already-published future
+        playback; §5.5). Returns the new revision so callers can record it."""
+        self.revision += 1
+        return self.revision
+
     def on_air(self) -> tuple[int | None, float]:
         """Return (seq of on-air item, offset seconds into it)."""
         pos = self.position()
@@ -109,7 +134,10 @@ class Scheduler:
             "dj_talk": self.store.count_fresh_of_type("dj_talk"),
             "field_report": self.store.count_fresh_of_type("field_report"),
             "commercial": self.store.count_usable_of_type("commercial"),
-            "liner": self.store.count_usable_of_type("liner"),
+            # station IDs are liners for the draw (§4: a liner is a station ID
+            # or a gag line); _pick_liner falls back to them
+            "liner": (self.store.count_usable_of_type("liner")
+                      + self.store.count_usable_of_type("station_id")),
         }
         st.available = {
             # a song is only drawable if one clears the spacing floor, so a thin
@@ -139,7 +167,59 @@ class Scheduler:
         if ni:
             st.news_valid = True
             st.news_gravity = ni.get("gravity") or "normal"
+        st.callout_pending = self._callout_pending() and not self._next_song_has_intro()
+        st.near_top_of_hour = self._near_top_of_hour()
         return st
+
+    # ------------------------------------------------- words between songs
+    def _callout_pending(self) -> bool:
+        """True when no voice item has been committed since the last song, so
+        the next song needs words in front of it (§5.2). An empty program counts
+        as pending: the stream opens with words, not a bare song."""
+        for r in reversed(self._items):
+            if r["type"] in CALLOUT_TYPES:
+                return False
+            if r["type"] == "song":
+                return True
+        return True
+
+    def _next_song_has_intro(self) -> bool:
+        """Best guess whether the next song slot brings its own intro (a ready
+        request, or the newest fresh song), which is words enough."""
+        reqs = self._uncommitted_ready_requests()
+        if reqs:
+            return bool(reqs[0].get("intro_item_id"))
+        fresh = [i for i in self._eligible_songs() if i["fresh"]]
+        if not fresh:
+            return False
+        song_id = max(fresh, key=lambda i: i["id"])["id"]
+        return self._fresh_intro_for(song_id) is not None
+
+    def _slot_wall(self, program_s: float) -> float:
+        """Wall-clock time at which program position `program_s` airs."""
+        return self.clock.wall() + max(0.0, program_s - self.position())
+
+    def _near_top_of_hour(self) -> bool:
+        """Does the next slot air within top_of_hour_window_s of :00 (wall)?
+        Soft time awareness only: it nudges the draw, it never waits."""
+        m = self._slot_wall(self._total) % 3600.0
+        return min(m, 3600.0 - m) <= self.cfg.playout.top_of_hour_window_s
+
+    def _pick_callout_fallback(self) -> list[dict]:
+        """Words before a song when the draw produced none: any liner or
+        station ID (repeats allowed), then the emergency pack (§5.4, §8.3).
+        Returns [] only when no voice item exists at all."""
+        recent = {r["item_id"] for r in self._items[-10:]}
+        everything = self.store.list_items("liner") + self.store.list_items("station_id")
+        live = [i for i in everything if not i["emergency"] and not i["retired"]]
+        emergency = [i for i in everything if i["emergency"] and not i["retired"]]
+        for pool in (live, emergency):
+            if pool:
+                unspent = [i for i in pool if i["id"] not in recent]
+                it = self.rng.choice(unspent or pool)
+                return [{"item_id": it["id"], "type": it["type"],
+                         "duration_s": it["duration_s"], "consume": True}]
+        return []
 
     def _genre_probe(self, recent_types: list[str]) -> list[tuple[int, str]]:
         out = []
@@ -199,6 +279,9 @@ class Scheduler:
             if not entries:
                 blocked.add(type_)
                 continue
+            if (type_ == "song" and entries[0]["type"] != "intro"
+                    and self._callout_pending()):
+                entries = self._pick_callout_fallback() + entries
             for e in entries:
                 self._append(e)
             self._rebuild_program()
@@ -249,7 +332,9 @@ class Scheduler:
         if e["type"] == "song":
             # persist the wall-clock air (injected clock, never time.time) so
             # spacing + weighting survive a restart (PRIORITIES §4)
-            self.store.commit_song_air(item_id, self.clock.wall())
+            # recorded at its scheduled air time, not commit time: the lead
+            # (committed coverage) varies, and spacing is about what listeners hear
+            self.store.commit_song_air(item_id, self._slot_wall(host_start))
         if e.get("request_id"):
             # committed, not yet heard: _settle_aired marks it when it airs
             self._pending_aired[seq] = e["request_id"]
@@ -396,7 +481,7 @@ class Scheduler:
         # honored whenever the pool allows; only when nothing clears it do we
         # relax toward the 15-min floor (same relaxation as today). Weighting
         # never breaks the floor — it only orders what already passes.
-        now = self.clock.wall()
+        now = self._slot_wall(self._total)
         min_gap = float(self.cfg.playout.song_min_spacing_s[0])
         spaced = [i for i in pool
                   if i.get("last_aired_at") is None or now - i["last_aired_at"] >= min_gap]
@@ -447,7 +532,7 @@ class Scheduler:
         A NULL last_aired_at (never aired, or aired before the ledger) counts
         as unheard forever, so it is always airable (PRIORITIES §4, root 1)."""
         floor = float(min(self.cfg.playout.song_min_spacing_s))
-        now = self.clock.wall()
+        now = self._slot_wall(self._total)
         return [i for i in self.store.list_items("song")
                 if not i["emergency"] and (
                     i["fresh"] or i.get("last_aired_at") is None or
@@ -459,17 +544,8 @@ class Scheduler:
         recycled song with no fresh intro airs alone. DJ adjacency: if the last
         committed item is dj_talk, skip the intro (two DJ segments back to back
         is worse than a missing intro — intros are cheap, the song is not; 4.7)."""
-        for it in self.store.list_items("intro"):
-            if not it["fresh"] or it["emergency"]:
-                continue
-            try:
-                meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
-            except Exception:
-                continue
-            if meta.get("song_item_id") != song_id:
-                continue
-            if self._items and self._items[-1]["type"] == "dj_talk":
-                continue
+        it = self._fresh_intro_for(song_id)
+        if it is not None and not (self._items and self._items[-1]["type"] == "dj_talk"):
             return [
                 {"item_id": it["id"], "type": "intro",
                  "duration_s": it["duration_s"], "consume": True},
@@ -479,10 +555,22 @@ class Scheduler:
         return [{"item_id": song_id, "type": "song",
                  "duration_s": song_dur, "consume": True}]
 
+    def _fresh_intro_for(self, song_id: int) -> dict | None:
+        """The unaired intro naming `song_id`, if any."""
+        for it in self.store.list_items("intro"):
+            if not it["fresh"] or it["emergency"]:
+                continue
+            try:
+                meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            except Exception:
+                continue
+            if meta.get("song_item_id") == song_id:
+                return it
+        return None
+
     def _pick_liner(self, st: PlayoutState) -> list[dict]:
-        items = [i for i in self.store.list_items("liner") if not i["emergency"]]
-        if not items:
-            items = [i for i in self.store.list_items("station_id") if not i["emergency"]]
+        items = [i for i in self.store.list_items("liner") + self.store.list_items("station_id")
+                 if not i["emergency"] and not i["retired"]]
         if not items:
             return []
         # don't replay a liner that aired in the last few committed items
@@ -526,7 +614,8 @@ class Scheduler:
             if t == "song":
                 break
             trailing_run += 1
-        cap = max(1, cap_limit - trailing_run)
+        # leave the last non-song slot for words when none aired yet (§5.2)
+        cap = max(1, cap_limit - trailing_run - (1 if st.callout_pending else 0))
         n = 1 if len(items) == 1 else self.rng.randint(1, min(cap, len(items)))
         now = self._air_clock
         min_gap = float(self.cfg.playout.commercial_min_spacing_s)
@@ -557,12 +646,65 @@ class Scheduler:
         return [{"item_id": item_id, "type": "news", "duration_s": ni["duration_s"],
                  "consume": True}]
 
+    # ------------------------------------------------------- operator phrases
+    def _drain_phrases(self) -> None:
+        """Place ready operator phrases at the earliest legal boundary. A phrase
+        with no legal slot right now (e.g. the committed tail is news) stays
+        queued and is retried next cycle — a boundary always clears in time.
+        Runs inside the scheduler loop, so program edits stay serialized."""
+        while self.pending_phrases:
+            ph = self.pending_phrases[0]
+            seq = self.place_phrase(ph["item_id"], ph["duration_s"])
+            if seq is None:
+                break  # held; keep it and retry next cycle
+            self.pending_phrases.popleft()
+            log.info("program.phrase_placed", extra={
+                "item_id": ph["item_id"], "seq": seq,
+                "revision": self.revision})
+
+    def place_phrase(self, item_id: int, duration_s: float) -> int | None:
+        """Splice an operator phrase into the committed program at the earliest
+        slot strictly after the on-air item that is not adjacent to
+        dj_talk/news/another phrase (RADIO §11; TUI.md §6). Works head-of-queue:
+        later already-committed items shift up by one. Bumps the programme
+        revision because already-published future playback changes (§5.5).
+        Returns the new seq, or None if no legal slot exists in the committed
+        window (caller defers)."""
+        seq_now, _ = self.on_air()
+        items = self._items
+        start = 0 if seq_now is None else next(
+            (i for i, r in enumerate(items) if r["seq"] > seq_now), len(items))
+        j = start
+        while j <= len(items):
+            pred = items[j - 1]["type"] if j > 0 else None
+            succ = items[j]["type"] if j < len(items) else None
+            if (pred in PHRASE_ADJACENT) or (succ in PHRASE_ADJACENT):
+                j += 1
+                continue
+            break
+        if j > len(items):
+            return None  # no legal slot inside the committed window
+        if j < len(items):
+            new_seq = items[j]["seq"]
+            self.store.shift_program_up_from(new_seq)
+        else:
+            new_seq = (self.store.max_seq() or 0) + 1
+        self.store.append_program_at(
+            item_id=item_id, type_="operator_phrase", duration_s=duration_s,
+            seq=new_seq)
+        # one-shot: consumed the moment it is placed; never recycled (rule 10)
+        self.store.mark_aired(item_id)
+        self._rebuild_program()
+        self.advance_revision()
+        return new_seq
+
     # ------------------------------------------------------------------ run
     async def run(self) -> None:
         log.info("scheduler running: lookahead=%ss", self.cfg.playout.committed_lookahead_s)
         while True:
             try:
                 self.commit_lookahead()
+                self._drain_phrases()
             except Exception as e:
                 log.exception("scheduler cycle failed: %s", e)
             await asyncio.sleep(2.0)

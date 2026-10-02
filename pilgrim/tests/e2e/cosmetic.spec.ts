@@ -22,6 +22,15 @@ test("page layout: pane order, ON AIR title, credits + hit counter", async ({ pa
   expect(links[4]).toEqual(["Kokoro-82M", "https://huggingface.co/hexgrad/Kokoro-82M", "_blank"]);
   for (const [, href] of links) expect(href).toMatch(/^https:\/\/huggingface\.co\//);
   expect(await page.textContent(".visitors")).toMatch(/^Unique visitors:/);
+  await expect(page.locator("#listeners")).toHaveText("Listening now: 69.0");
+  // the hit-counter pane links to the site's Reddit thread, in a new tab
+  const hitLink = await page.$eval(".hit-link", a => [a.textContent, a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")]);
+  expect(hitLink).toEqual([
+    "Interested in the site? Say hi on Reddit",
+    "https://www.reddit.com/user/jwhh91/comments/1wvjsno/pilgrim_dot_farm/",
+    "_blank",
+    "noopener noreferrer",
+  ]);
 });
 
 test("song label shows the audible track, not a buffered next one; STOP clears it", async ({ page }) => {

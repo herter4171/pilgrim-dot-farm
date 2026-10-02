@@ -12,6 +12,8 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx
+
 from pilgrim.config import RNG, Clock, Config
 from pilgrim.logging_setup import err_text
 from pilgrim.pipelines.clocktime import current_local_time, spoken_time
@@ -23,6 +25,13 @@ from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
 from pilgrim.store import Store
 
 log = logging.getLogger("radio.producer")
+
+# Copy brief for the emergency station IDs (RADIO §8.3): timeless on purpose,
+# since they may air any hour, any day.
+STATION_ID_BRIEF = (
+    "Write a plain station ID, one or two short sentences: say the station name, "
+    "Pilgrim Dot Farm, and that the listener is tuned in. Timeless: no time of "
+    "day, no weather, no song names, no news.")
 
 
 class Producer:
@@ -47,6 +56,8 @@ class Producer:
         self._clock_time = clock_time or current_local_time
         self._news_ok: dict | None = None
         self.sfx = sfx  # None = station airs dry (no SFX backend configured)
+        # clock.now() when the last stock song finished (None = none yet this run)
+        self._last_stock_song_at: float | None = None
 
     # --------------------------------------------------------------- counts
     def counts(self) -> dict[str, int]:
@@ -113,7 +124,6 @@ class Producer:
             bucket = float(inv.liner_buckets_s[made % len(inv.liner_buckets_s)])
             try:
                 item = await self.voice.produce_item("liner", bucket)
-                await self._attach_sfx(item, "liner")
                 self._store_voice(item, "liner")
                 log.info("produced liner %.1fs", item["duration_s"])
                 made += 1
@@ -121,6 +131,25 @@ class Producer:
             except Exception as e:
                 log.warning("liner production failed: %s", err_text(e))
                 return  # back off; don't hammer a failing backend
+
+    async def ensure_station_ids(self) -> None:
+        """Keep `inventory.station_ids_min` emergency station IDs (RADIO §8.3).
+        They are the floor under 'words between songs' (§5.2): rendered once,
+        never deleted, aired only when no other liner exists."""
+        have = sum(1 for i in self.store.list_items("station_id") if i["emergency"])
+        for _ in range(max(0, self.cfg.inventory.station_ids_min - have)):
+            try:
+                item = await self.voice.produce_item("liner", 4.0, context=STATION_ID_BRIEF)
+            except Exception as e:
+                log.warning("station id production failed: %s", err_text(e))
+                return
+            meta = {"text": (item.get("meta") or {}).get("text")}
+            self.store.add_item(
+                type_="station_id", media_path=item["media_path"],
+                duration_s=item["duration_s"], sample_rate=item.get("sample_rate"),
+                channels=item.get("channels"), role="liner", evergreen=True,
+                emergency=True, fresh=True, meta=meta)
+            log.info("produced station_id %.1fs", item["duration_s"])
 
     async def ensure_commercials(self) -> None:
         have = self.store.count_usable_of_type("commercial")
@@ -131,10 +160,9 @@ class Producer:
         if need <= 0:
             return
         role = "commercial"
-        for _ in range(need):
+        for _ in range(min(need, 3)):  # a few per cycle: callouts come first
             try:
                 item = await self.voice.produce_item(role, 25.0)
-                await self._attach_sfx(item, role)
                 self._store_voice(item, role)
                 log.info("produced commercial %.1fs", item["duration_s"])
             except Exception as e:
@@ -173,7 +201,6 @@ class Producer:
         for _ in range(max(0, need)):
             try:
                 item = await self.voice.produce_item("dj_talk", 18.0, context=context)
-                await self._attach_sfx(item, "dj_talk")
                 self._store_voice(item, "dj_talk", evergreen=True, expires_at=expires)
                 log.info("produced dj_talk %.1fs", item["duration_s"])
             except Exception as e:
@@ -193,7 +220,6 @@ class Producer:
                 item = await self.voice.produce_item(
                     "field_report", 20.0,
                     context="Do not mention the clock time.")
-                await self._attach_sfx(item, "field_report")
                 self._store_voice(item, "field_report", evergreen=False)
                 log.info("produced field_report %.1fs", item["duration_s"])
             except Exception as e:
@@ -201,7 +227,7 @@ class Producer:
                 return
 
     # ------------------------------------------------------------------ sfx
-    async def ensure_sfx_pool(self) -> int:
+    async def ensure_sfx_pool(self, limit: int | None = None) -> int:
         """Render each approved evergreen cue once into the recycled stock pool
         (SFX.md §6.2). Contextual cues are rendered per host in _attach_sfx.
         Returns how many were made; a failing backend just leaves gaps."""
@@ -212,6 +238,8 @@ class Producer:
         for name, cue in self.cfg.sfx.cues.items():
             if not (cue.evergreen and cue.approved) or name in have:
                 continue
+            if limit is not None and made >= limit:
+                break
             try:
                 r = await self.sfx.render(name)
             except Exception as e:
@@ -262,6 +290,12 @@ class Producer:
             if not cue or not cue.approved:
                 return None
             if cue.evergreen:
+                # stock cue not rendered yet: make it now (once, for everyone)
+                if self._stock_sfx(name) is None:
+                    try:
+                        self._store_sfx(await sfx.render(name), evergreen=True)
+                    except Exception as e:
+                        log.warning("sfx.failed", extra={"cue": name, "error": err_text(e)})
                 return self._stock_sfx(name)
             try:
                 r = await sfx.render(name, seed=self.rng.randint(0, 2**31 - 1), **kw)
@@ -346,6 +380,18 @@ class Producer:
 
     def _store_voice(self, item: dict, type_: str, evergreen: bool = True,
                      expires_at: str | None = None, gravity: str | None = None) -> None:
+        """Store a rendered voice clip right away, airable dry. Its script cues
+        stay in meta as `sfx_pending` for the SFX worker (sfx_step): talk never
+        waits on the SFX backend."""
+        meta = item.setdefault("meta", {})
+        wants = bool(meta.get("sfx_cues") or meta.get("joke_after_sentence") is not None
+                     or type_ == "field_report")
+        if wants and self.sfx is not None and self.cfg.sfx.enabled \
+                and type_ in SFX_HOST_TYPES:
+            meta["sfx_pending"] = True
+        else:
+            meta.pop("sfx_cues", None)
+            meta.pop("joke_after_sentence", None)
         self.store.add_item(
             type_=type_, media_path=item["media_path"], duration_s=item["duration_s"],
             sample_rate=item.get("sample_rate"), channels=item.get("channels"),
@@ -357,15 +403,50 @@ class Producer:
         log.info("producer running")
         while True:
             try:
-                # stock stingers first, so new talk can reference them
-                await self.ensure_sfx_pool()
-                await self.ensure_commercials()
+                # words between songs first (§5.2): station IDs, liners, DJ
+                # talk; SFX render in their own worker (sfx_loop)
+                await self.ensure_station_ids()
                 await self.ensure_liners()
                 await self.ensure_dj()
+                await self.ensure_commercials()
                 await self.ensure_field_reports()
             except Exception as e:
                 log.warning("producer voice cycle error: %s", e)
             await asyncio.sleep(6.0)
+
+    async def sfx_loop(self) -> None:
+        """SFX worker (SFX.md §7.3): attaches overlays to stored talk, then
+        fills the evergreen stock pool. One render at a time; the backend is
+        slow (docs/backends.md §7) and nothing waits on it."""
+        while True:
+            try:
+                did = await self.sfx_step()
+            except Exception as e:
+                log.warning("sfx loop error: %s", err_text(e))
+                did = False
+            await asyncio.sleep(1.0 if did else 5.0)
+
+    async def sfx_step(self) -> bool:
+        """One unit of SFX work. Returns True if it did any.
+        1) the oldest unaired talk clip with pending cues gets its overlays
+           (aired evergreen clips after that: they air again);
+        2) otherwise one missing evergreen stock cue is rendered."""
+        if self.sfx is None or not self.cfg.sfx.enabled:
+            return False
+        pending: list[dict] = []
+        for t in sorted(SFX_HOST_TYPES):
+            for it in self.store.list_items(t):
+                meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+                if meta.get("sfx_pending"):
+                    pending.append({**it, "meta": meta})
+        if pending:
+            it = min(pending, key=lambda i: (not i["fresh"], i["id"]))
+            item = {"duration_s": it["duration_s"], "meta": it["meta"]}
+            await self._attach_sfx(item, it["type"])
+            item["meta"].pop("sfx_pending", None)
+            self.store.update_item_meta(it["id"], item["meta"])
+            return True
+        return await self.ensure_sfx_pool(limit=1) > 0
 
     async def news_loop(self) -> None:
         while True:
@@ -380,12 +461,21 @@ class Producer:
         requests are produced FIRST (they jump ahead of stock), then stock songs
         fill to the fresh target (OVERHAUL 4.5)."""
         log.info("song worker started")
+        outage_s = 15.0
         while True:
             try:
                 did = await self.song_step()
+                outage_s = 15.0
                 if not did:
                     await asyncio.sleep(20.0)
                     continue
+            except httpx.TransportError as e:
+                # backend unreachable: back off (15 s doubling to 2 min) so an
+                # outage doesn't spin briefs against a dead generator
+                log.warning("song backend unavailable, retry in %.0fs: %s",
+                            outage_s, err_text(e))
+                await asyncio.sleep(outage_s)
+                outage_s = min(outage_s * 2, 120.0)
             except Exception as e:
                 log.warning("song production failed: %s", err_text(e))
                 await asyncio.sleep(15.0)
@@ -394,12 +484,16 @@ class Producer:
     async def song_step(self) -> bool:
         """One pass of the song worker. Returns True if it did work.
         1) Oldest queued listener request gets produced (even at stock target).
-        2) Otherwise, a stock song if fresh stock is below target."""
+        2) Otherwise, a stock song if fresh stock is below target and
+           songs.stock_gap_s has passed since the last stock song (§6.1)."""
         req = self.store.next_request_to_produce()
         if req:
             return await self._produce_request_song(req)
         fresh = self.store.count_fresh_of_type("song")
         if fresh >= self.cfg.inventory.fresh_songs_ready:
+            return False
+        if self._last_stock_song_at is not None and (
+                self.clock.now() - self._last_stock_song_at < self.cfg.songs.stock_gap_s):
             return False
         prev_genres = self._recent_genres()
         brief = await self.songs.brief(prev_genres)
@@ -413,6 +507,7 @@ class Producer:
             title=item.get("title"), artist=item.get("artist"), genre=item.get("genre"),
             evergreen=True, fresh=True, meta=item.get("meta"))
         self._store_intro(intro, song_id, None)
+        self._last_stock_song_at = self.clock.now()
         log.info("song.produced", extra={
             "title": item.get("title"), "genre": item.get("genre"),
             "duration_s": item.get("duration_s")})
@@ -426,7 +521,13 @@ class Producer:
         self.store.mark_request_producing(req["id"])
         try:
             prev_genres = self._recent_genres()
-            brief = await self.songs.brief(prev_genres, request_text=req["text"])
+            backlog = len(self.store.queued_requests())
+            if backlog >= 3:
+                brief = await self.songs.brief(prev_genres, request_text=req["text"],
+                                               short=True)
+            else:
+                brief = await self.songs.brief(prev_genres, request_text=req["text"])
+            brief["request_id"] = req["id"]
             item = await self.songs.produce_song(brief)
             # Everything awaited is done before the song is stored: song, intro
             # and 'ready' land with no await between them, so the scheduler can
@@ -444,6 +545,12 @@ class Producer:
                 "request_id": req["id"], "song_item_id": song_id,
                 "title": item.get("title"), "intro_item_id": intro_id})
             return True
+        except httpx.TransportError as e:
+            # backend down/dropped the connection: not the request's fault
+            self.store.requeue_request(req["id"])
+            log.warning("request.backend_unavailable", extra={
+                "request_id": req["id"], "error": err_text(e)})
+            raise
         except Exception as e:
             n = self.store.request_failed_attempt(req["id"])
             log.warning("request.failed", extra={
@@ -452,20 +559,41 @@ class Producer:
 
     async def _render_intro(self, item: dict, req: dict | None) -> dict | None:
         """Render a short DJ intro naming the just-created song, crediting the
-        listener for request songs. Failure is non-fatal (returns None)."""
-        try:
-            title = item.get("title") or "this next one"
-            artist = item.get("artist") or ""
-            genre = item.get("genre") or ""
-            context = f'Next song: "{title}" by {artist} ({genre}).\n'
-            if req is not None:
-                context += f"Listener request: {json.dumps(req['text'])}\n"
-                context += "Thank the listener for the request in one short phrase. "
-            context += "Do not mention the clock time."
-            return await self.voice.produce_item("intro", 10.0, context=context)
-        except Exception as e:
-            log.warning("intro.failed", extra={"error": err_text(e)})
+        listener for request songs. Stock intros are non-fatal (None). A request
+        intro MUST exist so the listener hears their request was serviced: two
+        LLM-written tries, then a scripted shout-out rendered directly."""
+        title = item.get("title") or "this next one"
+        artist = item.get("artist") or ""
+        genre = item.get("genre") or ""
+        context = f'Next song: "{title}" by {artist} ({genre}).\n'
+        if req is not None:
+            context += f"Listener request: {json.dumps(req['text'])}\n"
+            context += ("This song was made for a listener's request. OPEN with an "
+                        "excited shout-out that it's a listener request (e.g. "
+                        "'Request line! You asked, we made it!'), then name the "
+                        "song. ")
+        context += "Do not mention the clock time."
+        for _ in range(2 if req is not None else 1):
+            try:
+                return await self.voice.produce_item("intro", 10.0, context=context)
+            except Exception as e:
+                log.warning("intro.failed", extra={
+                    "error": err_text(e),
+                    "request_id": req["id"] if req is not None else None})
+        if req is None:
             return None
+        text = f"Request line! You asked, we made it! Here's {title}"
+        text += f", by {artist}!" if artist else "!"
+        try:
+            r = await self.voice.render({"text": text}, "intro", 6.0)
+        except Exception as e:
+            log.warning("intro.fallback_failed", extra={
+                "error": err_text(e), "request_id": req["id"]})
+            return None
+        log.info("intro.fallback", extra={"request_id": req["id"]})
+        return {"type": "intro", "media_path": str(r["path"]),
+                "duration_s": r["duration_s"], "sample_rate": r["sample_rate"],
+                "channels": r["channels"], "role": "intro", "meta": {"text": text}}
 
     def _store_intro(self, intro: dict | None, song_id: int,
                      req: dict | None) -> int | None:

@@ -187,6 +187,21 @@ def run(hours=24):
         if imeta.get("song_item_id") != nxt[3]:
             fails.append("intro followed by a different song")
 
+    # words between songs (§5.2): every pair of songs has a voice item between
+    # them (liner / station ID / DJ talk / field report / the song's intro)
+    callouts = {"liner", "station_id", "dj_talk", "field_report", "intro"}
+    bare_gaps = 0
+    since_song: list[str] | None = None
+    for t in types:
+        if t == "song":
+            if since_song is not None and not callouts & set(since_song):
+                bare_gaps += 1
+            since_song = []
+        elif since_song is not None:
+            since_song.append(t)
+    if bare_gaps:
+        fails.append(f"{bare_gaps} song gaps with no words between songs")
+
     # field reports are comic: never next to news (SFX.md §4.2)
     for a, b in zip(types, types[1:], strict=False):
         if {a, b} == {"field_report", "news"} or a == b == "field_report":
@@ -252,6 +267,7 @@ def run(hours=24):
     max_run_str = (f"max consecutive non-song: {max_run_non_song} "
                    f"(limit {cfg.playout.max_consecutive_non_song})")
     print(max_run_str)
+    print(f"song gaps without words: {bare_gaps}")
     print(f"sfx: {len(stinger_starts)} stingers, {sum(len(v) for v in overlays.values())} "
           f"overlays; joke rimshot {jokes_aired}/{joke_chances} ({joke_rate:.2f})")
     if fails:

@@ -31,7 +31,7 @@ class FakeSong:
     def __init__(self) -> None:
         self.calls: list[str | None] = []
 
-    async def brief(self, genres, request_text=None):
+    async def brief(self, genres, request_text=None, short=False):
         self.calls.append(request_text)
         return {"title": "Tune for " + (request_text or "the night")[:18],
                 "artist": "The Barn Cats", "genre": "polka",

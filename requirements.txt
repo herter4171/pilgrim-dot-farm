@@ -5,5 +5,6 @@ pydantic>=2.6
 soundfile>=0.12
 numpy>=1.26
 PyYAML>=6.0
+textual==8.2.8  # operator console (TUI.md §3); pinned, tested version
 pytest>=8.0
 pytest-asyncio>=0.23

@@ -38,3 +38,6 @@ _render_tmp.wav
 node_modules/
 test-results/
 playwright-report/
+
+# SFX evaluation suite (generated)
+sfx_test/

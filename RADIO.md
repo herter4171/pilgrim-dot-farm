@@ -85,6 +85,13 @@ timestamps. Phase 1 assumes a single listener; the client reports its playhead
 via heartbeat, and the scheduler keeps the committed window full relative to
 that playhead. Wall-clock alignment only matters once the hour clock arrives.
 
+Programme identity and manual control (TUI.md): the station carries an
+**`epoch`** (changes on restart) and a programme **`revision`** (changes only
+when already-published future playback changes). A Textual **DJ console** (see
+`pilgrim/tui/`, §18) controls this same **shared** timeline over HTTP; the
+browser stays the only audio engine (§9.2). Public request-line behaviour is
+unchanged and separate from privileged DJ mutations (§11).
+
 ---
 
 ## 4. Content types
@@ -107,9 +114,16 @@ Segment types the selector chooses from:
 - `field_report` — the British field reporter, filing invented farm factoids
   from a literal field; always closes with his "outstanding in my field"
   sign-off (enforced in code). Contextual: aired once, never recycled.
+- `operator_phrase` — a phrase submitted **verbatim** by the station operator
+  through the DJ console (TUI.md §6): the typed words are the copy, never
+  rewritten or extended by an LLM. Rendered once by the operator's character
+  (§10) with the mandatory TTS cleanup (§6.3). One-shot (never recycled);
+  counts as a voice bridge and non-song segment with DJ-like news adjacency
+  (§5.2); no automatic SFX in v1. Not drawn by the selector — only ever
+  scheduled by "Queue phrase"
 
-**SFX** (`sfx` items, SFX.md): short sound effects rendered by the Stable Audio
-SFX backend. They are **never airable on their own**: they ride on a host clip
+**SFX** (`sfx` items, SFX.md): short sound effects rendered by the MOSS-SoundEffect
+v2.0 backend. They are **never airable on their own**: they ride on a host clip
 (`dj_talk`, `field_report`, `commercial`, `liner`) as sidecar overlays recorded
 in the host's `meta.sfx` as `{item_id, cue, kind, offset_s, duration_s}`,
 `kind` ∈ `stinger | joke | bed`. **News never carries SFX**, by construction.
@@ -181,6 +195,28 @@ Constraints (applied before drawing):
   already pass it. Spacing and the wait factor read the persisted
   `last_aired_at` wall clock, not an in-memory air map, so a restart keeps the
   rotation instead of re-airing the oldest song first.
+- **Words between songs.** Every pair of songs has at least one voice item
+  between them: a `liner` / station ID, `dj_talk`, a `field_report`, or the
+  next song's own `intro`. Commercials and news alone don't count. While no
+  voice item has aired since the last song, the selector spends the last
+  non-song slot (before `max_consecutive_non_song` forces a song) on a
+  callout, and a commercial break leaves that slot free. If a song is still
+  about to follow bare, the scheduler puts a liner or station ID in front of
+  it (repeats allowed), then the emergency station IDs (§8.3). Never waits:
+  with no voice item at all, the song airs.
+- **Loose time awareness.** When the next slot airs within
+  `playout.top_of_hour_window_s` of :00 (wall clock), a pending callout is
+  drawn first and DJ talk (which carries the time) is favored. A nudge, not a
+  hard top-of-hour ID.
+- Song spacing and `last_aired_at` use the song's scheduled **air** time
+  (now + committed coverage), not its commit time.
+- **Manual DJ queue (TUI.md §5).** Songs and operator phrases queued from the
+  DJ console are manual and FIFO — they go **ahead of** automatic selection, in
+  submission order, but still clear spacing, gravity, the maximum non-song run,
+  news expiry/adjacency, the words-between-songs rule and all other §5.2
+  constraints against the **new** timeline. v1 has no implicit repeat override;
+  an ineligible selection is shown with the reason. Ready listener requests
+  keep their relative order behind the manual queue.
 - `dj_talk` never adjacent to another `dj_talk` or to `news` (either order).
 - `field_report` never adjacent to `news` (either order) or to another
   `field_report`, and is held back after a `serious` bulletin like a
@@ -226,15 +262,79 @@ Constraints (applied before drawing):
   Kokoro. If it isn't rendered by the time it would enter the committed window,
   it is **dropped and replaced with a liner** of similar length. Playout never
   blocks on it.
+- **Epochs, revisions and prepared cutovers (TUI.md §5).** The station `epoch`
+  changes on restart; the programme `revision` changes when already-published
+  future playback changes, while ordinary append-only lookahead may keep its
+  revision. `GET /api/station/program?epoch=E&revision=R&after_seq=N`; on an
+  E/R mismatch the server ignores the stale cursor and returns a full snapshot
+  with `reset: true`, start offset and server time (§11). Sequence numbers
+  identify occurrences and are never reused for a different item (§5.5). A DJ
+  command is serialized with the normal commit loop, validated against
+  epoch/revision/current occurrence + availability, and applied as a
+  **prepared cutover** (§5.5) built only from already-rendered inventory — never
+  a production call under the scheduler lock.
 
 ### 5.4 Fallback chain
 
 When the selector finds nothing suitable:
 1. Recycled song (longest since last aired).
-2. Any evergreen commercial or liner.
+2. Any evergreen commercial or liner (station IDs draw as liners).
 3. **Emergency pack** (§8.3): pre-rendered, never deleted, stored on the M5.
+   Emergency station IDs are also the floor for words between songs (§5.2).
 
 Silence is never an option.
+
+### 5.5 Manual control — skip, queue, phrases (TUI.md §5)
+
+DJ mutations change the **shared station programme** for compatible, connected
+listeners. They ride the same scheduler commit loop with stricter provenance:
+
+- **Commands and idempotency.** Every mutation is a JSON command carrying a
+  client-generated `command_id`, `expected_epoch`, `expected_revision` and,
+  for skip, `expected_seq`. Commands are **idempotent by command ID + payload**:
+  an identical retry returns the existing result (lost-response recovery); reuse
+  with different content is `409`. Idempotency is checked **before**
+  stale-state checks. Durable outcomes: `accepted → preparing → scheduled →
+  applied`, with `rejected` and `expired` terminal results (§11).
+- **Concurrency.** If epoch/revision/current occurrence no longer match (the
+  console acted on a stale view) the command is `409` stale and the console
+  refreshes its display instead of acting on it. Error taxonomy (each with a
+  stable `code` and readable `detail`): 401/403 authentication/authorization,
+  404 missing ID, 409 stale/ineligible/conflicting, 422 invalid input,
+  429 bounded queues, 503 required service unavailable.
+- **Prepared cutovers.** A validated command builds a replacement tail from
+  already-rendered inventory (no production call under the lock), publishes a
+  **prepared** replacement (cutover ID, target revision, media list, proposed
+  effective time), then — after a bounded preparation window — atomically
+  activates it at a cutover time with enough configured lead for client
+  notification (§9.2). Only **one** cutover is prepared at a time; later edits
+  rebase on it. The active programme stays valid while preparation is pending.
+  All scheduling arithmetic uses the injected Clock/RNG (§0, §15).
+- **Skip.** Skips the item identified in the displayed state (the server checks
+  it is still current). An intro + its song are one selectable unit: skip
+  during the intro skips both; skip during the song ends the song. A multi-spot
+  commercial break skips the current spot (v1). If the current segment ends
+  during preparation, the skip expires as stale instead of skipping its
+  successor. The action's scope is shown before execution.
+- **Queue next.** FIFO into the earliest eligible boundary after the current
+  segment, showing the actual planned position and any required bridge — it must
+  not silently wait behind the existing committed window. Eligibility (a ready
+  song or this character's ready phrase) is revalidated at insertion time; v1
+  shows a clear reason when spacing/gravity makes it ineligible, and has no
+  implicit repeat override. Existing ready listener requests keep their
+  relative order.
+- **What edits preserve.** Non-song runs, spacing, gravity, news expiry/
+  seriousness adjacency, genre repeats and words-between-songs are revalidated
+  against the **new** timeline after compression. Unstarted intro/song blocks
+  that move intact with valid context transfer their one-shot reservation (one
+  planned airing); cancelled/superseded one-shots — news, DJ talk, intros,
+  field reports, operator phrases — lose their reservation permanently and are
+  **never** returned to the pool. Bypassed songs/requests are never marked
+  heard; actual started-then-skipped airings are recorded separately from
+  never-started/superseded occurrences. SFX stop with their host and the
+  stinger budget is recalculated at the new start times; a sidecar is never
+  aired standalone. Edits create control/history records; they never retire,
+  delete or modify library media or emergency inventory.
 
 ---
 
@@ -253,11 +353,25 @@ target, per host worker.
 | Commercials (library) | ≥ 20 at launch; top up slowly (they repeat on purpose) |
 | Liners, by length bucket (3 / 5 / 10 / 15 / 30 s) | ≥ 5 each |
 | Unaired field reports | ≥ `inventory.field_reports_min` (1) |
+| Emergency station IDs | `inventory.station_ids_min` (3), rendered once, never deleted |
 | Evergreen SFX stock | one per approved evergreen cue |
 
-SFX are rendered by the producer, never at playout: the evergreen stock pool
-first in each cycle (and in `seed.py`), contextual cues while their host clip
-is produced. A failing SFX backend only means hosts air dry.
+The voice worker fills callouts first (emergency station IDs, liners, DJ talk),
+then commercials (a few per cycle) and field reports. It runs alongside the
+song worker, so talk is ready by the time a new song lands.
+
+The song worker spaces stock songs out: after a stock song finishes, it waits
+`songs.stock_gap_s` (default 600 s) before starting the next one, even when
+fresh stock is below target. Queued listener requests skip the gap and are
+produced as soon as the worker is free; they do not reset it.
+
+SFX are rendered by their own worker (`Producer.sfx_loop`), never at playout
+and never in the voice worker's path: a talk clip is stored and airable as
+soon as its voice is rendered, with its script cues kept as `sfx_pending`.
+The SFX worker attaches overlays to pending clips oldest-unaired first, then
+fills the evergreen stock pool one cue at a time (`seed.py` renders the pool
+up front). A clip committed before its cues are ready airs dry. A failing SFX
+backend only means hosts air dry.
 
 Workers:
 - **M5 worker:** pulls briefs, generates songs continuously.
@@ -299,6 +413,16 @@ Workers:
 Duration targeting: calibrate seconds-per-word for each voice/speed at setup
 and store it. Prompts request a word count that yields the target duration;
 QC rejects clips more than ±25 % off target.
+- **Operator phrases (literal text, TUI.md §6):** the operator's typed words are
+  the copy (no LLM rewrite or invention). The mandatory TTS cleanup runs on
+  submission; the operator sees and confirms the exact cleaned text; the
+  confirmed text is hashed with the character/config version and that confirmed
+  version is what renders (a validation race can never change the spoken
+  words). Render via the existing Kokoro client in a per-job staging directory
+  **outside** `pilgrim/library/` with unique filenames, then run the same QC,
+  two-pass normalization (−16 LUFS / −1 dBTP) and FLAC delivery (§8). Only a
+  QC-passed clip is published as a new immutable FLAC and exposed as ready;
+  existing library files are never overwritten or removed.
 
 ### 6.4 News
 
@@ -342,6 +466,16 @@ recorded from client heartbeats, not from what was produced. Prompts receive
 ledger facts ("the Glue-Free Glue sponsor last aired 2 h ago; the medication's
 side-effect list was last extended yesterday") so gags can escalate and
 callbacks make sense.
+
+**DJ operator ledger and rotation accounting (TUI.md §6–7):** a distinct record
+per operator command (command ID, payload hash, accepted epoch/revision,
+operation, outcome, applied revision, affected occurrences) and per phrase job
+(original/cleaned text, character/voice snapshot, status, media link, QC
+result, expiry, failure reason), with unique publication per command/job.
+Rotation accounting separates scheduled **reservations** from actual
+started/partial-play history, so an edit can release/recompute reservations
+without erasing prior real airplay, and a cancelled request occurrence never
+becomes `aired` merely because the playhead moved past its old sequence.
 
 **Persisted rotation (PRIORITIES §4):** `items` carries `last_aired_at` (wall
 epoch, set at commit) and `play_count` so song spacing and Tier-2 weighting
@@ -389,7 +523,10 @@ Failures are logged with reason and discarded; the producer refills.
 
 A small set of songs, liners, and station IDs flagged `emergency`: never
 deleted, never subject to repeat rules, stored locally on the M5. Used only
-when everything else is unavailable.
+when everything else is unavailable. The producer keeps
+`inventory.station_ids_min` emergency station IDs (timeless copy, type
+`station_id`), so there are words between songs even right after a library
+wipe; `clear_library --keep-songs` keeps the pack.
 
 ---
 
@@ -416,7 +553,11 @@ the station name.
   and is flagged as such).
 - **HIT COUNTER**: labeled **Unique visitors**, a persistent count of distinct
   canonical client IPs (RADIO §14), starting at 0. Falls back to `0` if the
-  call fails; never disturbs playback or requests.
+  call fails; never disturbs playback or requests. Below it, **Listening
+  now: 69.N**, where N is the integer live listener count (`listeners` on
+  `GET /api/station/state`, §14), polled every 15 s; `69.0` until the first
+  poll, and a failed poll keeps the last value (operator decision,
+  2026-10-02).
 
 ### 9.2 Playback engine
 
@@ -426,7 +567,9 @@ the station name.
   ahead of the current one.
 - Schedule each `AudioBufferSourceNode` with `start(when)` at exactly the
   previous item's end time on the AudioContext clock (sample-accurate joins).
-- Send a heartbeat `{seq, position}` every 5 s and on each item start.
+- Send a heartbeat `{seq, position, player_id}` every 5 s and on each item
+  start (`player_id` is the page's per-tab ID; it feeds the live listener
+  count, §14).
 - **Client-side last resort:** the page ships 2–3 tiny embedded liners
   (base64). If the next item isn't decoded when needed (network hiccup), play
   one and log an `underrun` event to the server.
@@ -439,6 +582,22 @@ the station name.
   sources don't clip. An overlay that isn't decoded in time, or whose beat
   already passed when joining mid-clip, is skipped (a bed resumes at the right
   point). Overlays never move a join.
+- **DJ coordination (TUI.md §5, §9.2).** The client polls the cheap
+  `GET /api/station/state` (epoch/revision/current+offset/prepared cutover)
+  independently of its buffered programme length. On a revision change it
+  cancels obsolete scheduled sources, stops their SFX, releases their buffers
+  and ignores stale fetch/decode completions — hold explicit source references
+  by occurrence (`scheduleOne()` currently retains no source to cancel). On an
+  activated cutover it maps server time to the AudioContext clock, starts the
+  successor at that boundary, applies a brief configured anti-click fade and
+  stops the skipped source at the same boundary; for queue-next it keeps the
+  natural current-item end. Heartbeats carry player ID, protocol version,
+  observed epoch/revision and a readiness summary; readiness never controls
+  production. Target: an acknowledged skip within a configurable 2 s budget for
+  healthy clients; a lagging/disconnected listener may stay on old buffered
+  audio and rejoin at the latest offset — never silence everyone waiting for
+  one slow client. With no active listeners the server applies a validated edit
+  without waiting for a browser.
 - Known limitation: mobile browsers (especially iOS) may suspend audio in
   background tabs. Documented, not solved, in Phase 1.
 
@@ -460,6 +619,14 @@ voice are calibrated at setup and recorded in config.
 Remaining calibration: seconds-per-word and preferred speaking speed per
 voice, measured at setup.
 
+**Operator character (TUI.md §6, §10):** one operator-only character with a
+stable ID, display name and a reserved **unused** voice — present in Kokoro's
+catalogue and absent from every existing configured role and other character
+reservation (the exclusion set is computed from config, never hardcoded). The
+operator picks the name and **listens before choosing the voice** (a human
+decision, AGENTS §9; assigned by the operator, not this plan). The character
+has no random-selector weight and no inventory refill target.
+
 ---
 
 ## 11. Server — `server.py`
@@ -477,6 +644,23 @@ voice, measured at setup.
 | GET | `/api/requests` | Request board: `{queue: [{status}], recent: [{text, song_title, song_artist}], cap}` — queue = queued+producing+ready, oldest first; recent = **last 3** aired/serviced by ID order (COSMETIC_PATCHING §4) |
 | POST | `/api/visitors` | Register the server-derived client IP; returns `{unique_visitors: <nonnegative int>}` with `Cache-Control: no-store`. One call per page load; media/heartbeat/health/request calls never hit it. Always 200: an unresolvable identity or disabled counter returns the current count without registering (RADIO §14) |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
+| GET | `/api/station/state` | Cheap station state for DJ-aware clients: `{epoch, revision, current_seq, current_type, current_offset_s, server_time, prepared_cutover, listeners}` (TUI.md §4); `listeners` is the live listener count (§14) |
+| GET | `/api/station/program` | Extended: `?epoch=E&revision=R&after_seq=N`; response adds `epoch`, `revision`, `reset`, `server_time` (`reset: true` = stale cursor, replace the whole list) |
+| GET | `/api/admin/dj/state` | DJ console state: `{epoch, revision, server_time, on_air, current, upcoming, pending_commands, catalogue_revision, player_status}` — no backend probes |
+| GET | `/api/admin/dj/songs` | Sortable/searchable song catalogue: `q, sort=title|artist, direction, cursor, limit` → `{items, next_cursor, catalogue_revision}`; allowlisted sort expressions, bound SQL, stable tie-breaker |
+| POST | `/api/admin/dj/skip` | `{command_id, expected_epoch, expected_revision, expected_seq}` → 202 + command receipt |
+| POST | `/api/admin/dj/queue` | `{command_id, expected_epoch, expected_revision, media_id}` → placement or a policy conflict |
+| GET | `/api/admin/dj/commands/{command_id}` | Durable command result: `accepted\|preparing\|scheduled\|applied\|rejected\|expired`, affected seqs, cutover info |
+| GET | `/api/admin/dj/character` | Configured character, setup readiness, available unused voice IDs; explicit error on voice-discovery failure |
+| POST | `/api/admin/dj/phrases` | `{command_id, character_id, text, cleaned_text_hash}` → validate, persist job, `202 {job_id, status, cleaned_text}` |
+| GET | `/api/admin/dj/phrases/{job_id}` | Phrase job: stage, character/voice snapshot, cleaned text, expiry, failure, or `{media_id, duration_s}` when ready |
+| POST | `/api/admin/dj/phrases/validate` | Pure cleaned-text validation → `{cleaned_text, changes, text_hash, ok, rejected_reason}`; no synthesis or scheduling |
+
+**Operator authentication.** Every `/api/admin/dj/*` route requires a dedicated
+bearer token from **`PILGRIM_DJ_TOKEN`** (env; documented in README.md; never
+reuse `LITELLM_TOKEN`). Missing credentials (401/403) disable DJ mutations
+without affecting the public request line. Remote operation uses the
+deployment's encrypted connection or an SSH tunnel.
 
 ---
 
@@ -488,7 +672,7 @@ hosts:
   kokoro: http://192.168.68.89:8001
   litellm: http://<LITELLM_HOST>
   searxng: http://<SEARXNG_HOST>
-  sfx: http://127.0.0.1:8500      # Stable Audio 3 Small SFX wrapper
+  sfx: http://127.0.0.1:8000      # MOSS-SoundEffect v2.0
 
 models:
   news: qwen38
@@ -512,6 +696,7 @@ playout:
   weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08,
             field_report: 0.05}
   max_consecutive_non_song: 2
+  top_of_hour_window_s: 240   # a song gap this close to :00 leads with words
   news_min_spacing_s: 1200
   news_ttl_s: 2700
   commercial_min_spacing_s: 1800
@@ -531,11 +716,13 @@ inventory:
   liners_per_bucket: 5
   liner_buckets_s: [3, 5, 10, 15, 30]
   field_reports_min: 1       # unaired field reports kept ready
+  station_ids_min: 3         # emergency station IDs (§8.3)
 
 songs:
   min_duration_s: 20         # sanity floor
   max_duration_s: 360        # sent to mlx-serve as duration_seconds (1-360); song QC ceiling
   abrupt_fade_s: 2.5         # fade-out applied to songs with hard endings
+  stock_gap_s: 600           # idle gap between stock song generations; requests skip it
   genres: {synthwave: 1, bluegrass: 1, doom metal: 1, bossa nova: 1, polka: 1, ...}
 
 news:
@@ -544,7 +731,7 @@ news:
   budget_s: 60
 
 requests:
-  queue_cap: 10
+  queue_cap: 10          # request-board display size (no eviction on the public line)
   max_length: 160
   moderation_model: qwen38
   moderation_max_tokens: 4096
@@ -553,6 +740,8 @@ requests:
 visitors:
   enabled: true
   trusted_proxies: [127.0.0.1, "::1"]  # peers whose X-Real-IP we trust (§14)
+  listener_timeout_s: 15   # live listener drops after this long without a heartbeat
+  max_listeners: 1000      # cap on tracked player IDs
 
 audio:
   lufs: -16
@@ -572,10 +761,13 @@ talk:
 
 sfx:                          # SFX.md; never on news
   enabled: true
-  model: stable-audio-3-small-sfx
-  steps: 8
+  model: moss-soundeffect-v2.0
+  steps: 100                  # sent as num_inference_steps
   cfg_scale: 4.0
-  timeout_s: 60
+  sigma_shift: 5.0
+  negative_prompt: ""
+  max_seconds: 30             # backend cap per request
+  timeout_s: 180
   stinger_gain: 0.5           # applied at air time: tune without re-rendering
   bed_gain: 0.15
   host_duck: 0.7              # host gain under a stinger
@@ -605,6 +797,24 @@ logging:
 
 library:
   soft_cap_gb: 100          # past this, producer slows song generation and recycling share rises
+
+dj:                            # DJ console (TUI.md §7)
+  enabled: false               # control mutations stay disabled until access setup is complete
+  state_poll_s: 1.0            # cheap state poll interval (console)
+  backoff_max_s: 10            # reconnect backoff ceiling on disconnects
+  cutover_deadline_s: 2.0      # acknowledged-skip budget for healthy clients (§5.5)
+  cutover_lead_s: 1.0          # client-notification lead before cutover activation
+  cutover_fade_s: 0.02         # anti-click fade at the cutover boundary (§9.2)
+  queue_max: 20
+  phrase_max_chars: 280
+  phrase_ttl_s: 7200           # unqueued ready phrase lifetime
+  job_timeout_s: 300
+  character:
+    id: dj_operator            # stable ID; name + voice chosen by the operator by ear (§10)
+    name: ""                   # set by the operator (human decision)
+    voice: ""                  # reserved unused Kokoro voice (operator pick)
+    speed: 1.0
+  # voice calibration (seconds_per_word, per-voice QC bounds) measured at setup
 ```
 
 ---
@@ -643,7 +853,17 @@ aired`, plus `rejected`, `evicted`, `failed` (legacy `serviced` reads as
 its song, not when the song is committed; until then it stays `ready` ("up
 next"). The request's song and intro enter the library together with the
 `ready` flag, so the song can never air bare as stock first. Only `queued` rows are ever FIFO-evicted; a crash
-mid-generation is reset `producing -> queued` on station start.
+mid-generation is reset `producing -> queued` on station start. A backend **transport** error (generator unreachable / connection dropped)
+returns the request to `queued` without spending an attempt, and the song
+worker backs off 15 s doubling to 2 min; only real failures (bad brief, QC)
+count toward the 3-attempt `failed` limit. A request's named genre/style
+overrides `songs.genres`; the list is only a fallback for requests that name
+no style. The public request line does **not** FIFO-evict (`add_request(cap=None)`):
+every accepted request is made; `queue_cap` only bounds the board display.
+With >= 3 queued, request briefs ask for a short (60-90 s) song to drain the
+backlog. Every request song gets an intro that opens with a listener-request
+shout-out: two LLM-written tries, then a scripted "Request line! You asked, we
+made it! Here's <title>, by <artist>!" rendered directly.
 
 **Visitors.** A separate `visitor_ips(ip TEXT PRIMARY KEY, first_seen REAL)`
 table stores the **raw canonical client IP** (operator decision, 2026-10-01;
@@ -657,6 +877,32 @@ can be resolved, registration is skipped and the current count is returned;
 the counter never breaks radio/requests. Raw IPs are personal data: no
 retention/pruning policy is implemented yet.
 
+**Live listeners.** Not stored: the server keeps an in-memory map of
+heartbeat `player_id` → last heartbeat time (injected clock). A player counts
+while its heartbeats arrive within `visitors.listener_timeout_s` (default
+15 s, three missed 5 s heartbeats), so STOP or a closed tab drops out within
+that window. It counts players, not people (one per playing browser, since
+tabs hand off playback), and resets on restart. New IDs beyond
+`visitors.max_listeners` are ignored; `player_id` is client-supplied, so the
+count is indicative, not authenticated.
+
+**DJ persistence (TUI.md §6–7; design only — additive migrations are prepared,
+tested against temporary databases and reviewed with the operator before any
+live change; the TUI never runs them):**
+
+- `dj_commands(command_id PK, payload_hash, accepted_epoch, accepted_revision,
+  operation, outcome, applied_revision, affected_seqs, created_at, updated_at)`
+  — unique publication per command; identical retry returns the existing row.
+- `phrase_jobs(job_id PK, character_id, voice, speed, original_text,
+  cleaned_text, text_hash, status, media_item_id, qc_result, attempts,
+  expires_at, created_at, updated_at)` — one publication per job; cancelled
+  scheduled phrases are terminal (never auto-replayed).
+- Programme **occurrence history**: superseded/skipped occurrences keep their
+  identity (a sequence number is never reused for a different item, §5.3) with
+  revision/cutover metadata, so rotation accounting can separate reservations
+  from real airplay (§7). `items` accepts the `operator_phrase` type with meta
+  linking to its character/job; media identity stays `items.id`.
+
 ---
 
 ## 15. Testing
@@ -669,8 +915,8 @@ Random selection is chosen for Phase 1 partly because it is easy to test.
   bad output).
 - `fake_kokoro`: returns a tone/noise WAV sized from word count.
 - `fake_llm`: returns canned valid and invalid JSON.
-- `fake_sfx`: returns a 44.1 kHz stereo tone of exactly the requested
-  duration (like the real wrapper); can inject outages.
+- `fake_sfx`: returns a 48 kHz mono tone of exactly the requested
+  duration (like MOSS-SoundEffect); can inject outages.
 
 **Simulated clock:** scheduler and producers take a `Clock` interface. Run
 **24 simulated hours in seconds** and assert:
@@ -680,6 +926,10 @@ Random selection is chosen for Phase 1 partly because it is easy to test.
 - Observed segment mix is within tolerance of configured weights.
 - Fallback chain engages correctly when backends are killed mid-run.
 
+- Words between songs: every pair of songs has a liner / station ID /
+  DJ talk / field report / intro between them (zero bare gaps). Unit tests
+  cover the cold start (songs + spots + emergency IDs only) and that the
+  emergency IDs stay off air while liners exist.
 - SFX policy: no overlay on news or any non-host type, every overlay inside
   its host, ≤3 stingers in any 10 s, joke rimshot rate ≈ 50%; field reports
   never adjacent to news.
@@ -754,12 +1004,15 @@ normalization, seed script, fakes and simulation tests, minimal UI.
 pilgrim/
   config.yaml
   server.py
+  dj_api.py             # authenticated /api/admin/dj/* routes (typed contracts)
+  dj_control.py         # serialized commands, prepared cutovers, policy checks
   scheduler.py          # playout, selectors, committed window
   selectors.py          # RandomSelector (Phase 1), ClockSelector (Phase 2)
   producer.py           # inventory loop + host workers
   pipelines/
     songs.py            # brief → MiniMax → QC → normalize
     voice.py            # copy → cleanup → Kokoro → QC → normalize
+    operator_phrase.py  # literal-text operator phrase jobs (staging-safe render)
     news.py             # search-bounded bulletin generation
   audio/
     qc.py
@@ -769,6 +1022,7 @@ pilgrim/
   bible/                # station bible (markdown)
   library/              # FLAC media
   web/                  # index.html, player.js (Web Audio), styles
+  tui/                  # operator console (__main__, app, client, models, console.tcss)
   tests/
     fakes/
     test_selector.py

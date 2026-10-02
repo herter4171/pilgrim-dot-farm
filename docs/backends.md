@@ -183,23 +183,32 @@ degrades to a model-written bulletin.
 
 ---
 
-## 7. SFX — Stable Audio 3 Small SFX (`127.0.0.1:8500`, verified 2026-10-01)
+## 7. SFX — MOSS-SoundEffect v2.0 (`127.0.0.1:8000`, verified 2026-10-01)
 
-OpenAI-style wrapper, no auth, CPU. Full probe notes: `SFX.md` §1–§2.
+OpenAI-style wrapper (FastAPI, `/openapi.json` available), no auth, CUDA bf16.
+Replaced Stable Audio 3 Small SFX (`:8500`); `SFX.md` §1–§2 hold the old
+model's probe notes.
 
-- `GET /health` → `{"status":"ok","model":"stable-audio-3-small-sfx","device":"cpu"}`
-- `GET /v1/models` → lists `stable-audio-3-small-sfx`.
-- `POST /v1/audio/speech` (synchronous, raw audio body):
+- `GET /health` → `{"status":"ok","model":"moss-soundeffect-v2.0","device":"cuda",
+  "dtype":"torch.bfloat16","sample_rate":48000,"max_seconds":30,"error":null}`
+- `GET /v1/models` → `{"object":"list","data":[{"id":"moss-soundeffect-v2.0",
+  "object":"model","owned_by":"openmoss","type":"text-to-audio"}]}`
+- `POST /v1/audio/speech` (also `/audio/speech`; synchronous, raw audio body):
   ```json
-  {"model": "stable-audio-3-small-sfx", "input": "<prompt>", "duration": 2.0,
-   "steps": 8, "cfg_scale": 4.0, "response_format": "wav", "seed": 24}
+  {"model": "moss-soundeffect-v2.0", "input": "<prompt>", "seconds": 2.0,
+   "num_inference_steps": 100, "cfg_scale": 4.0, "sigma_shift": 5.0,
+   "negative_prompt": "", "response_format": "wav", "seed": 24}
   ```
-  `duration` 0.5–380 s, honored exactly. `wav` → PCM s16le **44.1 kHz stereo**,
-  often peaking at full scale. `mp3` is real; `flac`/`ogg` silently fall back
-  to wav. Fixed `seed` → byte-identical output.
-- Wall time (warm): ~2–3 s floor, ~1.3× real time past ~5 s.
-- Through `SfxPipeline` (two-pass loudnorm → FLAC): a 2 s request comes out
-  ~1.3 s (edge silence trimmed, 150 ms lead pad), −16.3 LUFS, TP ≈ −5 dBFS.
+  Only `input` is required; values shown are the server defaults (`seconds`
+  defaults to 10). `voice`/`speed` are accepted and ignored. `seconds` > 30 →
+  HTTP 500 `Internal Server Error` (text/plain), so the client clamps.
+  `response_format`: wav | mp3 | flac | ogg | pcm (only wav exercised).
+  Response headers: `content-type: audio/wav`, `x-audio-sample-rate: 48000`,
+  `x-generated-by: moss-soundeffect-v2.0`.
+  `wav` → PCM s16le **48 kHz mono**, length exact (2.0 s asked → 2.0 s),
+  peak ≈ −0.4 dBFS. Fixed `seed` → byte-identical output.
+- Wall time: per step, ~flat in duration. 100 steps / 2 s → 38 s;
+  50 steps / 2 s → 20 s; 50 steps / 10 s → 21 s.
 
 Client: `pilgrim/pipelines/sfx.py` (`SfxClient.generate`).
 

@@ -46,9 +46,10 @@ def test_truncated_render_rejected_no_flac_left(cfg, tmp_path):
 
 
 def test_speech_rate_gate_fires_within_duration_tolerance(cfg, tmp_path):
-    """12 s (duration-tolerable for target 18 s) with 70 words: too many words
-    per second -> the speech-rate gate rejects and deletes the flac."""
-    vp = pipe(cfg, ShortKokoro(fixed_s=12.0), tmp_path)
+    """9 s (duration-tolerable for target 18 s) with 50 words (~5.6 w/s, a
+    truncation, well above legit Kokoro reads of 3.6-4.0 w/s): the speech-rate
+    gate rejects and deletes the flac."""
+    vp = pipe(cfg, ShortKokoro(fixed_s=9.0), tmp_path)
     with pytest.raises(ValueError, match="speech rate"):
         asyncio.run(vp.produce_item("dj_talk", 18.0))
     assert not list(tmp_path.glob("*.flac"))

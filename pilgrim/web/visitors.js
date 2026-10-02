@@ -2,7 +2,8 @@
    COSMETIC_PATCHING §6). One POST /api/visitors per page load; the server
    derives the client IP itself (never client-supplied). Counts once per
    distinct network address. A failed request falls back to 0 and never
-   disturbs playback or the request line. */
+   disturbs playback or the request line. Also refreshes the
+   "Listening now" line from the live listener count. */
 (() => {
   "use strict";
 
@@ -24,4 +25,21 @@
   }
 
   load(); // once per page load; no continuous refresh needed (§6)
+
+  /* Listening now: "69." + the live listener count from /api/station/state
+     (operator decision, RADIO §9.1). A failed poll keeps the last value. */
+  const lis = document.getElementById("listeners");
+  async function pollListeners() {
+    try {
+      const r = await fetch("/api/station/state");
+      if (!r.ok) throw new Error("state HTTP " + r.status);
+      const n = Number((await r.json()).listeners);
+      if (Number.isInteger(n) && n >= 0) lis.textContent = "Listening now: 69." + n;
+    } catch (e) { /* keep last value */ }
+  }
+  if (lis) {
+    pollListeners();
+    setInterval(pollListeners, 15000);
+  }
+
 })();

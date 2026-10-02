@@ -29,13 +29,17 @@ def test_site_served(tmp_env):
 
 
 def test_program_endpoint_empty_inventory(tmp_env):
-    """An empty temp library yields an empty program, not an error."""
+    """An empty temp library yields an empty program, not an error, with the
+    DJ identity fields (RADIO §11 extension: epoch/revision/reset/server_time)."""
     cfg, _, _ = tmp_env
     app = create_app(cfg)
     c = TestClient(app)
-    r = c.get("/api/station/program")
-    assert r.status_code == 200
-    assert r.json() == {"items": [], "start_offset_s": 0.0}
+    body = c.get("/api/station/program").json()
+    assert body["items"] == [] and body["start_offset_s"] == 0.0
+    assert body["reset"] is False
+    assert body["revision"] == 1
+    assert isinstance(body["epoch"], str) and len(body["epoch"]) > 0
+    assert isinstance(body["server_time"], (int, float))
 
 
 def test_program_endpoint_emits_title_artist(tmp_env):
@@ -249,3 +253,57 @@ def test_visitors_disabled_returns_count_without_registering(tmp_env, monkeypatc
     app = create_app(cfg)
     r = TestClient(app).post("/api/visitors", headers={"X-Real-IP": "1.2.3.4"})
     assert r.status_code == 200 and r.json()["unique_visitors"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Live listener count (RADIO §9.1, §11, §14): heartbeating player_ids within
+# visitors.listener_timeout_s, exposed on /api/station/state. SimClock-driven.
+# --------------------------------------------------------------------------- #
+
+def _listener_app(tmp_env):
+    from pilgrim.config import SimClock
+    cfg, _, _ = tmp_env
+    app = create_app(cfg)
+    app.state.station.clock = SimClock()
+    return app, TestClient(app)
+
+
+def _beat(c, pid=None):
+    body = {"seq": 1, "media_id": 1, "type": "song"}
+    if pid is not None:
+        body["player_id"] = pid
+    assert c.post("/api/station/heartbeat", json=body).status_code == 200
+
+
+def test_listeners_count_distinct_players(tmp_env):
+    app, c = _listener_app(tmp_env)
+    assert c.get("/api/station/state").json()["listeners"] == 0
+    _beat(c, "a")
+    _beat(c, "a")
+    _beat(c, "b")
+    _beat(c)  # legacy heartbeat without player_id is not a listener
+    assert c.get("/api/station/state").json()["listeners"] == 2
+
+
+def test_listeners_expire_without_heartbeat(tmp_env):
+    app, c = _listener_app(tmp_env)
+    clock = app.state.station.clock
+    timeout = app.state.station.cfg.visitors.listener_timeout_s
+    _beat(c, "a")
+    _beat(c, "b")
+    clock.advance(timeout - 1)
+    _beat(c, "a")  # a keeps listening, b went quiet
+    clock.advance(2)
+    assert c.get("/api/station/state").json()["listeners"] == 1
+    clock.advance(timeout)
+    assert c.get("/api/station/state").json()["listeners"] == 0
+
+
+def test_listeners_capped_and_long_ids_ignored(tmp_env):
+    app, c = _listener_app(tmp_env)
+    app.state.station.cfg.visitors.max_listeners = 2
+    for pid in ("a", "b", "c", "x" * 65):
+        _beat(c, pid)
+    assert c.get("/api/station/state").json()["listeners"] == 2
+    _beat(c, "a")  # known IDs still refresh at the cap
+    assert c.get("/api/station/state").json()["listeners"] == 2

@@ -94,6 +94,13 @@ class Store:
                     ip TEXT PRIMARY KEY,
                     first_seen REAL NOT NULL DEFAULT (strftime('%s','now'))
                 );
+                -- DJ console (TUI.md §4): small key/value store for counters
+                -- like catalogue_revision (bumped when the song catalogue set
+                -- changes so the console can detect a stale page).
+                CREATE TABLE IF NOT EXISTS meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                );
                 DROP TABLE IF EXISTS visitor_signatures;
                 """
             )
@@ -141,9 +148,11 @@ class Store:
                  channels, role, 1 if evergreen else 0, 1 if emergency else 0,
                  1 if fresh else 0, expires_at, gravity,
                  json.dumps(meta) if meta else None, created_at or _now_iso()))
-            self._conn.commit()
             rid = cur.lastrowid
             assert rid is not None
+            if type_ == "song":
+                self._bump_catalogue()
+            self._conn.commit()
             return int(rid)
 
     def get_item(self, item_id: int) -> dict[str, Any] | None:
@@ -192,7 +201,85 @@ class Store:
             self._conn.execute(
                 "UPDATE items SET retired=1, meta_json=? WHERE id=?",
                 (json.dumps(meta), item_id))
+            if r["type"] == "song":
+                self._bump_catalogue()
             self._conn.commit()
+
+    def update_item_meta(self, item_id: int, meta: dict) -> None:
+        """Replace an item's meta (e.g. SFX overlays attached after storage)."""
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT type FROM items WHERE id=?", (item_id,)).fetchone()
+            self._conn.execute("UPDATE items SET meta_json=? WHERE id=?",
+                               (json.dumps(meta) if meta else None, item_id))
+            # catalogue membership (a ``song`` set member) can change via meta in
+            # future edit paths; keep the console's revision honest about the set
+            if r and r["type"] == "song":
+                self._bump_catalogue()
+            self._conn.commit()
+
+    # ------------------------------------------------------- DJ catalogue (11)
+    def _bump_catalogue(self) -> None:
+        """Increment catalogue_revision (under the store lock). Bumped only when
+        the **song** catalogue set changes (add/retire/edit), so the console can
+        detect a stale page and refetch (TUI.md §4)."""
+        self._conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('catalogue_revision','1') "
+            "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1")
+
+    def catalogue_revision(self) -> int:
+        with self._lock:
+            return self._catalogue_revision_locked()
+
+    def _catalogue_revision_locked(self) -> int:
+        r = self._conn.execute(
+            "SELECT value FROM meta WHERE key='catalogue_revision'").fetchone()
+        return int(r[0]) if r and r[0] else 0
+
+    def song_catalogue(self, q: str | None, sort: str, direction: str,
+                       cursor: tuple[str, str, int] | None,
+                       limit: int) -> tuple[list[dict[str, Any]],
+                                            tuple[str, str, int] | None, int]:
+        """All non-retired, non-emergency library songs (fresh AND already
+        aired; TUI.md §2). `sort` is allowlisted title|artist; the tie-break is
+        the other column then id, so sorting never reorders or duplicates rows
+        across pages. The cursor is (sort_value, other_value, id) of the last
+        row returned. Returns (rows, next_cursor, catalogue_revision); fetches
+        one extra row to know whether more remain. The only interpolated SQL
+        is the allowlisted column/direction pair (AGENTS §5)."""
+        if sort not in ("title", "artist") or direction not in ("asc", "desc"):
+            raise ValueError("invalid sort/direction")
+        order = "ASC" if direction == "asc" else "DESC"
+        other = "artist" if sort == "title" else "title"
+        where = ["type='song'", "retired=0", "emergency=0"]
+        args: list[Any] = []
+        if q:
+            esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{esc}%"
+            where.append("(title LIKE ? ESCAPE '\\' COLLATE NOCASE OR "
+                         "artist LIKE ? ESCAPE '\\' COLLATE NOCASE)")
+            args += [like, like]
+        if cursor:
+            p0, s0, i0 = cursor
+            op = ">" if direction == "asc" else "<"
+            where.append(
+                f"({sort} COLLATE NOCASE {op} ? OR ({sort} COLLATE NOCASE = ? AND "
+                f"({other} COLLATE NOCASE {op} ? OR ({other} COLLATE NOCASE = ? "
+                f"AND id {op} ?))))")
+            args += [p0, p0, s0, s0, i0]
+        sql = (f"SELECT id, title, artist, duration_s, fresh, last_aired_at "
+               f"FROM items WHERE {' AND '.join(where)} "
+               f"ORDER BY {sort} COLLATE NOCASE {order}, "
+               f"{other} COLLATE NOCASE {order}, id {order} LIMIT ?")
+        with self._lock:
+            rows = self._conn.execute(sql, args + [limit + 1]).fetchall()
+            rev = self._catalogue_revision_locked()
+        out = [dict(r) for r in rows[:limit]]
+        nxt = None
+        if len(rows) > limit:
+            last = rows[limit - 1]
+            nxt = (str(last[sort] or ""), str(last[other] or ""), int(last["id"]))
+        return out, nxt, rev
 
     def mark_aired(self, item_id: int) -> None:
         with self._lock:
@@ -258,6 +345,33 @@ class Store:
             rid = cur.lastrowid
             assert rid is not None
             return int(rid)
+
+    def append_program_at(self, *, item_id: int, type_: str, duration_s: float,
+                          seq: int) -> int:
+        """Insert a committed program row at an explicit seq (operator-phrase
+        head-of-queue splicing, scheduler.place_phrase). Caller must have shifted
+        later rows up (``shift_program_up_from``) so ``seq`` is free."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO program (seq, item_id, type, duration_s, committed_at) "
+                "VALUES (?,?,?,?,?)",
+                (seq, item_id, type_, duration_s, _now_iso()))
+            self._conn.commit()
+        return int(seq)
+
+    def shift_program_up_from(self, seq: int) -> None:
+        """Shift all committed rows with seq >= ``seq`` up by one, descending so
+        the AUTOINCREMENT primary key never collides. Used to open a slot for a
+        head-of-queue operator phrase (scheduler.place_phrase). Only future rows
+        move (already-aired seqs are below the splice point and untouched), so
+        airplay ledger references stay valid."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT seq FROM program WHERE seq >= ? ORDER BY seq DESC",
+                (seq,)).fetchall()
+            for (s,) in rows:
+                self._conn.execute("UPDATE program SET seq=? WHERE seq=?", (s + 1, s))
+            self._conn.commit()
 
     def program_after(self, seq: int) -> list[dict[str, Any]]:
         with self._lock:
@@ -328,12 +442,13 @@ class Store:
         return int(n)
 
     # -------------------------------------------------------------- requests
-    def add_request(self, text: str, cap: int, status: str = "queued",
+    def add_request(self, text: str, cap: int | None, status: str = "queued",
                     reason: str | None = None) -> dict[str, Any]:
         """Insert a listener request, then apply FIFO eviction. If more than
         `cap` are queued, the oldest QUEUED ones fall out (marked 'evicted').
         producing/ready/failed rows are never evicted (OVERHAUL 4.4).
-        Returns the stored row."""
+        `cap=None` disables eviction (the public line: every accepted request
+        gets made). Returns the stored row."""
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO requests (text, status, reason, created_at, updated_at) "
@@ -341,7 +456,8 @@ class Store:
                 (text, status, reason, _now_iso(), _now_iso()))
             self._conn.commit()
             rid = int(cur.lastrowid or 0)
-        self._evict_overflow(cap)
+        if cap is not None:
+            self._evict_overflow(cap)
         r = self.get_request(rid)
         assert r is not None
         return r
@@ -427,6 +543,15 @@ class Store:
                 (n, status, _now_iso(), request_id))
             self._conn.commit()
         return n
+
+    def requeue_request(self, request_id: int) -> None:
+        """Backend unreachable (transport error): back to `queued` WITHOUT
+        spending an attempt — an outage must not burn listener requests."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET status='queued', updated_at=? "
+                "WHERE id=? AND status='producing'", (_now_iso(), request_id))
+            self._conn.commit()
 
     def ready_request_songs(self) -> list[dict[str, Any]]:
         """`ready` requests, oldest first (their songs are ready to air)."""

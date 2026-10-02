@@ -1,4 +1,4 @@
-"""Sound-effect pipeline (SFX.md §1, §7.3): prompt -> Stable Audio SFX -> QC ->
+"""Sound-effect pipeline (SFX.md §1, §7.3): prompt -> MOSS-SoundEffect -> QC ->
 normalize -> FLAC `sfx` item.
 
 SFX items are never airable on their own: they ride on a host clip as a
@@ -44,9 +44,12 @@ class SfxClient:
         await self._client.aclose()
 
     async def generate(self, prompt: str, duration_s: float, seed: int | None) -> bytes:
+        s = self.cfg.sfx
         body: dict[str, object] = {
-            "model": self.cfg.sfx.model, "input": prompt, "duration": duration_s,
-            "steps": self.cfg.sfx.steps, "cfg_scale": self.cfg.sfx.cfg_scale,
+            "model": s.model, "input": prompt,
+            "seconds": min(duration_s, s.max_seconds),
+            "num_inference_steps": s.steps, "cfg_scale": s.cfg_scale,
+            "sigma_shift": s.sigma_shift, "negative_prompt": s.negative_prompt,
             "response_format": "wav"}
         if seed is not None:
             body["seed"] = seed

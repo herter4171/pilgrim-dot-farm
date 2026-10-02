@@ -1,5 +1,9 @@
 # SFX — Stable Audio 3 Small SFX (probe + design)
 
+> **2026-10-01: the SFX backend is now MOSS-SoundEffect v2.0 on `:8000`**
+> (`docs/backends.md` §7, MODELS.md §4). The probe findings below describe the
+> old Stable Audio model; the design (§3 onward) still applies.
+
 Investigation of the local SFX model on port **8500** and how Pilgrim Dot Farm
 should drop silly sound effects into its non-serious bits. Probe code + audio
 samples live in `sfx_probe/`. **Status: implemented (2026-10-01)** — §8 first

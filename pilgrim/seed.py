@@ -50,7 +50,12 @@ async def seed(cfg: Config, api_key: str) -> int:
                     media_dir=media_dir, api_key=api_key, rng=RNG(cfg.station.rng_seed),
                     news_pipeline=news, sfx=SfxPipeline(cfg, sfx_client, media_dir))
     made = 0
-    # stock stingers first so seeded talk can use them (SFX.md §8.1)
+    # words between songs from the first minute (RADIO §5.2, §8.3)
+    log.info("seeding emergency station IDs...")
+    n0 = len(db.list_items("station_id"))
+    await prod.ensure_station_ids()
+    made += len(db.list_items("station_id")) - n0
+    # stock stingers, so seeded talk can use them (SFX.md §8.1)
     log.info("seeding sfx stock pool...")
     made += await prod.ensure_sfx_pool()
     log.info("seeding commercials...")
@@ -69,6 +74,9 @@ async def seed(cfg: Config, api_key: str) -> int:
     n0 = db.count_fresh_of_type("field_report")
     await prod.ensure_field_reports()
     made += db.count_fresh_of_type("field_report") - n0
+    log.info("attaching sfx to seeded talk...")
+    while await prod.sfx_step():
+        pass
     log.info("seeding news bulletin...")
     n0 = db.count_fresh_of_type("news")
     await prod.ensure_news()

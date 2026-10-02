@@ -28,6 +28,9 @@ lint:
 sim:
 	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tests.sim_run
 
+tui:
+	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tui
+
 e2e:
 	cd pilgrim/tests/e2e && npx --yes playwright test
 

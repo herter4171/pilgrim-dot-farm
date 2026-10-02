@@ -7,7 +7,8 @@ full clean-slate reset (an explicit operator override of AGENTS rule 5, "never
 delete pilgrim/library/ files").
 
 ``--keep-songs`` instead retains the song inventory: song item rows and song
-media files survive, along with the listener request log; every other type
+media files survive, along with the listener request log and the emergency
+pack (RADIO §8.3, AGENTS rule 5); every other type
 (news, liner, dj_talk, commercial, intro, sfx, field_report) is removed from
 items and disk, and the committed program + airplay history are cleared.
 
@@ -49,9 +50,9 @@ def _dry_keep_songs(db_path: Path, library_dir: Path) -> dict[str, int]:
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         non_items = con.execute(
-            "SELECT COUNT(*) FROM items WHERE type NOT IN ('song')").fetchone()[0]
+            "SELECT COUNT(*) FROM items WHERE type NOT IN ('song') AND emergency=0").fetchone()[0]
         rows = con.execute(
-            "SELECT media_path FROM items WHERE type NOT IN ('song')").fetchall()
+            "SELECT media_path FROM items WHERE type NOT IN ('song') AND emergency=0").fetchall()
         files = sum(1 for (p,) in rows if Path(p).exists())
         extra = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                  for t in ("program", "airplay")}
@@ -89,8 +90,8 @@ def wipe_non_songs(db_path: Path, library_dir: Path) -> dict[str, int]:
     try:
         con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         doomed = [Path(p) for (p,) in con.execute(
-            "SELECT media_path FROM items WHERE type NOT IN ('song')").fetchall()]
-        cur = con.execute("DELETE FROM items WHERE type NOT IN ('song')")
+            "SELECT media_path FROM items WHERE type NOT IN ('song') AND emergency=0").fetchall()]
+        cur = con.execute("DELETE FROM items WHERE type NOT IN ('song') AND emergency=0")
         removed_items = cur.rowcount
         prog = con.execute("DELETE FROM program").rowcount
         air = con.execute("DELETE FROM airplay").rowcount
@@ -143,7 +144,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Would DELETE non-song files:     {counts['files']}")
         print(f"Would DELETE program rows:       {counts['program']}")
         print(f"Would DELETE airplay rows:       {counts['airplay']}")
-        print("KEEP: songs (items + files) and the request log.")
+        print("KEEP: songs (items + files), the emergency pack, and the request log.")
         if not args.apply:
             print("\nDry run — nothing changed. Re-run with --apply to wipe.")
             return

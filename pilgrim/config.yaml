@@ -15,7 +15,7 @@ hosts:
   # searxng is reached through the LiteLLM MCP server (web_search-searxng tool),
   # NOT a direct HTTP /search. This is the MCP Streamable-HTTP endpoint.
   searxng: http://localhost:4000/mcp
-  sfx: http://127.0.0.1:8500   # Stable Audio 3 Small SFX (SFX.md §1)
+  sfx: http://127.0.0.1:8000   # MOSS-SoundEffect v2.0 (docs/backends.md §7)
 
 models:
   news: qwen38
@@ -40,6 +40,7 @@ playout:
   weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08,
             field_report: 0.05}
   max_consecutive_non_song: 2
+  top_of_hour_window_s: 240      # a song gap this close to :00 leads with a callout (soft)
   news_min_spacing_s: 1200
   news_ttl_s: 2700
   commercial_min_spacing_s: 1800
@@ -64,12 +65,14 @@ inventory:
   liner_buckets_s: [3, 5, 10, 15, 30]
   dj_talk_min: 2
   field_reports_min: 1
+  station_ids_min: 3             # emergency station IDs (RADIO §8.3), never deleted
 
 songs:
   # duration_seconds sent to mlx-serve is max_duration_s; the model may end sooner.
   min_duration_s: 20    # sanity floor for songs (OVERHAUL 3.2)
   max_duration_s: 360   # sent as duration_seconds (1-360); also the song QC ceiling
   abrupt_fade_s: 2.5    # fade-out for songs with hard endings (OVERHAUL 3.2)
+  stock_gap_s: 600      # wait between stock song generations; listener requests skip it (§6.1)
   genres:
     synthwave: 1
     bluegrass: 1
@@ -89,7 +92,7 @@ news:
 # Listener request line. FIFO top-N with LLM moderation: clean/playful requests ok,
 # adult *allusion* ok, but explicit/crass/hate/illegal are rejected by the moderator.
 requests:
-  queue_cap: 10          # live queue size; the (cap+1)th oldest falls out
+  queue_cap: 10          # request-board display size (public line never evicts)
   max_length: 160        # chars allowed per request
   moderation_model: qwen38  # stricter reasoning model for the gate
   moderation_max_tokens: 4096  # cap for the moderation call (OVERHAUL 4.2)
@@ -102,6 +105,8 @@ visitors:
   # Peers whose X-Real-IP / first X-Forwarded-For we trust as the real client.
   # Verified deployment: nginx on loopback sets X-Real-IP to $remote_addr.
   trusted_proxies: [127.0.0.1, "::1"]
+  listener_timeout_s: 15   # live listener drops after this long without a heartbeat
+  max_listeners: 1000      # cap on tracked player IDs (player_id is client-supplied)
 
 audio:
   lufs: -16.0
@@ -111,7 +116,7 @@ audio:
   tts_join_gap_ms: 250   # pause inserted between trimmed Kokoro chunks
   delivery: flac
   silence_db: -50
-  max_words_per_s: 3.6   # speech-rate QC ceiling (truncation smell)
+  max_words_per_s: 4.2   # speech-rate QC ceiling (truncation smell); legit Kokoro reads hit 3.6-4.0
   min_words_per_s: 1.2   # speech-rate QC floor
 
 logging:
@@ -129,6 +134,24 @@ library:
   bible_dir: bible
   prompts_dir: prompts
 
+dj:                          # DJ console (TUI.md §7, RADIO §12)
+  enabled: true              # operator character + phrases armed
+  state_poll_s: 1.0          # cheap state poll interval (console)
+  backoff_max_s: 10          # reconnect backoff ceiling on disconnects
+  request_timeout_s: 5
+  cutover_deadline_s: 2.0    # acknowledged-skip budget for healthy clients (§5.5)
+  cutover_lead_s: 1.0        # client-notification lead before cutover activation
+  cutover_fade_s: 0.02       # anti-click fade at the cutover boundary (§9.2)
+  queue_max: 20
+  phrase_max_chars: 280
+  phrase_ttl_s: 7200         # unqueued ready phrase lifetime
+  job_timeout_s: 300
+  character:
+    id: dj_operator          # stable ID; name + voice chosen by the operator by ear (§10)
+    name: Jimmany            # operator-named DJ character
+    voice: am_adam           # reserved unused Kokoro voice (American male)
+    speed: 1.0
+
 talk:
   time_mention_ttl_s: 900   # DJ clips that mention the time expire after this
   field_reporter_name: Giles  # PLACEHOLDER until the user names him (SFX.md §10.1)
@@ -136,10 +159,12 @@ talk:
 # Sound effects overlaid on non-news talk (SFX.md). Never on news, by construction.
 sfx:
   enabled: true
-  model: stable-audio-3-small-sfx
-  steps: 8
+  model: moss-soundeffect-v2.0
+  steps: 100               # flow-match solver steps (server default)
   cfg_scale: 4.0
-  timeout_s: 60
+  sigma_shift: 5.0         # flow-match scheduler shift (server default)
+  negative_prompt: ""      # CFG negative prompt
+  timeout_s: 180           # ~38 s wall per 2 s clip at 100 steps
   stinger_gain: 0.5        # TBD by ear (SFX.md §10.3); applied at air time
   bed_gain: 0.15
   host_duck: 0.7           # host gain while a stinger plays (anti-clip)
@@ -150,32 +175,40 @@ sfx:
   max_per_window: 3        # at most 3 stingers ...
   window_s: 10             # ... in any 10 s of air
   max_stinger_s: 2.5
-  # Prompt lottery is real: only ear-approved cues render or air (SFX.md §6).
+  # Palette for MOSS-SoundEffect v2.0 (2026-10-01): all approved unheard at the
+  # operator's call; flip `approved: false` on any cue that sounds wrong by ear.
   # evergreen: rendered once into a recycled stock pool (fixed seed).
   # otherwise contextual: rendered fresh for the clip that calls for it.
+  # Stingers longer than max_stinger_s never air, so keep them <= 2.5 s.
   cues:
-    chicken: {prompt: "excited chicken clucking, barnyard commotion", duration_s: 2.0}
-    cow: {prompt: "a single slow cartoon cow moo, barnyard", duration_s: 2.0}
-    horse: {prompt: "cartoon horse neigh and snort", duration_s: 2.0}
-    pig: {prompt: "happy pig oinking oink oink, comic barnyard", duration_s: 2.0}
-    slide_whistle: {prompt: "comical slide whistle going up then down", duration_s: 2.0,
-                    seed: 24, evergreen: true}
-    # not yet approved by ear: re-roll and flip `approved` once one lands
-    rooster: {prompt: "rooster crowing cock-a-doodle-doo, morning farm", duration_s: 2.5,
-              approved: false}
-    sprinkler: {prompt: "garden sprinkler spraying water psst psst, irrigation",
-                duration_s: 2.0, approved: false}
-    wind_bed: {prompt: "gentle wind over an open grass field, soft outdoor ambience",
-               duration_s: 10.0, approved: false}
-    rimshot: {prompt: "snare drum rimshot ba dum tss, comedy beat", duration_s: 1.5,
-              seed: 22, evergreen: true, approved: false}
-    airhorn: {prompt: "loud airhorn blast, comedic party horn", duration_s: 1.5,
-              seed: 21, evergreen: true, approved: false}
-    record_scratch: {prompt: "turntable record scratch, DJ sound effect", duration_s: 1.5,
-                     seed: 23, evergreen: true, approved: false}
-    sad_trombone: {prompt: "sad trombone wah wah wah wah, comedic failure", duration_s: 2.5,
-                   seed: 25, evergreen: true, approved: false}
-    boing: {prompt: "cartoon spring boing, wonky bounce", duration_s: 1.5, seed: 26,
-            evergreen: true, approved: false}
-    applause: {prompt: "small tinny crowd applause burst", duration_s: 2.0, seed: 27,
-               evergreen: true, approved: false}
+    # -- barnyard animals (contextual: a fresh take each time) --
+    chicken: {prompt: "an excited chicken clucking rapidly, a quick burst of rhythmic clucks with one squawk, dry and crisp, close-miked barnyard recording", duration_s: 2.0}
+    cow: {prompt: "a single deep cartoon cow moo, slow sustained low moan with a soft vibrato tail, warm low-mid body, dry close-miked barn recording", duration_s: 2.0}
+    horse: {prompt: "a cartoon horse neighing once followed by a snort, rising whinny that warbles then a short snort, dry close recording", duration_s: 2.0}
+    pig: {prompt: "a happy pig oinking three short times, comic grunty squeal, nasal bright bursts that cut off quickly, close-miked barnyard recording", duration_s: 2.0}
+    rooster: {prompt: "a rooster crowing cock-a-doodle-doo, three rising syllables with a clear piercing held cry at the end, bright nasal tone, recorded outdoors in the morning", duration_s: 2.5}
+    sheep: {prompt: "a sheep baaing once, a drawn-out nasal bleat that wobbles up then drops, woolly low-mid tone, natural field recording, close mic", duration_s: 2.0}
+    goat: {prompt: "a goat bleating a short frantic maa twice, quick nasal bleat, dry and crisp, close-miked barn recording", duration_s: 2.0}
+    duck: {prompt: "a duck quacking a short series of comedic quacks, raspy nasal honk-like bursts, dry close-miked pondside recording", duration_s: 2.0}
+    turkey: {prompt: "a turkey gobbling loud bubbly gobbles, rapid low bubbling glottal bursts that pitch upward, comedic and nasal, close barnyard recording", duration_s: 2.0}
+    donkey: {prompt: "a donkey braying loudly once, harsh hee-haw that starts low and ends in a high wobbly cry, dry outdoor recording", duration_s: 2.5}
+    # -- field / farm props --
+    wind_bed: {prompt: "gentle wind blowing over an open grassy field, continuous soft outdoor ambience with slow undulating volume, a few distant rustles, wide field recording", duration_s: 10.0}
+    sprinkler: {prompt: "a garden irrigation sprinkler spraying water, rhythmic psst psst bursts as the head rotates, gentle water hiss between bursts, close outdoor recording", duration_s: 2.0, seed: 301, evergreen: true}
+    tractor: {prompt: "an old diesel tractor engine starting, brief starter motor whine then chugging coughs into a rough idle, deep low-frequency rumble, close exterior recording", duration_s: 2.5, seed: 311, evergreen: true}
+    hay_bale: {prompt: "a heavy hay bale dropped onto the ground, one soft dense muffled thud and a few straw rustles settling, close field recording", duration_s: 1.5, seed: 321, evergreen: true}
+    barn_door: {prompt: "a heavy wooden barn door slamming shut, hard impact with a short rattle of the latch, resonant low-mid boom, dry wooden body", duration_s: 2.0, seed: 331, evergreen: true}
+    gate_creak: {prompt: "a wooden farm gate swinging open slowly, a prolonged creaking hinge squeak then a soft thud as it stops, resonant wood, close-miked", duration_s: 2.5, seed: 341, evergreen: true}
+    cowbell: {prompt: "a metal cowbell clanking a few times, bright metallic ringing hits with a short tinny decay, close-miked", duration_s: 2.0, seed: 351, evergreen: true}
+    # -- silly-DJ stock (evergreen) --
+    rimshot: {prompt: "a comedy rimshot ba-dum-tss, two quick snare drum hits followed by a short cymbal crash, dry and crisp, close drum recording", duration_s: 1.5, seed: 101, evergreen: true}
+    airhorn: {prompt: "a comedic party airhorn blast, one long harsh buzzy honk that wobbles slightly downward, bright and loud, close recording", duration_s: 1.5, seed: 111, evergreen: true}
+    record_scratch: {prompt: "a DJ turntable record scratch, two sharp vinyl back-and-forth sweeps, bright crackly friction, close pickup", duration_s: 1.5, seed: 121, evergreen: true}
+    sad_trombone: {prompt: "a sad trombone wah-wah-wah-wah, four descending comedic trombone notes with a sleepy brassy tone, dry close studio recording", duration_s: 2.5, seed: 131, evergreen: true}
+    boing: {prompt: "a cartoon spring boing, a single fast bouncing metallic spring that wiggles up and down then slows to a stop, bright resonant tone, dry recording", duration_s: 1.5, seed: 141, evergreen: true}
+    applause: {prompt: "a short burst of small tinny crowd applause, many rapid handclaps with light room tone, slightly distant recording", duration_s: 2.0, seed: 151, evergreen: true}
+    slide_whistle: {prompt: "a cartoon slide whistle sliding up then down, smooth gliding pitch rise then fall, bright whirly tone, dry studio recording", duration_s: 2.0, seed: 24, evergreen: true}
+    cymbal_crash: {prompt: "a single bright cymbal crash, sharp metallic attack with a shimmering ring-out decay, close-miked drum kit", duration_s: 1.5, seed: 161, evergreen: true}
+    drum_roll: {prompt: "a comedic drum roll that builds then lands on a final cymbal and bass hit, rapid snare crescendo then a big crash, dry close drum recording", duration_s: 2.5, seed: 171, evergreen: true}
+    harp_gliss: {prompt: "a magical harp glissando, a quick upward sweep of plucked strings ending in a bright shimmer, delicate airy tone, close studio recording", duration_s: 2.0, seed: 181, evergreen: true}
+    kazoo: {prompt: "a kazoo playing a short comedic ta-daa tune, buzzy nasal plastic-reed sound, dry close studio recording", duration_s: 1.5, seed: 191, evergreen: true}

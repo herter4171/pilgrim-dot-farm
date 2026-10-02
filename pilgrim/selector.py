@@ -10,6 +10,10 @@ from pilgrim.config import RNG, Config
 # Segment types the selector chooses from.
 SEGMENTS = ["song", "dj_talk", "commercial_break", "liner", "news", "field_report"]
 
+# Voice segments that count as "words between songs" (a song's own intro also
+# counts; the scheduler folds that in). Commercials and news don't (§5.2).
+CALLOUT_SEGMENTS = frozenset({"liner", "dj_talk", "field_report"})
+
 # Segment types whose inventory must be present for the type to be drawable.
 INVENTORY_TYPES = {
     "song": "song",
@@ -40,6 +44,10 @@ class PlayoutState:
         self.news_gravity: str = "normal"
         self.pending_dj_targets: int = 0  # how many dj_talk items are pre-planned
         self.request_songs_ready: int = 0  # ready listener-request songs (OVERHAUL 4.7)
+        # no voice item since the last song, and the next song brings no intro
+        self.callout_pending: bool = False
+        # the next slot airs near the top of the hour (playout.top_of_hour_window_s)
+        self.near_top_of_hour: bool = False
 
 
 class Selector(Protocol):
@@ -85,12 +93,13 @@ class RandomSelector:
             available.discard("news")
             weights.pop("news", None)
 
-        # adjacency: dj_talk never next to dj_talk or news
+        # adjacency: dj_talk never next to dj_talk or news. An operator phrase
+        # counts as a voice bridge with the same news adjacency (§11, TUI.md §6).
         last = state.recent_types[-1] if state.recent_types else None
-        if last in ("dj_talk", "news"):
+        if last in ("dj_talk", "operator_phrase", "news"):
             available.discard("dj_talk")
             weights.pop("dj_talk", None)
-        if last == "dj_talk":  # ...in either order (§5.2)
+        if last in ("dj_talk", "operator_phrase"):  # ...in either order (§5.2)
             available.discard("news")
             weights.pop("news", None)
 
@@ -116,9 +125,17 @@ class RandomSelector:
             available.discard("liner")
             weights.pop("liner", None)
 
-        if last == "song" and state.recent_song_genres:
-            # genre no-repeat handled separately; nothing forcing here
-            pass
+        # Words between songs (§5.2): with no voice item since the last song,
+        # the slot before a forced song must be a callout. Near the top of the
+        # hour any pending callout comes first, like a real station's ID. Soft:
+        # if no callout is drawable, the scheduler's fallback supplies one.
+        if state.callout_pending:
+            callouts = available & CALLOUT_SEGMENTS
+            last_slot = non_song_run >= cfg.max_consecutive_non_song - 1
+            if callouts and (last_slot or state.near_top_of_hour):
+                available = callouts
+                if state.near_top_of_hour and "dj_talk" in callouts:
+                    weights["dj_talk"] = weights.get("dj_talk", 0.0) * 3  # time check
 
         if not available:
             # fallback chain (scheduler handles final emergency); pick anything with stock.

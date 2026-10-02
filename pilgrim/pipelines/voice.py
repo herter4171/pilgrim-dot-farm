@@ -4,6 +4,8 @@ from __future__ import annotations
 import io
 import logging
 import re
+import tempfile
+import time
 from pathlib import Path
 from typing import cast
 
@@ -260,41 +262,31 @@ class VoicePipeline:
         voice = self._voice_for(role)
         speed = self.cfg.voices.speed
         wav = await self.kokoro.synth(clean, voice, speed)
-        tmp = self.media_dir / "_render_tmp.wav"
-        tmp.write_bytes(wav)
-        data, sr = sf.read(str(tmp))
-        x = np.asarray(data, dtype=np.float32)
-        duration = float(len(x)) / sr
-        verdict = grade_audio(
-            x, sr, duration_s=duration, min_dur=0.5, max_dur=float("inf"),
-            kind="voice", max_gap_s=1.0, silence_db=self.cfg.audio.silence_db)
-        if not verdict.ok:
-            raise ValueError(f"voice QC failed: {verdict.reasons}")
-        # rough duration targeting: accept within ±40% since voice length is an estimate
-        if duration < 0.4 * target_s or duration > 2.2 * target_s:
-            raise ValueError(f"voice duration {duration}s outside tolerance of {target_s}s")
-        # normalize -> flac
-        dst = self.media_dir / f"{role}_{int(__import__('time').time()*1000)}.flac"
-        meta = normalize.normalize(tmp, dst, self.cfg)
-        tmp.unlink(missing_ok=True)
-        # speech-rate gate: re-run the duration tolerance on the NORMALIZED audio
-        # too (post-processing can shorten it), and reject truncated TTS — too many
-        # words for the audio length (OVERHAUL 2.1). dst is a file we just made.
-        norm_dur = cast(float, meta["duration_s"])
-        if norm_dur < 0.4 * target_s or norm_dur > 2.2 * target_s:
-            dst.unlink(missing_ok=True)
-            raise ValueError(f"voice duration {norm_dur}s outside tolerance of {target_s}s")
-        words = len(clean.split())
-        speech_s = max(norm_dur - self.cfg.audio.edge_pad_ms / 1000.0, 0.1)
-        words_per_s = words / speech_s
-        lo, hi = self.cfg.audio.min_words_per_s, self.cfg.audio.max_words_per_s
-        if not (lo <= words_per_s <= hi):
-            dst.unlink(missing_ok=True)
-            raise ValueError(
-                f"voice speech rate {words_per_s:.2f} w/s outside [{lo},{hi}] — truncated?")
-        return {"path": dst, "duration_s": norm_dur,
-                "sample_rate": meta["sample_rate"], "channels": meta["channels"],
-                "words": words, "words_per_s": words_per_s}
+        # staging-safe (TUI.md §6.4): the intermediate WAV never collides with a
+        # concurrent job; the final FLAC lands directly in the media dir.
+        with tempfile.TemporaryDirectory(prefix="radio_vp_") as td:
+            r = _finalize_voice(self.cfg, wav, clean, self.media_dir, role,
+                                Path(td), target_s=target_s)
+        return r
+
+    async def render_literal(self, text: str, voice: str, speed: float | None = None,
+                             target_s: float | None = None,
+                             out_dir: Path | None = None) -> dict:
+        """Render EXACT words (verbatim, never LLM-rewritten) as an operator
+        phrase (RADIO §11, TUI.md §6, §6.4). Runs the mandatory TTS cleanup
+        (idempotent on already-confirmed text), synthesizes with the given
+        voice/speed, and QC/normalizes into a fresh FLAC in a per-job staging
+        dir outside the library, publishing only after QC passes."""
+        clean = tts_cleanup(text)
+        speed = speed if speed is not None else self.cfg.voices.speed
+        wav = await self.kokoro.synth(clean, voice, speed)
+        out_dir = out_dir or self.media_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="radio_phrase_") as td:
+            r = _finalize_voice(self.cfg, wav, clean, out_dir, "operator_phrase",
+                                Path(td), target_s=target_s,
+                                min_dur=0.5, max_dur=float("inf"))
+        return {**r, "clean": clean, "voice": voice, "speed": speed}
 
     async def produce_item(self, role: str, target_s: float,
                            context: str | None = None) -> dict:
@@ -323,3 +315,46 @@ class VoicePipeline:
             **base, "words": len(copy.get("text", "").split()),
             "duration_s": rendered["duration_s"]})
         return item
+
+
+def _finalize_voice(cfg, wav: bytes, clean: str, out_dir: Path, tag: str,
+                    staging: Path, target_s: float | None = None,
+                    min_dur: float = 0.5, max_dur: float = float("inf")) -> dict:
+    """Shared post-synth voice path: write a staged WAV, QC it, two-pass
+    normalize to −16 LUFS / −1 dBTP FLAC in ``out_dir``, then a speech-rate gate
+    that rejects truncated TTS and removes the just-written bad FLAC (OVERHAUL
+    2.1, RADIO §6.3, §8.2). Pure-ish: raises ValueError on any rejection."""
+    tmp = staging / "_render_tmp.wav"
+    tmp.write_bytes(wav)
+    data, sr = sf.read(str(tmp))
+    x = np.asarray(data, dtype=np.float32)
+    duration = float(len(x)) / sr
+    verdict = grade_audio(
+        x, sr, duration_s=duration, min_dur=min_dur, max_dur=max_dur,
+        kind="voice", max_gap_s=1.0, silence_db=cfg.audio.silence_db)
+    if not verdict.ok:
+        raise ValueError(f"voice QC failed: {verdict.reasons}")
+    # rough duration targeting: accept within ±40% since voice length is an estimate
+    if target_s is not None and (duration < 0.4 * target_s or duration > 2.2 * target_s):
+        raise ValueError(f"voice duration {duration}s outside tolerance of {target_s}s")
+    # normalize -> flac
+    dst = out_dir / f"{tag}_{int(time.time()*1000)}.flac"
+    meta = normalize.normalize(tmp, dst, cfg)
+    # speech-rate gate: re-run the duration tolerance on the NORMALIZED audio
+    # too (post-processing can shorten it), and reject truncated TTS — too many
+    # words for the audio length (OVERHAUL 2.1). dst is a file we just made.
+    norm_dur = cast(float, meta["duration_s"])
+    if target_s is not None and (norm_dur < 0.4 * target_s or norm_dur > 2.2 * target_s):
+        dst.unlink(missing_ok=True)
+        raise ValueError(f"voice duration {norm_dur}s outside tolerance of {target_s}s")
+    words = len(clean.split())
+    speech_s = max(norm_dur - cfg.audio.edge_pad_ms / 1000.0, 0.1)
+    words_per_s = words / speech_s
+    lo, hi = cfg.audio.min_words_per_s, cfg.audio.max_words_per_s
+    if not (lo <= words_per_s <= hi):
+        dst.unlink(missing_ok=True)
+        raise ValueError(
+            f"voice speech rate {words_per_s:.2f} w/s outside [{lo},{hi}] — truncated?")
+    return {"path": dst, "duration_s": norm_dur,
+            "sample_rate": meta["sample_rate"], "channels": meta["channels"],
+            "words": words, "words_per_s": words_per_s}

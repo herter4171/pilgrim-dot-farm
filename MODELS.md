@@ -16,7 +16,7 @@ this file is the human-readable summary of *which model does what*.
 | **qwen38** (Qwen 3.8 27B) | `Qwen/Qwen3.8-27B` | News, song briefs, DJ talk, field reports | CUDA cluster | LiteLLM (`<LITELLM_HOST>`) |
 | **Ornith-1.5-9B** | `ornith-ai/Ornith-1.5-9B` | Commercials, liners | CUDA cluster | LiteLLM (`<LITELLM_HOST>`) |
 | **MiniMax Music 3** | `MiniMaxAI/MiniMax-Music3` | Song generation | **M5 Mac Studio** | mlx-serve (`127.0.0.1:11234`) |
-| **Stable Audio 3 Small SFX** | `stabilityai/stable-audio-3-small-sfx` | Sound-effect stingers | Local CPU box (`127.0.0.1:8500`) | OpenAI-compatible wrapper |
+| **MOSS-SoundEffect v2.0** | `OpenMOSS-Team/MOSS-SoundEffect-v2.0` | Sound-effect stingers and beds | Local CUDA host (`127.0.0.1:8000`) | OpenAI-compatible wrapper |
 | **Kokoro-82M** | `hexgrad/Kokoro-82M` | Voices and speech (TTS) | Kokoro host (`192.168.68.89:8001`) | `/tts` HTTP |
 | **DeepSeek-V4-Flash-0731** | `deepseek-ai/DeepSeek-V4-Flash-0731` | Development (coding assistant, not on air) | — | dev environment |
 
@@ -95,25 +95,24 @@ this file is the human-readable summary of *which model does what*.
 
 ---
 
-## 4. Stable Audio 3 Small SFX — sound effects
+## 4. MOSS-SoundEffect v2.0 — sound effects
 
-- **HF repo:** `stabilityai/stable-audio-3-small-sfx`
-- **Role (§4, §5, §SFX.md):** short sound-effect stingers layered *over* a host
-  clip (DJ talk, field reports, commercials, liners) as sidecar overlays.
-  **Never** on news — structurally impossible (§0 of SFX.md).
-- **Hardware / transport:** local CPU box at `127.0.0.1:8500`, an
-  OpenAI-compatible wrapper (no auth). `POST /v1/audio/speech`.
+- **HF repo:** [`OpenMOSS-Team/MOSS-SoundEffect-v2.0`](https://huggingface.co/OpenMOSS-Team/MOSS-SoundEffect-v2.0)
+  (replaced Stable Audio 3 Small SFX on 2026-10-01).
+- **Role (§4, §5, §SFX.md):** short sound-effect stingers and ambience beds
+  layered *over* a host clip (DJ talk, field reports, commercials, liners) as
+  sidecar overlays. **Never** on news — structurally impossible (§0 of SFX.md).
+- **Hardware / transport:** `127.0.0.1:8000`, an OpenAI-compatible wrapper
+  (no auth, CUDA, bf16). `POST /v1/audio/speech`. Shapes in
+  `docs/backends.md` §7.
 - **Notes:**
-  - **CPU-only**, so it never contends with the GPU LLMs or song generation.
-  - Deterministic: a fixed `seed` yields a byte-identical WAV, so stingers can
-    be re-rolled freely.
-  - Honors `duration` (0.5–380 s) exactly; `wav` is PCM s16le **44.1 kHz
-    stereo**, frequently peaking at full scale — always gain-stage when
-    layering (two full-scale sources sum to +6 dBFS).
-  - **~2–3 s fixed floor, then ≤~1.3–1.5× real time** past ~5 s. Fast enough to
-    render into inventory ahead of airing — **never at playout** (AGENTS rule 1).
-  - HF repo is gated; this local wrapper is the only practical spec. `steps=8`,
-    `cfg_scale≈4` reads crispest for cartoon onomatopoeia.
+  - Deterministic: a fixed `seed` yields a byte-identical WAV.
+  - `seconds` ≤ 30 per request; `wav` is PCM s16le **48 kHz mono**, peaking
+    near full scale — always gain-stage when layering.
+  - Cost is per solver step, nearly flat in clip length: ~0.2 s/step
+    (100 steps ≈ 38 s for a 2 s clip; 50 steps ≈ 20 s for 2 s *or* 10 s).
+    Much slower than the old model per stinger, so render into inventory
+    ahead of air — **never at playout** (AGENTS rule 1).
 
 ---
 
@@ -145,11 +144,11 @@ this file is the human-readable summary of *which model does what*.
 | **M5 Mac Studio** | Apple Silicon | MiniMax Music 3 (song generation) via mlx-serve; also hosts the station server |
 | **Two DGX Spark units** | CUDA | LiteLLM-backed LLMs (`qwen38`, `Ornith-1.5-9B`) |
 | **4070 Ti** | CUDA | `Ornith-1.5-9B` (per RADIO.md §2) |
-| **Local CPU box** | CPU | Stable Audio 3 Small SFX wrapper (`:8500`) |
+| **Local CUDA host** | CUDA | MOSS-SoundEffect v2.0 wrapper (`:8000`) |
 
 Design intent (§2): text/LLM work and GPU audio generation are kept on
 separate hosts so they never compete for VRAM. Song generation lives entirely
-on the M5; the SFX model is CPU-only and cheap.
+on the M5; the SFX model runs on its own local CUDA host.
 
 > **⚠️ Hardware naming conflict — needs confirmation.** RADIO.md §2 names the
 > LLM hosts "5090" (`qwen38`) and "4070 Ti" (`ornith`). This file follows the

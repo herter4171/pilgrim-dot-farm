@@ -88,8 +88,8 @@ class FakeMinimax:
 
 
 class FakeSfx:
-    """Fake of SfxClient (SFX.md §7.5): a 44.1 kHz stereo tone of exactly the
-    requested duration, like the real wrapper. `fail=True` injects outages."""
+    """Fake of SfxClient (SFX.md §7.5): a 48 kHz mono tone of exactly the
+    requested duration, like MOSS-SoundEffect (docs/backends.md §7). `fail=True` injects outages."""
 
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
@@ -99,7 +99,7 @@ class FakeSfx:
         self.calls.append((prompt, duration_s, seed))
         if self.fail:
             raise RuntimeError("fake sfx down")
-        return tone_wav(duration_s, 44100, 2, freq=880.0)
+        return tone_wav(duration_s, 48000, 1, freq=880.0)
 
     async def close(self) -> None:
         pass

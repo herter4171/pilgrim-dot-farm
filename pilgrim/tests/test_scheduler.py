@@ -499,3 +499,79 @@ def test_weighting_never_breaks_spacing_floor(cfg, tmp_env):
     for _ in range(50):
         pick = sched._pick_stock_song(sched.build_state())[0]["item_id"]
         assert pick == old, "weighting picked a song inside the spacing floor"
+
+
+# ------------------------------------------------- words between songs (§5.2)
+_CALLOUTS = {"liner", "station_id", "dj_talk", "field_report", "intro"}
+
+
+def _bare_song_gaps(prog) -> int:
+    bare = 0
+    since: list[str] | None = None
+    for _seq, typ, _dur, _g, _id in prog:
+        if typ == "song":
+            if since is not None and not _CALLOUTS & set(since):
+                bare += 1
+            since = []
+        elif since is not None:
+            since.append(typ)
+    return bare
+
+
+def _emergency_ids(store, n=3):
+    return [store.add_item(type_="station_id", media_path=f"/tmp/id{i}.flac",
+                           duration_s=4.0, evergreen=True, emergency=True)
+            for i in range(n)]
+
+
+def test_every_song_gap_has_words(cfg, tmp_env):
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=80, n_liner=20, n_com=20, n_dj=10)
+    prog = run_program(cfg, store, seed=5, hours=12)
+    assert _bare_song_gaps(prog) == 0
+
+
+def test_cold_start_uses_emergency_station_ids(cfg, tmp_env):
+    """Right after a wipe: songs and spots but no liners or talk yet. The
+    emergency station IDs still put words between every pair of songs."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=60, n_liner=0, n_com=10, n_dj=0)
+    ids = set(_emergency_ids(store))
+    prog = run_program(cfg, store, seed=2, hours=4,
+                       min_coverage=cfg.playout.filler_horizon_s)
+    assert _bare_song_gaps(prog) == 0
+    assert any(item_id in ids for *_, item_id in prog)
+
+
+def test_emergency_ids_stay_out_while_liners_exist(cfg, tmp_env):
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=60, n_liner=15, n_com=10, n_dj=0)
+    ids = set(_emergency_ids(store))
+    prog = run_program(cfg, store, seed=4, hours=6)
+    assert _bare_song_gaps(prog) == 0
+    assert not any(item_id in ids for *_, item_id in prog)
+
+
+def test_selector_forces_words_in_the_last_slot(cfg):
+    from pilgrim.selector import PlayoutState
+    sel = RandomSelector(RNG(1), cfg)
+    for seed in range(30):
+        sel.rng = RNG(seed)
+        st = PlayoutState(cfg)
+        st.available.update(song=True, commercial_break=True, liner=True)
+        st.recent_types = ["song", "commercial"]  # one slot left before a song
+        st.callout_pending = True
+        assert sel.choose_next(st) == "liner"
+
+
+def test_top_of_hour_leads_with_words(cfg):
+    from pilgrim.selector import PlayoutState
+    sel = RandomSelector(RNG(1), cfg)
+    for seed in range(30):
+        sel.rng = RNG(seed)
+        st = PlayoutState(cfg)
+        st.available.update(song=True, commercial_break=True, liner=True, dj_talk=True)
+        st.recent_types = ["song"]
+        st.callout_pending = True
+        st.near_top_of_hour = True
+        assert sel.choose_next(st) in ("liner", "dj_talk")
