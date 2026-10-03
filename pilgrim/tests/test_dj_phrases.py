@@ -143,6 +143,116 @@ def test_place_phrase_deferred_adjacent_dj_talk(cfg, tmp_env):
     assert sched.place_phrase(pid, 10.0) is None
 
 
+def test_place_phrase_tail_only_never_mid_window(cfg, tmp_env):
+    """Client-visibility rule (TUI.md §9.2): legacy clients merge fetched rows
+    by seq only, so a splice inside rows they already fetched is never heard
+    (and shifted rows can double-play). Placement is therefore tail-only: a
+    mid-window legal slot must NOT be used, and no later row's seq may shift."""
+    _, store, _ = tmp_env
+    sched = _scheduler(cfg, store)
+    a = store.add_item(type_="song", media_path="a.flac", duration_s=120)
+    b = store.add_item(type_="song", media_path="b.flac", duration_s=120)
+    c = store.add_item(type_="liner", media_path="c.flac", duration_s=5)
+    store.append_program(a, "song", 120.0)   # on air
+    store.append_program(b, "song", 120.0)   # old code spliced here (A|B)
+    store.append_program(c, "liner", 5.0)    # committed tail
+    sched._rebuild_program()
+    seq_b = store.program_since(1)[1]["seq"]
+    pid = store.add_item(type_="operator_phrase", media_path="p.flac",
+                         duration_s=10, role="operator_phrase")
+    placed = sched.place_phrase(pid, 10.0)
+    # legal mid-window slot (after on-air song A) is refused; tail (liner C)
+    # is used instead — a brand-new seq every client receives on next fetch
+    assert placed is not None
+    assert placed == seq_b + 2  # after C, i.e. max+1, not between A and B
+    rows = store.program_since(1)
+    assert rows[1]["seq"] == seq_b and rows[1]["item_id"] == b  # no shift
+    assert rows[-1]["item_id"] == pid and rows[-1]["type"] == "operator_phrase"
+
+
+def test_place_phrase_deferred_when_tail_illegal(cfg, tmp_env):
+    """Tail pred is news -> held (None); after a legal tail commits, placed."""
+    _, store, _ = tmp_env
+    sched = _scheduler(cfg, store)
+    a = store.add_item(type_="song", media_path="a.flac", duration_s=120)
+    n = store.add_item(type_="news", media_path="n.flac", duration_s=30,
+                       gravity="normal")
+    ln = store.add_item(type_="liner", media_path="l.flac", duration_s=5)
+    store.append_program(a, "song", 120.0)
+    store.append_program(n, "news", 30.0)    # committed tail: news
+    sched._rebuild_program()
+    pid = store.add_item(type_="operator_phrase", media_path="p.flac",
+                         duration_s=10, role="operator_phrase")
+    assert sched.place_phrase(pid, 10.0) is None  # tail pred = news
+    store.append_program(ln, "liner", 5.0)         # window extends
+    sched._rebuild_program()
+    assert sched.place_phrase(pid, 10.0) is not None
+
+
+def test_phrase_job_aired_when_playhead_passes(cfg, tmp_env):
+    """Lifecycle fix: the job reaches the declared terminal 'aired' state when
+    its committed row falls behind the playhead (previously nothing ever
+    transitioned past 'scheduled')."""
+    from pilgrim.config import SimClock
+    _, store, tmp_path = tmp_env
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(2), cfg), clock, RNG(2))
+    s = make_item(cfg, store, "song", 30.0)
+    store.append_program(s, "song", 30.0)
+    sched._rebuild_program()
+    m = _manager(cfg, store, sched, scratch=tmp_path / "library",
+                 kokoro=FakeKokoro())
+    v = m.validate(cfg.dj.character.id, TEXT)
+    sid = m.submit("cmd-aired", cfg.dj.character.id, TEXT, v["text_hash"])
+    asyncio.run(m.process_ready())
+    assert m.get(sid["job_id"])["status"] == "ready"
+    sched.on_phrase_aired = m.mark_item_aired  # server.py wiring
+    sched._drain_phrases()
+    job = m.get(sid["job_id"])
+    assert job["status"] == "scheduled"
+    # the committed window keeps extending: add more program so the phrase
+    # row is not the last row (the playhead saturates at the program end)
+    s2 = make_item(cfg, store, "song", 60.0)
+    store.append_program(s2, "song", 60.0)
+    sched._rebuild_program()
+    cfg.playout.window_trim_keep_s = 5
+    # playhead passes song (30s) + phrase (10s) + the keep window
+    clock.advance(30 + 10 + 60 + 6)
+    sched._trim()
+    assert m.get(sid["job_id"])["status"] == "aired"
+
+
+def test_phrase_job_expires_from_ready_and_scheduled(cfg, tmp_env):
+    """A TTL-passed job must never sit 'ready'/'scheduled' forever — a placed
+    row that was pruned unheard (client never saw it) still expires."""
+    import time as _time
+    _, store, tmp_path = tmp_env
+    sched = _scheduler(cfg, store)
+    s = make_item(cfg, store, "song", 30.0)
+    store.append_program(s, "song", 30.0)
+    sched._rebuild_program()
+    m = _manager(cfg, store, sched, scratch=tmp_path / "library",
+                 kokoro=FakeKokoro())
+    v = m.validate(cfg.dj.character.id, TEXT)
+    # placed ('scheduled'), then TTL passes: still expires, no ghost forever
+    sid = m.submit("cmd-ttl", cfg.dj.character.id, TEXT, v["text_hash"])
+    asyncio.run(m.process_ready())
+    jid = sid["job_id"]
+    assert m.get(jid)["status"] == "ready"
+    sched._drain_phrases()
+    assert m.get(jid)["status"] == "scheduled"
+    m._jobs[jid]["expires_at"] = _time.time() - 1
+    assert m.get(jid)["status"] == "expired"
+    assert m.get(jid)["failure_reason"] == "phrase TTL expired before it aired"
+    # unplaced 'ready' (tail now blocked by the placed phrase): also expires
+    sid2 = m.submit("cmd-ttl2", cfg.dj.character.id, TEXT, v["text_hash"])
+    asyncio.run(m.process_ready())
+    jid2 = sid2["job_id"]
+    assert m.get(jid2)["status"] == "ready"
+    m._jobs[jid2]["expires_at"] = _time.time() - 1
+    assert m.get(jid2)["status"] == "expired"
+
+
 # ----------------------------------------------------------------------- API
 def test_character_and_phrases_api(dj_env, monkeypatch):
     cfg, _, _ = dj_env

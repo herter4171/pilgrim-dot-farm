@@ -188,9 +188,33 @@ class PhraseManager:
             return False
 
     def _expire(self, job: dict) -> None:
-        if job["status"] in ("queued", "rendering") and self._expired(job):
+        # Every non-terminal pre-air state can outlive its TTL: a placed row
+        # can be pruned unheard (client never saw it), so 'scheduled' must
+        # expire too — a job may never sit 'scheduled' past its TTL.
+        if job["status"] in ("queued", "rendering", "ready", "scheduled") \
+                and self._expired(job):
             job["status"] = "expired"
             job["failure_reason"] = "phrase TTL expired before it aired"
+
+    def mark_item_aired(self, item_id: int) -> None:
+        """Scheduler hook (wired in server.py): the committed phrase row for
+        ``item_id`` fell fully behind the playhead — it aired. Terminal for
+        the job: one-shot by construction, never replayed (rule 10). Defensive
+        by design: a lookup miss or an already-terminal job is a no-op, and no
+        exception may escape into the scheduler's trim path."""
+        try:
+            job_id = self._by_item.get(item_id)
+            job = self._jobs.get(job_id) if job_id is not None else None
+            if job is None or job["status"] not in ("scheduled", "ready"):
+                # 'scheduled' is the normal pre-air state after placement;
+                # 'ready' covers the (rare) case the row airs before the
+                # lazy scheduled-flip in get(). Terminal states never reopen.
+                return
+            job["status"] = "aired"
+            log.info("phrase.aired", extra={
+                "job_id": job_id, "item_id": item_id})
+        except Exception as e:  # noqa: BLE001 - playout must never fail here
+            log.warning("phrase.aired_mark_failed: %s", e)
 
     def _expired(self, job: dict) -> bool:
         return (job.get("expires_at") or float("inf")) < time.time()

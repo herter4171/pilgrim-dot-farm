@@ -11,6 +11,7 @@ import logging
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from pilgrim.config import RNG, Clock, Config
@@ -46,19 +47,26 @@ def _parse_iso(iso: str | None) -> float | None:
 
 class Scheduler:
     def __init__(self, cfg: Config, store: Store, selector: Selector,
-                 clock: Clock, rng: RNG, epoch: str | None = None) -> None:
+                 clock: Clock, rng: RNG, epoch: str | None = None,
+                 on_phrase_aired: Callable[[int], None] | None = None) -> None:
         self.cfg = cfg
         self.store = store
         self.selector = selector
         self.clock = clock
         self.rng = rng
+        # Phrase lifecycle hook (RADIO §5.5; TUI.md §6): called with an item_id
+        # when its committed phrase row falls fully behind the playhead (it
+        # aired). The PhraseManager marks the job terminal. Optional so tests
+        # and the simulation can build a scheduler without a phrase manager.
+        self.on_phrase_aired = on_phrase_aired
         # Station identity for the DJ protocol (TUI.md §5, RADIO §5.3): the
         # `epoch` changes on restart; the programme `revision` bumps whenever
         # already-published future playback changes (cutovers bump it, §5.5).
         self.epoch = epoch or uuid.uuid4().hex[:12]
         self.revision = 1
-        # Operator phrases ready to air (RADIO §11): placed at the earliest legal
-        # boundary by the run loop; none wait on production (AGENTS rule 1).
+        # Operator phrases ready to air (RADIO §11): the run loop appends them
+        # at the committed tail when it is legal; none wait on production
+        # (AGENTS rule 1).
         self.pending_phrases: deque[dict] = deque()
         self._start_wall = time.monotonic()
         # Song air history is PERSISTED on items (last_aired_at, play_count) so a
@@ -402,6 +410,15 @@ class Scheduler:
         for i, r in enumerate(self._items):
             if self._cum[i] + r["duration_s"] < cutoff:
                 threshold_seq = r["seq"]
+                # Phrase lifecycle: a committed phrase row that fell fully
+                # behind the playhead has aired — mark its job terminal
+                # (RADIO §5.5; TUI.md §6). Defensive: a callback error must
+                # not break playout or the trim itself.
+                if r["type"] == "operator_phrase" and self.on_phrase_aired:
+                    try:
+                        self.on_phrase_aired(r["item_id"])
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("phrase.aired_mark_failed: %s", e)
             else:
                 break
         if threshold_seq is not None:
@@ -648,10 +665,11 @@ class Scheduler:
 
     # ------------------------------------------------------- operator phrases
     def _drain_phrases(self) -> None:
-        """Place ready operator phrases at the earliest legal boundary. A phrase
-        with no legal slot right now (e.g. the committed tail is news) stays
-        queued and is retried next cycle — a boundary always clears in time.
-        Runs inside the scheduler loop, so program edits stay serialized."""
+        """Append ready operator phrases at the committed tail (head-of-queue).
+        A phrase whose tail predecessor is dj_talk/news/another phrase stays
+        queued and is retried next cycle — the window keeps extending, so a
+        legal tail always clears in time. Runs inside the scheduler loop, so
+        program edits stay serialized."""
         while self.pending_phrases:
             ph = self.pending_phrases[0]
             seq = self.place_phrase(ph["item_id"], ph["duration_s"])
@@ -663,32 +681,26 @@ class Scheduler:
                 "revision": self.revision})
 
     def place_phrase(self, item_id: int, duration_s: float) -> int | None:
-        """Splice an operator phrase into the committed program at the earliest
-        slot strictly after the on-air item that is not adjacent to
-        dj_talk/news/another phrase (RADIO §11; TUI.md §6). Works head-of-queue:
-        later already-committed items shift up by one. Bumps the programme
-        revision because already-published future playback changes (§5.5).
-        Returns the new seq, or None if no legal slot exists in the committed
-        window (caller defers)."""
-        seq_now, _ = self.on_air()
+        """Append an operator phrase at the TAIL of the committed program.
+
+        Legacy clients merge fetched rows by seq only (TUI.md §9.2 — the
+        revision-aware browser has not landed): a splice inside rows they
+        already fetched is silently lost — the phrase never airs — and the
+        shifted rows can even be played twice. A tail append is always a brand
+        new seq that every client receives on its next fetch, so the tail is
+        the only placement a listener is guaranteed to hear.
+
+        The tail is legal when its predecessor is not dj_talk / news / another
+        phrase (RADIO §11; TUI.md §6). Otherwise the caller defers and retries
+        next cycle; the committed window keeps extending, so a legal tail
+        appears within a commit cycle. Bumps the programme revision because
+        already-published future playback changes (§5.5). Returns the new seq,
+        or None if the tail is not legal.
+        """
         items = self._items
-        start = 0 if seq_now is None else next(
-            (i for i, r in enumerate(items) if r["seq"] > seq_now), len(items))
-        j = start
-        while j <= len(items):
-            pred = items[j - 1]["type"] if j > 0 else None
-            succ = items[j]["type"] if j < len(items) else None
-            if (pred in PHRASE_ADJACENT) or (succ in PHRASE_ADJACENT):
-                j += 1
-                continue
-            break
-        if j > len(items):
-            return None  # no legal slot inside the committed window
-        if j < len(items):
-            new_seq = items[j]["seq"]
-            self.store.shift_program_up_from(new_seq)
-        else:
-            new_seq = (self.store.max_seq() or 0) + 1
+        if items and items[-1]["type"] in PHRASE_ADJACENT:
+            return None
+        new_seq = (self.store.max_seq() or 0) + 1
         self.store.append_program_at(
             item_id=item_id, type_="operator_phrase", duration_s=duration_s,
             seq=new_seq)

@@ -71,6 +71,12 @@ class Station:
                                    epoch=self.epoch)
         self.phrases = PhraseManager(cfg, self.db, self.voice, self.media_dir,
                                      scheduler=self.scheduler)
+        # Close the phrase lifecycle (RADIO §5.5; TUI.md §6): when a committed
+        # phrase row falls behind the playhead the scheduler marks the job
+        # 'aired'; the TTL in PhraseManager._expire handles the never-placed
+        # rest. (Hook set post-construction: phrases needs the scheduler,
+        # which cannot yet see phrases.)
+        self.scheduler.on_phrase_aired = self.phrases.mark_item_aired
         self.producer = Producer(
             cfg, self.db, self.llm, self.kokoro, self.voice, self.songs,
             self.clock, prompts=_load_prompts(cfg), media_dir=self.media_dir,

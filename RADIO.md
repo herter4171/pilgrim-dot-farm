@@ -322,7 +322,14 @@ listeners. They ride the same scheduler commit loop with stricter provenance:
   song or this character's ready phrase) is revalidated at insertion time; v1
   shows a clear reason when spacing/gravity makes it ineligible, and has no
   implicit repeat override. Existing ready listener requests keep their
-  relative order.
+  relative order. **Operator phrases** are the exception to "earliest
+  boundary": they are appended at the **tail of the committed window** (a
+  brand-new seq, never a mid-window splice) because legacy clients merge
+  fetched rows by seq only — a splice inside rows already fetched is silently
+  lost, and shifted rows can double-play (TUI.md §6, §9.2). If the tail's
+  predecessor is dj_talk/news/another phrase the phrase defers and retries
+  next scheduler cycle. The job reaches `aired` when its row falls behind the
+  playhead, and expires from any pre-air state when its TTL passes.
 - **What edits preserve.** Non-song runs, spacing, gravity, news expiry/
   seriousness adjacency, genre repeats and words-between-songs are revalidated
   against the **new** timeline after compression. Unstarted intro/song blocks

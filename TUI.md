@@ -350,7 +350,12 @@ Production sequence:
    programme and never block existing production or playout.
 
 Proposed lifecycle: `queued → rendering → ready → scheduled → aired`, with
-`failed`, `expired`, and `skipped` terminal outcomes. A cancelled scheduled
+`failed`, `expired`, and `skipped` terminal outcomes. `scheduled` flips on
+placement in the committed program; `aired` is marked by the scheduler when
+the phrase row falls fully behind the playhead, and a TTL-passed job expires
+from ANY pre-air state (`queued`/`rendering`/`ready`/`scheduled`) — a placed
+row that was never heard still expires; it may never sit `scheduled` past its
+TTL. A cancelled scheduled
 phrase becomes terminal; it is not replayed automatically. Keep unqueued
 ready phrases for a configurable short TTL; recheck expiry at predicted air
 time. Record original text, cleaned text, character, voice, QC result, media
