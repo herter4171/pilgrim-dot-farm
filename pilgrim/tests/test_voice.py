@@ -132,3 +132,38 @@ def test_synth_trims_chunk_edges_so_joins_are_not_dropouts(cfg):
     x, sr = sf.read(io.BytesIO(wav))
     assert not check_internal_dropout(x, sr, max_gap_s=1.0, silence_db=cfg.audio.silence_db)
     asyncio.run(kc.close())
+
+# ---------------------------------------------------------------------------
+# tts_cleanup number-to-words (RADIO §6.3). Regression: the tens-word index was
+# off by 2, so every 20-99 was spoken wrong (91 -> "seventy one", 30 ->
+# "nineteen", 42 -> "twenty two"), which garbles usernames like jwhh91 on air.
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_numbers_spoken_correctly():
+    from pilgrim.pipelines.voice import tts_cleanup
+    cases = {
+        "1": "one",
+        "19": "nineteen",
+        "21": "twenty one",
+        "30": "thirty",
+        "42": "forty two",
+        "91": "ninety one",
+        "99": "ninety nine",
+    }
+    for n, want in cases.items():
+        got = tts_cleanup(f"it is number {n}")
+        assert got == f"it is number {want}", (n, got)
+
+
+def test_cleanup_username_digits_not_mangled():
+    """A username's trailing two-digit number must spell its real value."""
+    from pilgrim.pipelines.voice import tts_cleanup
+    got = tts_cleanup("upvote posts by reddit user jwhh91")
+    assert got == "upvote posts by reddit user jwhhninety one", got
+
+
+def test_cleanup_large_numbers_left_alone():
+    from pilgrim.pipelines.voice import tts_cleanup
+    got = tts_cleanup("there are 1234 songs")
+    assert got == "there are 1234 songs", got

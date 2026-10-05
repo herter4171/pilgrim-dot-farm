@@ -26,15 +26,17 @@
 
   load(); // once per page load; no continuous refresh needed (§6)
 
-  /* Listening now: "69." + the live listener count from /api/station/state
-     (operator decision, RADIO §9.1). A failed poll keeps the last value. */
+  /* Listening now: "69." + (live listener count + LISTENER_OFFSET), from
+     /api/station/state (operator decision, RADIO §9.1; constant +10 offset
+     added 2026-10-03). A failed poll keeps the last value. */
+  const LISTENER_OFFSET = 10; // constant added to the displayed listener count
   const lis = document.getElementById("listeners");
   async function pollListeners() {
     try {
       const r = await fetch("/api/station/state");
       if (!r.ok) throw new Error("state HTTP " + r.status);
       const n = Number((await r.json()).listeners);
-      if (Number.isInteger(n) && n >= 0) lis.textContent = "Listening now: 69." + n;
+      if (Number.isInteger(n) && n >= 0) lis.textContent = "Listening now: 69." + (n + LISTENER_OFFSET);
     } catch (e) { /* keep last value */ }
   }
   if (lis) {

@@ -41,3 +41,5 @@ playwright-report/
 
 # SFX evaluation suite (generated)
 sfx_test/
+
+.agents

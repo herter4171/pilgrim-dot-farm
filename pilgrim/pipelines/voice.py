@@ -71,8 +71,8 @@ def _numbers(text: str) -> str:
         if 20 <= v < 100:
             t, o = divmod(v, 10)
             if o:
-                return _WORDS[18 + t - 2] + " " + _WORDS[o]
-            return _WORDS[18 + t - 2]
+                return _WORDS[18 + t] + " " + _WORDS[o]
+            return _WORDS[18 + t]
         return n
     return re.sub(r"(?<!\d)\d{1,2}(?!\d)", repl, text)
 
