@@ -619,11 +619,37 @@ just over local."
 
 `make e2e` must keep working unchanged.
 
-### 7.3 `make split-smoke`: scripted checks through the edge
+### 7.3 `make split-smoke`: scripted checks through the edge, against the REAL public app
+
+**Why a second origin:** `pilgrim/tests/e2e/e2e_server.py` reimplements the
+endpoints in its own FastAPI app. It does not run `server.py`, so it has no
+Step 2 cache headers, no Step 3 trusted-proxy logic, and no
+`proxy_headers=False`. It is fine for the Playwright gap test (7.2, which
+tests the browser path through nginx), but the smoke checks must hit the
+real code.
+
+Add `pilgrim/tests/e2e/split_origin.py`: a runner that
+- builds a temp library and temp `station.db` (same approach as the
+  `tmp_env` fixture in `pilgrim/tests/`), seeds a few short rendered items
+  (reuse `tone_wav` and the existing fakes), and points every backend host at
+  an unroutable or closed address, or injects the in-process fakes. **No real
+  backend is ever contacted** (AGENTS hard rule 2).
+- serves `create_public_app(cfg, station)` with uvicorn on a free port,
+  with `proxy_headers=False` and `visitors.trusted_proxies: [127.0.0.1, "::1"]`.
+- runs the scheduler, so `program` has rows. It does **not** start the
+  producer, song, news, or SFX loops.
+- offers a test-only way to read back the last registered visitor IP (for
+  check 8). Do this through a test-only route on a **separate** tiny app or a
+  temp-db query from the smoke script, **never** a route on
+  `create_public_app`.
+
+`make split-smoke` starts `split_origin`, renders the gateway with
+`extra-none.conf` (prod allowlist, no `/api/test/`), starts the local compose
+stack, runs the checks, and tears everything down (`trap`).
 
 A script (`pilgrim/deploy/local/smoke.sh`, or Python with httpx under
-`pilgrim/tools/`) run against the same running stack. Every check prints
-PASS/FAIL, and the script exits non-zero on any FAIL:
+`pilgrim/tools/`) runs the checks. Every check prints PASS/FAIL, and the
+script exits non-zero on any FAIL:
 
 1. `GET /edge-health` → 200 `ok`.
 2. `GET /` → 200, the body contains the station `index.html`.
@@ -637,10 +663,10 @@ PASS/FAIL, and the script exits non-zero on any FAIL:
 7. `POST /api/requests` returns no Python 500 and no nginx error page. The
    status is from the origin.
 8. Spoofing: `POST /api/visitors` with header `X-Real-IP: 203.0.113.9`. The
-   origin must record `127.0.0.1`, **not** `203.0.113.9`. Check through the
-   e2e server's test report, or a temp-db query if the e2e server exposes
-   none. Add the minimal test-only hook to `e2e_server.py` if needed.
-9. Off air: stop the e2e server. `GET /api/health` → 200 with
+   origin must record `127.0.0.1`, **not** `203.0.113.9`. Read it back with
+   `split_origin`'s test-only readback (see above), never through a public
+   route.
+9. Off air: stop `split_origin`. `GET /api/health` → 200 with
    `on_air: false`. `GET /api/station/program` → 503 with `off_air: true`.
    `GET /edge-health` → still 200. Start it again. Within 5 s,
    `/api/health` shows `on_air: true` again.
