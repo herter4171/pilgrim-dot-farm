@@ -140,23 +140,37 @@ docker compose --env-file /secure/pilgrim-gateway.env up -d
 
 The env file (outside the repo, mode 600) holds `TS_AUTHKEY=...`.
 
-Make one request through the gateway from another tailnet machine (or via
-MagicDNS on the M5):
+Do **not** try this from another tailnet machine: the policy lets only
+`tag:radio-edge` reach the origin, so the operator's own devices cannot. All
+of these run on the M5.
+
+First prove the gateway path from inside its container (the nginx image has
+busybox `wget`):
 
 ```sh
-curl -s https://pilgrim-origin.<tailnet>.ts.net/api/health
-curl -s -X POST https://pilgrim-origin.<tailnet>.ts.net/api/visitors
+docker exec pilgrim-gateway wget -qO- http://127.0.0.1:8090/api/health
+docker exec pilgrim-gateway wget -qO- http://127.0.0.1:8090/api/admin/dj/state
 ```
 
-Read the origin's peer address from the visitor row or the access log:
+The first must answer through the gateway; the second must be 404.
+
+Then read the peer address the origin sees. The upstream keepalive holds the
+connection open, so `lsof` shows it:
 
 ```sh
-sqlite3 ~/radio/pilgrim/station.db "select ip from visitor_ips"
+lsof -nP -iTCP:5000 -sTCP:ESTABLISHED
 ```
 
-Put that address (or its CIDR) in `visitors.trusted_proxies` and restart the
-station. With the gateway trusted, a request through it records the edge's
-`X-Real-IP`, not the gateway peer.
+The uvicorn access line in `~/Library/Logs/pilgrim/station.out.log` /
+`.err.log` shows the same peer.
+
+Do **not** use `visitor_ips` here: with no `X-Real-IP` from an edge, a trusted
+peer records nothing.
+
+Decide `visitors.trusted_proxies`:
+- If the peer is `127.0.0.1`, the default (`[127.0.0.1, "::1"]`) is already
+  right.
+- Otherwise add exactly that address as a `/32`, never a Docker range.
 
 ## 7. Edges
 
