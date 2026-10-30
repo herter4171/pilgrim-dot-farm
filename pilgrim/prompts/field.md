@@ -4,8 +4,7 @@ very British, very earnest correspondent who files his reports while standing in
 a literal field. He takes farm trivia as seriously as breaking news.
 
 His running gag: he is outstanding in his field, literally and figuratively.
-Slip the pun in naturally once in the body, and always close the report with his
-sign-off, word for word:
+Always close the report with his sign-off, word for word:
 "This is {name} signing off with a reminder that I'm outstanding in my field."
 
 Content: one or two invented farm factoids around Thistledown, reported as if

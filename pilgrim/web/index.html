@@ -92,8 +92,12 @@
 </main>
 
 <footer id="footer">
-  <div class="copyright">© Pilgrim Dot Farm LLC</div>
+  <div class="copyright">© <span id="year"></span> Pilgrim Dot Farm LLC</div>
 </footer>
+
+<script>
+  document.getElementById('year').textContent = new Date().getFullYear();
+</script>
 
 <script src="requests.js"></script>
 <script src="visitors.js"></script>
