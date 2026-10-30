@@ -586,8 +586,12 @@ the station name.
   a failed poll keeps the last value (operator decision, 2026-10-02).
 - **OFF AIR**: when an edge cannot reach the origin it answers `/api/health`
   with `{"on_air": false, "off_air": true}`; the page shows the OFF AIR
-  banner and disables PLAY. While playing, already-buffered audio finishes;
-  the client stops refilling and then stops and shows OFF AIR. The request
+  banner and disables PLAY. While playing, health alone never stops audio;
+  the program/media fetches decide. A 503 with `off_air: true` is definitive:
+  already-buffered audio plays to its end, then the client stops and shows
+  OFF AIR. Any other failure (network blip, other status, decode error) is
+  retried every 1 s and ends the session only after 10 s of consecutive
+  failures with the buffer dry (`OFFAIR_GRACE_MS`); any success resets it. The request
   line shows `The station is off the air. Requests are closed.` on a 503 with
   `off_air: true`, and a failed GET keeps the last rendered board.
 

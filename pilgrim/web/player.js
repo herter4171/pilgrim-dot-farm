@@ -28,6 +28,13 @@
   let epoch = null, revision = null;
   let programToken = 0;      // invalidates in-flight fillWindow work on reset
   let stateTimer = null;
+  // Off air (SPLIT_PLAN §4). The edge/gateway answer 503 {off_air:true} when
+  // the origin is unreachable: definitive, stop once buffered audio runs out.
+  // Any other failure (network blip, other status, decode error) only ends
+  // the session after this long with the buffer dry; any success resets it.
+  const OFFAIR_GRACE_MS = 10000;
+  let dryFailSince = null;   // performance.now() of the first dry failure
+  class OffAirError extends Error {}
 
   /* Cross-tab single-listener guard: if this page is open in more than one
      tab/browser, we want audio ONLY when the user presses PLAY, and only from
@@ -102,12 +109,22 @@
     if (r != null) params.set("revision", r);
     const q = params.toString();
     const res = await fetch("/api/station/program" + (q ? "?" + q : ""));
-    if (!res.ok) throw new Error("program HTTP " + res.status);
+    if (!res.ok) await throwHttp("program", res);
     return res.json();
+  }
+  /* A 503 whose JSON says off_air is the edge/gateway reporting the origin
+     unreachable (SPLIT_PLAN §4); anything else is an ordinary failure. */
+  async function throwHttp(what, res) {
+    if (res.status === 503) {
+      let body = null;
+      try { body = await res.json(); } catch (e) { /* not JSON */ }
+      if (body && body.off_air === true) throw new OffAirError(what + ": off air");
+    }
+    throw new Error(what + " HTTP " + res.status);
   }
   async function decode(mediaId, audioContext) {
     const r = await fetch("/api/media/" + mediaId);
-    if (!r.ok) throw new Error("media HTTP " + r.status);
+    if (!r.ok) await throwHttp("media", r);
     return await audioContext.decodeAudioData(await r.arrayBuffer());
   }
 
@@ -297,12 +314,20 @@
           scheduleCursor++;
           advancePlayhead();
         }
+        dryFailSince = null;   // a full pass succeeded
       } catch (e) {
         if (!playing || token !== session || ptoken !== programToken) return;
         setStatus("waiting for audio: " + e.message);
         if (ctx.currentTime >= nextWhen - 0.05) {
-          // Buffer is dry and the origin cannot be reached: off air.
-          stop(); showOffAir(); return;
+          // Buffer is dry. Off air is definitive; anything else gets a grace
+          // window so one blip / 404 / bad decode never ends the session.
+          const now = performance.now();
+          if (dryFailSince === null) dryFailSince = now;
+          if (e instanceof OffAirError || now - dryFailSince >= OFFAIR_GRACE_MS) {
+            stop(); showOffAir(); return;
+          }
+        } else {
+          dryFailSince = null;  // still playing buffered audio
         }
         // Back off; a dead origin must not be hammered every 100 ms.
         await new Promise(r => setTimeout(r, 1000));
@@ -405,6 +430,7 @@
     if (playing) return;
     playing = true;
     myStartAt = Date.now();
+    dryFailSince = null;
     const token = ++session;
     setState("buffering"); btn.textContent = "■  STOP"; btn.classList.add("stop");
 
