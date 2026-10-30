@@ -189,6 +189,10 @@ class Visitors(BaseModel):
     deployment path is nginx setting `X-Real-IP` on loopback). The raw
     canonical IP is stored for dedupe.
 
+    `trusted_proxies` entries are single IPs or CIDRs, parsed into networks at
+    validation. Assigning `trusted_proxies` on an existing instance does NOT
+    re-parse them; build a new `Visitors(...)` instead.
+
     The live listener count is in-memory: a player counts while its heartbeats
     (every 5 s) arrive within `listener_timeout_s`; `max_listeners` bounds the
     tracked player IDs."""

@@ -60,3 +60,30 @@ def test_ipv4_mapped_peer_is_canonicalized(tmp_env):
 def test_invalid_trusted_proxy_fails_config_load():
     with pytest.raises(ValidationError, match="not a valid"):
         Visitors(trusted_proxies=["not-an-ip"])
+
+
+def test_rate_limit_keys_on_resolved_client_ip(tmp_env):
+    """Behind a trusted proxy every request shares one socket peer; the
+    request-line limit must still be per client (SPLIT_PLAN §3.2)."""
+    cfg, _, _ = tmp_env
+    cfg.requests.per_client_per_10min = 1
+    c, _ = _client(tmp_env, ["127.0.0.1"], ("127.0.0.1", 1234))
+    # A URL is pre-filtered (no LLM call) but still counts toward the limit.
+    body = {"text": "play http://example.com"}
+    assert c.post("/api/requests", json=body,
+                  headers={"X-Real-IP": "198.51.100.1"}).status_code == 200
+    assert c.post("/api/requests", json=body,
+                  headers={"X-Real-IP": "198.51.100.1"}).status_code == 429
+    assert c.post("/api/requests", json=body,
+                  headers={"X-Real-IP": "198.51.100.2"}).status_code == 200
+
+
+def test_listeners_disable_uvicorn_proxy_headers(tmp_env):
+    """uvicorn must not make its own trust decision (SPLIT_PLAN §3.2)."""
+    from pilgrim.server import create_admin_app, listener_configs
+    cfg, _, _ = tmp_env
+    station = build_station(cfg)
+    configs = listener_configs(cfg, create_public_app(cfg, station),
+                               create_admin_app(cfg, station))
+    assert [c.proxy_headers for c in configs] == [False, False]
+    assert [c.port for c in configs] == [cfg.station.port, cfg.station.admin_port]

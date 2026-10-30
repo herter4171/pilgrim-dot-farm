@@ -972,7 +972,12 @@ the edge always overwrites whatever the client sent:
 
 A peer is trusted only when its canonical address is inside a configured
 network. From an untrusted peer both headers are ignored and the socket peer
-address is used, so a spoofable header cannot reach the counter. When no
+address is used, so a spoofable header cannot reach the counter. This is
+the **only** trust decision: both uvicorn listeners run with
+`proxy_headers=False`, so uvicorn never rewrites the peer from
+`X-Forwarded-For` first. The request-line rate limit (4.3) keys on the same
+resolved client IP, not the socket peer (behind the gateway every request
+shares one peer). When no
 canonical identity can be resolved, registration is skipped and the current
 count is returned; the counter never breaks radio/requests. Raw IPs are
 personal data: no retention/pruning policy is implemented yet.

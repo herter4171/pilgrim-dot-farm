@@ -411,17 +411,21 @@ def build_station(cfg: Config) -> Station:
     return Station(cfg, api_key)
 
 
-def _make_rate_limiter(cfg: Config) -> Callable[[Request], bool]:
-    """Per-app request-line rate limit: client.host -> timestamps (4.3).
+def _make_rate_limiter(station: Station) -> Callable[[Request], bool]:
+    """Per-app request-line rate limit: client IP -> timestamps (4.3).
 
-    Each app gets its own window, so a client hitting both listeners is
-    limited per listener. The public app is the only one a browser reaches.
+    Keyed on the resolved client IP (`Station._client_ip`, the trusted-proxy
+    chain, SPLIT_PLAN §3.2), not the socket peer: behind the gateway every
+    request arrives from the same peer, which would put the whole station in
+    one bucket. Each app gets its own window; the public app is the only one
+    a browser reaches.
     """
     _rate: dict[str, deque[float]] = {}
-    limit = cfg.requests.per_client_per_10min
+    limit = station.cfg.requests.per_client_per_10min
 
     def _rate_limited(request: Request) -> bool:
-        host = request.client.host if request.client else "unknown"
+        host = (station._client_ip(request)
+                or (request.client.host if request.client else None) or "unknown")
         now = time.monotonic()
         window = 10 * 60.0
         dq = _rate.setdefault(host, deque(maxlen=limit))
@@ -466,7 +470,7 @@ def _add_public_routes(app: FastAPI, station: Station,
     routes are added separately by `_add_admin_routes`.
     """
     cfg = station.cfg
-    _rate_limited = _make_rate_limiter(cfg)
+    _rate_limited = _make_rate_limiter(station)
 
     @app.get("/api/health")
     async def health_endpoint():
@@ -774,6 +778,26 @@ async def _post_start(station: Station) -> None:
     await station.startup()
 
 
+def listener_configs(cfg: Config, public: FastAPI, admin: FastAPI) -> list:
+    """uvicorn configs for the public and admin listeners (SPLIT_PLAN §1.2).
+
+    `proxy_headers=False`: uvicorn would otherwise rewrite `request.client`
+    from `X-Forwarded-For` for loopback peers before our code runs, a second
+    trust decision beside `visitors.trusted_proxies` (SPLIT_PLAN §3.2).
+    `log_config=None`: uvicorn's lines propagate to the root JSON logger
+    (AGENTS §5).
+    """
+    import uvicorn
+
+    return [
+        uvicorn.Config(public, host=cfg.station.host, port=cfg.station.port,
+                       log_config=None, proxy_headers=False),
+        uvicorn.Config(admin, host=cfg.station.admin_host,
+                       port=cfg.station.admin_port, log_config=None,
+                       proxy_headers=False),
+    ]
+
+
 def main() -> None:
     import signal
 
@@ -797,12 +821,7 @@ def main() -> None:
         def capture_signals(self) -> Iterator[None]:
             yield
 
-    servers = [
-        _Server(uvicorn.Config(public, host=cfg.station.host,
-                               port=cfg.station.port, log_config=None)),
-        _Server(uvicorn.Config(admin, host=cfg.station.admin_host,
-                               port=cfg.station.admin_port, log_config=None)),
-    ]
+    servers = [_Server(c) for c in listener_configs(cfg, public, admin)]
 
     def _shutdown(signum: int, frame: object) -> None:
         for s in servers:
