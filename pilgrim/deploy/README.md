@@ -119,7 +119,10 @@ The env file (outside the repo) contains `TS_AUTHKEY=...`. Image tags are
 pinned in `gateway/compose.yaml` (`tailscale/tailscale:v1.104.4`,
 `nginx:1.30.6-alpine`); do not use `latest`.
 
-The gateway's request-line rate limit applies to **POST** only: `GET
+Gateway rate limits are **per edge**: production serve overwrites
+`X-Forwarded-For` with the connecting tailnet peer IP, so the zones key on
+that edge identity (locally they fall back to `$remote_addr` because there is
+no serve hop). The request-line limit applies to **POST** only: `GET
 /api/requests` (the board refresh) is never throttled.
 
 ### `gateway/serve.json`

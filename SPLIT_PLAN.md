@@ -521,8 +521,12 @@ Placeholders: `@@GATEWAY_LISTEN@@`, `@@ORIGIN_PUBLIC_HOSTPORT@@`,
    `gateway/extra-none.conf` (empty) and `gateway/extra-e2e.conf`.
 5. Pass the edge's IP: `proxy_set_header X-Real-IP $http_x_real_ip;`,
    `proxy_set_header X-Forwarded-For $http_x_real_ip;`.
-6. Rate limits keyed by `$remote_addr` (protects the M5 if an edge is
-   compromised and floods it with fake client IPs):
+6. Rate limits **per edge**, not per socket peer. In production every
+   gateway connection arrives from serve on `127.0.0.1`, so keying on
+   `$remote_addr` would put all edges in one bucket. Serve overwrites
+   `X-Forwarded-For` with the connecting tailnet peer IP, so map it to
+   `$edge_key` (falling back to `$remote_addr` locally), and key all three
+   zones on it; `req_line` maps `POST` to `$edge_key` (GET is unlimited).
    `POST /api/requests` 1 r/s burst 20; `POST /api/visitors` 10 r/s burst 100;
    `POST /api/station/heartbeat` 200 r/s burst 1000. Return 429 when exceeded.
    Put these numbers in comments as starting points for the operator to tune.

@@ -21,18 +21,27 @@ http {
     sendfile      on;
     keepalive_timeout 65;
 
-    # 6. Rate limits keyed by the connecting edge ($remote_addr). These protect
-    # the M5 if an edge is compromised and floods it with fake client IPs.
-    # Starting points; the operator tunes them.
+    # 6. Rate limits are per EDGE, not per socket peer. In production every
+    # gateway connection arrives from Tailscale serve on 127.0.0.1, so
+    # $remote_addr would put all edges in one bucket: one compromised edge
+    # could spend the heartbeat/visitor/request budget for every other edge.
+    # Serve's addProxyForwardedHeaders overwrites X-Forwarded-For with the
+    # connecting tailnet peer IP, so that value is the edge's identity and
+    # cannot be forged by the edge's clients. The local stack has no serve
+    # hop: fall back to $remote_addr.
+    map $http_x_forwarded_for $edge_key {
+        ""      $remote_addr;
+        default $http_x_forwarded_for;
+    }
     # The request-line limit applies to POST (submissions) only: the GET
     # board refresh shares the location, and an empty key is never limited.
     map $request_method $req_line_key {
-        POST    $binary_remote_addr;
+        POST    $edge_key;
         default "";
     }
     limit_req_zone $req_line_key zone=req_line:10m rate=1r/s;
-    limit_req_zone $remote_addr zone=visitors:10m rate=10r/s;
-    limit_req_zone $remote_addr zone=heartbeat:10m rate=200r/s;
+    limit_req_zone $edge_key zone=visitors:10m rate=10r/s;
+    limit_req_zone $edge_key zone=heartbeat:10m rate=200r/s;
     limit_req_status 429;
     limit_req_log_level warn;
 
