@@ -98,7 +98,6 @@ http {
             proxy_cache edge_micro;
             proxy_cache_key "$request_method$request_uri";
             proxy_cache_lock on;
-            proxy_cache_use_stale updating;
             add_header X-Cache-Status $upstream_cache_status always;
             error_page 502 504 = @offair;
         }
@@ -117,7 +116,6 @@ http {
             proxy_cache edge_micro;
             proxy_cache_key "$request_method$request_uri";
             proxy_cache_lock on;
-            proxy_cache_use_stale updating;
             add_header X-Cache-Status $upstream_cache_status always;
             error_page 502 504 = @offair;
         }
@@ -140,7 +138,6 @@ http {
             proxy_cache_methods GET HEAD;
             proxy_cache_key "$request_method$request_uri";
             proxy_cache_lock on;
-            proxy_cache_use_stale updating;
             add_header X-Cache-Status $upstream_cache_status always;
             error_page 502 = @offair;
             error_page 504 = @request_timeout;
@@ -161,7 +158,6 @@ http {
             proxy_cache edge_micro;
             proxy_cache_key "$request_method$request_uri";
             proxy_cache_lock on;
-            proxy_cache_use_stale updating;
             add_header X-Cache-Status $upstream_cache_status always;
             error_page 502 504 = @offair_health;
         }

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Pilgrim Dot Farm — origin launchd unit (SPLIT_PLAN §8.5).
+
+     Install as ~/Library/LaunchAgents/farm.pilgrim.station.plist.
+     The wrapper /usr/local/bin/pilgrim-station (outside the repo) sources the
+     secret env file and execs `python -m pilgrim.server`. Tokens are NEVER in
+     this plist: plists under LaunchAgents can be world-readable.
+
+     KeepAlive restarts the station after a crash; RunAtLoad starts it at login.
+     StandardOut/Error go outside the repo so logs survive a repo reset. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>farm.pilgrim.station</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/pilgrim-station</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/pilgrim/radio</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/pilgrim/Library/Logs/pilgrim/station.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/pilgrim/Library/Logs/pilgrim/station.err.log</string>
+</dict>
+</plist>

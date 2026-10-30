@@ -78,7 +78,21 @@ def _poll_on_air(client: httpx.Client, want: bool, timeout: float) -> bool:
     return False
 
 
-def run(edge_url: str, gateway_url: str, state: Path) -> int:
+def _poll_program_off_air(client: httpx.Client, timeout: float) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            r = client.get("/api/station/program")
+            if r.status_code == 503 and r.json().get("off_air") is True:
+                return True
+        except (httpx.HTTPError, ValueError):
+            pass
+        time.sleep(0.2)
+    return False
+
+
+def run(edge_url: str, gateway_url: str, state: Path,
+        max_check: int = 10) -> int:
     edge = httpx.Client(base_url=edge_url, timeout=15.0)
     gateway = httpx.Client(base_url=gateway_url, timeout=15.0)
     results: list[bool] = []
@@ -169,7 +183,15 @@ def run(edge_url: str, gateway_url: str, state: Path) -> int:
     record("5 program 200 with epoch", check_5)
     record("6 media MISS->HIT, identical bytes, immutable", check_6)
     record("7 POST /api/requests returns origin JSON", check_7)
-    record("8 spoofed X-Real-IP ignored (origin sees 127.0.0.1)", check_8)
+    if max_check >= 8:
+        record("8 spoofed X-Real-IP ignored (origin sees 127.0.0.1)", check_8)
+
+    if max_check < 9:
+        edge.close()
+        gateway.close()
+        failed = results.count(False)
+        print(f"\n{len(results) - failed} passed, {failed} failed")
+        return 1 if failed else 0
 
     origin_port = int((state / "origin_port").read_text())
 
@@ -177,11 +199,15 @@ def run(edge_url: str, gateway_url: str, state: Path) -> int:
         pid = int((state / "origin.pid").read_text())
         os.kill(pid, signal.SIGTERM)
         _wait_port_closed(origin_port)
-        time.sleep(2.5)  # let the edge micro-cache expire (health 2 s, program 1 s)
+        # Poll past the edge micro-cache TTL instead of a fixed sleep; nginx
+        # rounds max-age=2 up to about 3 s.
+        off = _poll_on_air(edge, False, 5.0)
+        p503 = _poll_program_off_air(edge, 5.0)
         h = edge.get("/api/health")
         p = edge.get("/api/station/program")
         e = edge.get("/edge-health")
-        ok = (h.status_code == 200 and h.json().get("on_air") is False
+        ok = (off and p503
+              and h.status_code == 200 and h.json().get("on_air") is False
               and p.status_code == 503 and p.json().get("off_air") is True
               and e.status_code == 200)
         return ok, (f"health={h.status_code}/{h.json().get('on_air')} "
@@ -198,11 +224,13 @@ def run(edge_url: str, gateway_url: str, state: Path) -> int:
 
     def check_9_gateway():
         _compose(state, "stop", "gateway")
-        time.sleep(2.5)
+        off = _poll_on_air(edge, False, 5.0)
+        p503 = _poll_program_off_air(edge, 5.0)
         h = edge.get("/api/health")
         p = edge.get("/api/station/program")
         e = edge.get("/edge-health")
-        ok = (h.status_code == 200 and h.json().get("on_air") is False
+        ok = (off and p503
+              and h.status_code == 200 and h.json().get("on_air") is False
               and p.status_code == 503 and p.json().get("off_air") is True
               and e.status_code == 200)
         return ok, (f"health={h.status_code}/{h.json().get('on_air')} "
@@ -227,7 +255,8 @@ def run(edge_url: str, gateway_url: str, state: Path) -> int:
         n429 = codes.count(429)
         return n429 >= 1, f"429s={n429} statuses={sorted(set(codes))}"
 
-    record("10 gateway rate limit returns 429", check_10)
+    if max_check >= 10:
+        record("10 gateway rate limit returns 429", check_10)
 
     edge.close()
     gateway.close()
@@ -242,8 +271,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gateway", default="http://127.0.0.1:18090")
     ap.add_argument("--state-dir", type=Path,
                     default=Path("/tmp/pilgrim-split-local"))
+    ap.add_argument("--max-check", type=int, default=10, choices=range(1, 11),
+                    metavar="1..10",
+                    help="stop after this check (production cutover uses 7)")
     args = ap.parse_args(argv)
-    return run(args.edge, args.gateway, args.state_dir)
+    return run(args.edge, args.gateway, args.state_dir, args.max_check)
 
 
 if __name__ == "__main__":
