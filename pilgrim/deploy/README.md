@@ -82,7 +82,53 @@ its cache directories.
 
 `TS_AUTHKEY` (the Tailscale auth key for the gateway sidecar) comes from an env
 file outside the repo. Never commit it. It is documented here and in the root
-`README.md` (Step 6).
+`README.md`.
+
+## Gateway (origin, M5)
+
+Render the gateway config with production values:
+
+```sh
+.venv/bin/python -m pilgrim.tools.render_deploy \
+  pilgrim/deploy/gateway/nginx.conf.template gateway/nginx.conf \
+  --set GATEWAY_LISTEN=127.0.0.1:8090 \
+  --set ORIGIN_PUBLIC_HOSTPORT=host.docker.internal:5000 \
+  --set TRUSTED_EDGE_NET=127.0.0.1 \
+  --set EXTRA_ALLOW_INCLUDE=/etc/nginx/extra-none.conf
+```
+
+`host.docker.internal:5000` is the origin's public listener as seen from the
+gateway container. **The operator verifies this on the M5** and replaces it if
+Docker Desktop exposes the host differently. `127.0.0.1` for
+`TRUSTED_EDGE_NET` is correct in production because Tailscale serve proxies
+from inside the container's network namespace; the real edge filtering is the
+tailnet policy.
+
+Run it:
+
+```sh
+docker compose --env-file /secure/pilgrim-gateway.env up -d
+```
+
+The env file (outside the repo) contains `TS_AUTHKEY=...`. Image tags are
+pinned in `gateway/compose.yaml` (`tailscale/tailscale:v1.104.4`,
+`nginx:1.27-alpine`); do not use `latest`.
+
+### `gateway/serve.json`
+
+The serve config format was verified against `tailscale/tailscale:v1.104.4`
+(`containerboot` replaces `${TS_CERT_DOMAIN}` with the node FQDN; see
+`ipn.ServeConfig`). If the operator changes the pinned image tag, re-check the
+format against that release's docs:
+<https://tailscale.com/kb/1589/tailscale-services-configuration-file>.
+
+## Tailnet policy
+
+`tailscale/policy.example.hujson` is a fragment, not a full policy. Merge it
+and walk its checklist: remove any default allow-all rule, confirm no other
+grant matches the two tags, enroll edges as ephemeral/pre-approved/tagged with
+keys from SSM, forbid exit nodes and subnet routes on edges, and enable HTTPS
+certificates + MagicDNS. The origin tag must never be a grant source.
 
 ## Do not
 

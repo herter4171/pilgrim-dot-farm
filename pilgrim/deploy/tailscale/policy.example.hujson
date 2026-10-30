@@ -1,0 +1,27 @@
+// Tailnet policy FRAGMENT for the Pilgrim split (SPLIT_PLAN §6.4).
+// Merge this into the tailnet policy file; it is not a complete policy.
+// HuJSON allows comments and trailing commas.
+//
+// Operator checklist before applying:
+//   [ ] Remove any default allow-all rule (e.g. {"src":["*"],"dst":["*"]}).
+//   [ ] Check that no other grant/ACL matches tag:radio-edge or
+//       tag:radio-origin beyond the one below.
+//   [ ] Edges join as ephemeral, pre-approved, tagged nodes; their auth keys
+//       come from SSM, never baked into the AMI.
+//   [ ] No exit node or subnet routes are advertised by tag:radio-edge.
+//   [ ] HTTPS certificates and MagicDNS are enabled for the tailnet
+//       (required for the gateway's :443 serve config and MagicDNS name).
+//   [ ] tag:radio-origin is never a grant source: the gateway initiates
+//       nothing toward edges.
+{
+  "tagOwners": {
+    "tag:radio-edge":   ["autogroup:admin"],
+    "tag:radio-origin": ["autogroup:admin"],
+  },
+  "grants": [
+    // Edges may reach only the origin gateway, only on 443. Nothing else.
+    {"src": ["tag:radio-edge"], "dst": ["tag:radio-origin"], "ip": ["tcp:443"]},
+    // No grant has tag:radio-origin as src: the gateway initiates nothing.
+    // No edge-to-edge grant. No SSH rules for either tag.
+  ],
+}

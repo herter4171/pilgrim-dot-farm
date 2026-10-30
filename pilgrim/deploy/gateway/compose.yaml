@@ -1,0 +1,58 @@
+# Pilgrim Dot Farm — ORIGIN GATEWAY compose (SPLIT_PLAN §6.2)
+#
+# Operator runs this on the M5. Two services share one network namespace:
+#   tailscale: joins the tailnet as an ephemeral-ish origin node and serves
+#              HTTPS :443 on the tailnet, proxying to 127.0.0.1:8090.
+#   gateway:   the allowlist nginx, listening on 127.0.0.1:8090 inside that
+#              same namespace. No published ports.
+#
+# Before `docker compose up`:
+#   1. Render nginx.conf (see pilgrim/deploy/README.md) into this directory.
+#   2. Put TS_AUTHKEY in an env file OUTSIDE the repo, e.g.:
+#        docker compose --env-file /secure/pilgrim-gateway.env up -d
+#      Never commit the key. The env file may also hold nothing else.
+#
+# Image tags are pinned deliberately; do not switch to latest.
+
+name: pilgrim-gateway
+
+services:
+  tailscale:
+    image: tailscale/tailscale:v1.104.4
+    container_name: pilgrim-tailscale
+    restart: unless-stopped
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?set TS_AUTHKEY in an env file outside the repo}
+      TS_HOSTNAME: pilgrim-origin
+      TS_EXTRA_ARGS: --advertise-tags=tag:radio-origin
+      TS_USERSPACE: "true"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    # No published ports: Tailscale serve publishes 443 on the tailnet.
+
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: pilgrim-gateway
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    depends_on:
+      - tailscale
+    # The official image runs as root by default; run as its nginx user
+    # (101) with a read-only root and tmpfs for the writable paths.
+    user: "101:101"
+    read_only: true
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /var/log/nginx
+      - /tmp
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./extra-none.conf:/etc/nginx/extra-none.conf:ro
+
+volumes:
+  tailscale-state:

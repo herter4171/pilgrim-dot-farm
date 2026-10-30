@@ -11,6 +11,8 @@ The Makefile uses Python 3.14. Install `ffmpeg` and `ffprobe`, then set the
 backend addresses and models in [pilgrim/config.yaml](pilgrim/config.yaml).
 Their observed request formats are recorded in [docs/backends.md](docs/backends.md).
 Put `LITELLM_TOKEN=...` in a git-ignored `.env` file at the repo root.
+The origin gateway's Tailscale sidecar reads `TS_AUTHKEY` from an env file
+outside the repo (see [pilgrim/deploy/README.md](pilgrim/deploy/README.md)).
 
 ```sh
 make venv       # install Python dependencies
