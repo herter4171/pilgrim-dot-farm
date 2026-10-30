@@ -55,9 +55,13 @@ http {
         client_max_body_size 64k;
         proxy_connect_timeout 3s;
         proxy_read_timeout 30s;
-        # 12. The origin's own 4xx/5xx pass through untouched; only nginx-made
-        # 502/504 (origin unreachable) are intercepted below.
-        proxy_intercept_errors off;
+        # 12. Intercept upstream 502/504 only: those are the codes with an
+        # error_page. Tailscale serve sends a bare 502 (empty body) when the
+        # gateway nginx is down while tailscaled is up; without interception
+        # that empty body would reach the browser. The origin's own 4xx and
+        # the gateway's 503 {off_air:true} are not intercepted and pass
+        # through untouched.
+        proxy_intercept_errors on;
 
         # 3. Load-balancer health. NEVER contacts the origin, so an origin
         # outage does not make the load balancer kill healthy edges.

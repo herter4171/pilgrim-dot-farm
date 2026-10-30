@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hashlib
+import http.server
 import os
 import signal
 import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -95,6 +97,35 @@ def _poll_on_air(client: httpx.Client, want: bool, timeout: float) -> bool:
             pass
         time.sleep(0.2)
     return False
+
+
+class _Bare502(http.server.BaseHTTPRequestHandler):
+    """Upstream-sent bare 502, like Tailscale serve when the gateway is down."""
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self.send_response(502)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        self.do_GET()
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+def _start_bare502(port: int) -> http.server.ThreadingHTTPServer:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Bare502)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _json_or_none(response: httpx.Response) -> dict | None:
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
 
 
 def _poll_program_off_air(client: httpx.Client, timeout: float) -> bool:
@@ -258,11 +289,40 @@ def run(edge_url: str, gateway_url: str, state: Path,
 
     record("9c off air with gateway stopped", check_9_gateway)
 
+    def check_9_upstream_502():
+        """SPLIT_PLAN Step 10.2: serve sends a bare 502 when the gateway is
+        down while tailscaled is up. The edge must intercept it (error_page
+        502/504) and answer with the off-air bodies, not pass the empty body
+        through. The local stack has no serve hop, so stub the 502 here."""
+        gw_port = httpx.URL(gateway_url).port or 80
+        stub = _start_bare502(gw_port)
+        try:
+            off = _poll_on_air(edge, False, 5.0)
+            p503 = _poll_program_off_air(edge, 5.0)
+            h = edge.get("/api/health")
+            p = edge.get("/api/station/program")
+            e = edge.get("/edge-health")
+            hb, pb = _json_or_none(h), _json_or_none(p)
+            ok = (off and p503
+                  and h.status_code == 200 and hb is not None
+                  and hb.get("on_air") is False
+                  and p.status_code == 503 and pb is not None
+                  and pb.get("off_air") is True
+                  and e.status_code == 200)
+            return ok, (f"health={h.status_code}/{hb} "
+                        f"program={p.status_code}/{pb} "
+                        f"edge-health={e.status_code}")
+        finally:
+            stub.shutdown()
+            stub.server_close()
+
+    record("9d upstream-sent bare 502 is intercepted", check_9_upstream_502)
+
     def check_9_recover_gateway():
         _compose(state, "start", "gateway")
         return _poll_on_air(edge, True, 5.0), "on_air true within 5 s"
 
-    record("9d recovery after gateway restart", check_9_recover_gateway)
+    record("9e recovery after gateway restart", check_9_recover_gateway)
 
     def one_request() -> tuple[int, bool]:
         with httpx.Client(base_url=gateway_url, timeout=15.0) as c:
