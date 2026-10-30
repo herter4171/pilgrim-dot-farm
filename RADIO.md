@@ -1123,6 +1123,19 @@ pilgrim/
   library/              # FLAC media
   web/                  # index.html, player.js (Web Audio), styles
   tui/                  # operator console (__main__, app, client, models, console.tcss)
+  deploy/               # origin/edge deployment contract (SPLIT_PLAN)
+    README.md
+    edge/nginx.conf.template
+    edge/realip-local.conf
+    gateway/nginx.conf.template
+    gateway/compose.yaml
+    gateway/serve.json
+    tailscale/policy.example.hujson
+    launchd/farm.pilgrim.station.plist.example
+    local/compose.yaml
+  tools/
+    render_deploy.py    # @@NAME@@ deploy-template renderer
+    audit_library.py
   tests/
     fakes/
     test_selector.py

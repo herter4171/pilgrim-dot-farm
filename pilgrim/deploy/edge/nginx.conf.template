@@ -1,0 +1,252 @@
+# Pilgrim Dot Farm — EDGE nginx (SPLIT_PLAN §5.3)
+#
+# One stateless EC2 edge: serves the static site, proxies the public API to the
+# origin gateway, caches media, and answers "off air" when it cannot reach the
+# origin. TLS is the operator's IaC (Cloudflare -> edge); this file is plain
+# HTTP only. nginx's own $variables are untouched; placeholder tokens are
+# rendered by pilgrim/tools/render_deploy.py.
+
+user  nginx;
+worker_processes  auto;
+error_log  /var/log/nginx/error.log warn;
+pid        /var/run/nginx.pid;
+
+events { worker_connections 1024; }
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    access_log    /var/log/nginx/access.log;
+    sendfile      on;
+    keepalive_timeout 65;
+
+    # 2. Real client IP. In production this include sets real_ip_header
+    # CF-Connecting-IP and set_real_ip_from for each Cloudflare range. Locally
+    # it is the empty edge/realip-local.conf, so nobody is trusted.
+    include @@REALIP_INCLUDE@@;
+
+    # 9. Immutable media cache. A media id always maps to the same bytes, so
+    # the origin's Cache-Control: immutable is honored (no proxy_ignore_headers).
+    proxy_cache_path @@CACHE_DIR@@/media levels=1:2 keys_zone=edge_media:64m
+                     max_size=@@MEDIA_CACHE_MAX@@ inactive=7d use_temp_path=off;
+
+    # 10. Small micro-cache for program/state/requests/health. Honors origin
+    # max-age. Never serves stale on error: a dead origin must read as off air,
+    # not as an old programme.
+    proxy_cache_path @@CACHE_DIR@@/micro levels=1:2 keys_zone=edge_micro:8m
+                     max_size=32m inactive=1m use_temp_path=off;
+
+    # 6. The gateway is the only upstream. keepalive keeps the home-uplink
+    # connection count low.
+    upstream pilgrim_origin {
+        server @@ORIGIN_HOSTPORT@@;
+        keepalive 16;
+    }
+
+    server {
+        # 1. Plain HTTP; TLS terminates in front of this edge.
+        listen @@EDGE_LISTEN@@;
+        server_name _;
+
+        # 4. Edges serve the site; the origin does not (serve_web: false).
+        root @@WEB_ROOT@@;
+        index index.html;
+
+        client_max_body_size 64k;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 30s;
+        # 12. The origin's own 4xx/5xx pass through untouched; only nginx-made
+        # 502/504 (origin unreachable) are intercepted below.
+        proxy_intercept_errors off;
+
+        # 3. Load-balancer health. NEVER contacts the origin, so an origin
+        # outage does not make the load balancer kill healthy edges.
+        location = /edge-health {
+            access_log off;
+            add_header Cache-Control "no-store" always;
+            return 200 "ok\n";
+        }
+
+        # 4. Static site. Edges set the static cache policy.
+        location / {
+            try_files $uri $uri/ /index.html;
+            add_header Cache-Control "public, max-age=60" always;
+        }
+
+        # 5. Defense in depth: admin + station control never pass the edge.
+        location ^~ /api/admin/ { return 404; }
+        location = /api/station/start { return 404; }
+        location = /api/station/stop  { return 404; }
+
+        # 6. Upstream + 7. client IP: the edge ALWAYS overwrites X-Real-IP and
+        # X-Forwarded-For with $remote_addr (after real_ip processing), so a
+        # client-supplied value cannot reach the origin.
+        #
+        # 10. Micro-cache: program. The query string matters (after_seq), so
+        # the cache key includes $request_uri.
+        location = /api/station/program {
+            proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host @@ORIGIN_HOST@@;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_ssl_server_name on;
+            proxy_ssl_name @@ORIGIN_HOST@@;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
+            proxy_cache edge_micro;
+            proxy_cache_key "$request_method$request_uri";
+            proxy_cache_lock on;
+            proxy_cache_use_stale updating;
+            add_header X-Cache-Status $upstream_cache_status always;
+            error_page 502 504 = @offair;
+        }
+
+        location = /api/station/state {
+            proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host @@ORIGIN_HOST@@;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_ssl_server_name on;
+            proxy_ssl_name @@ORIGIN_HOST@@;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
+            proxy_cache edge_micro;
+            proxy_cache_key "$request_method$request_uri";
+            proxy_cache_lock on;
+            proxy_cache_use_stale updating;
+            add_header X-Cache-Status $upstream_cache_status always;
+            error_page 502 504 = @offair;
+        }
+
+        # 10. Micro-cache: request board (GET). POSTs are never cached.
+        # 12. A 504 here is a slow moderation call, not an outage.
+        location = /api/requests {
+            proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host @@ORIGIN_HOST@@;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_ssl_server_name on;
+            proxy_ssl_name @@ORIGIN_HOST@@;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
+            proxy_read_timeout 300s;   # > gateway's 270s (§5.3.8)
+            proxy_cache edge_micro;
+            proxy_cache_methods GET HEAD;
+            proxy_cache_key "$request_method$request_uri";
+            proxy_cache_lock on;
+            proxy_cache_use_stale updating;
+            add_header X-Cache-Status $upstream_cache_status always;
+            error_page 502 = @offair;
+            error_page 504 = @request_timeout;
+        }
+
+        # 10. Micro-cache: public health. Off air gets a 200 body, not a 503.
+        location = /api/health {
+            proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host @@ORIGIN_HOST@@;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_ssl_server_name on;
+            proxy_ssl_name @@ORIGIN_HOST@@;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
+            proxy_cache edge_micro;
+            proxy_cache_key "$request_method$request_uri";
+            proxy_cache_lock on;
+            proxy_cache_use_stale updating;
+            add_header X-Cache-Status $upstream_cache_status always;
+            error_page 502 504 = @offair_health;
+        }
+
+        # 11. POSTs: never cached.
+        location = /api/visitors {
+            proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host @@ORIGIN_HOST@@;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_ssl_server_name on;
+            proxy_ssl_name @@ORIGIN_HOST@@;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
+            proxy_cache off;
+            error_page 502 504 = @offair;
+        }
+
+        location = /api/station/heartbeat {
+            proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host @@ORIGIN_HOST@@;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_ssl_server_name on;
+            proxy_ssl_name @@ORIGIN_HOST@@;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
+            proxy_cache off;
+            error_page 502 504 = @offair;
+        }
+
+        # 9. Media cache. Lock timeouts are generous because a FLAC can take
+        # many seconds to cross a home uplink; the 5 s default would send
+        # duplicate fetches. `use_stale error timeout updating` is allowed for
+        # media only: serving the previous immutable bytes beats an outage.
+        location ~ ^/api/media/[0-9]+$ {
+            proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host @@ORIGIN_HOST@@;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_ssl_server_name on;
+            proxy_ssl_name @@ORIGIN_HOST@@;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
+            proxy_cache edge_media;
+            proxy_cache_key "$request_method$request_uri";
+            proxy_cache_lock on;
+            proxy_cache_lock_timeout 60s;
+            proxy_cache_lock_age 60s;
+            proxy_cache_use_stale error timeout updating;
+            add_header X-Cache-Status $upstream_cache_status always;
+            error_page 502 504 = @offair;
+        }
+
+        # 13. Any other /api/* path: 404 at the edge. This is a plain prefix
+        # (not ^~) so the media regex above still matches.
+        location /api/ { return 404; }
+
+        # 12. Edge-generated off-air bodies. These are NOT from the origin; the
+        # origin's own 4xx/5xx pass through untouched.
+        location @offair {
+            internal;
+            default_type application/json;
+            add_header Cache-Control "no-store" always;
+            return 503 '{"off_air": true, "detail": "station is off the air"}';
+        }
+
+        location @offair_health {
+            internal;
+            default_type application/json;
+            add_header Cache-Control "no-store" always;
+            return 200 '{"on_air": false, "off_air": true}';
+        }
+
+        location @request_timeout {
+            internal;
+            default_type application/json;
+            add_header Cache-Control "no-store" always;
+            return 504 '{"detail": "request timed out"}';
+        }
+    }
+}

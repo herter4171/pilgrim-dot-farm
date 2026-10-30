@@ -1,0 +1,179 @@
+# Pilgrim Dot Farm — ORIGIN GATEWAY nginx (SPLIT_PLAN §6.1)
+#
+# Runs on the M5 in front of pilgrim.server's PUBLIC listener. Path + method
+# allowlist, per-edge rate limits, and gateway-generated off-air bodies.
+# In production Tailscale serve terminates TLS in front of this container; the
+# local split test uses the same file over loopback HTTP. nginx's own
+# $variables are untouched; placeholder tokens are rendered by
+# pilgrim/tools/render_deploy.py.
+
+user  nginx;
+worker_processes  auto;
+error_log  /var/log/nginx/error.log warn;
+pid        /var/run/nginx.pid;
+
+events { worker_connections 1024; }
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    access_log    /var/log/nginx/access.log;
+    sendfile      on;
+    keepalive_timeout 65;
+
+    # 6. Rate limits keyed by the connecting edge ($remote_addr). These protect
+    # the M5 if an edge is compromised and floods it with fake client IPs.
+    # Starting points; the operator tunes them.
+    limit_req_zone $remote_addr zone=req_line:10m rate=1r/s;
+    limit_req_zone $remote_addr zone=visitors:10m rate=10r/s;
+    limit_req_zone $remote_addr zone=heartbeat:10m rate=200r/s;
+    limit_req_status 429;
+    limit_req_log_level warn;
+
+    # 8. The origin's PUBLIC listener only. keepalive keeps connection churn low.
+    upstream pilgrim_origin {
+        server @@ORIGIN_PUBLIC_HOSTPORT@@;
+        keepalive 16;
+    }
+
+    server {
+        # 1. Plain HTTP; Tailscale serve terminates TLS in front of this in prod.
+        listen @@GATEWAY_LISTEN@@;
+        server_name _;
+
+        # 2. Only edge peers may connect. Locally that is loopback. In prod
+        # Tailscale serve proxies from inside this container's network
+        # namespace, so the peer is 127.0.0.1; the real edge filtering is the
+        # tailnet policy (Step 6.4), not this allow line.
+        allow @@TRUSTED_EDGE_NET@@;
+        deny all;
+
+        client_max_body_size 64k;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 30s;
+        # 9. The origin's own 4xx/5xx pass through; only nginx-made 502/504 are
+        # replaced with gateway-generated off-air bodies.
+        proxy_intercept_errors off;
+
+        # 3. Allowlist by exact path and method. Everything else is 404,
+        # including /, static files, /api/admin/*, and station control.
+        location = /api/health {
+            limit_except GET { deny all; }
+            proxy_pass http://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_real_ip;
+            proxy_set_header X-Forwarded-For $http_x_real_ip;
+            proxy_cache off;
+            error_page 502 504 = @offair_health;
+        }
+
+        location = /api/station/program {
+            limit_except GET { deny all; }
+            proxy_pass http://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_real_ip;
+            proxy_set_header X-Forwarded-For $http_x_real_ip;
+            proxy_cache off;
+            error_page 502 504 = @offair;
+        }
+
+        location = /api/station/state {
+            limit_except GET { deny all; }
+            proxy_pass http://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_real_ip;
+            proxy_set_header X-Forwarded-For $http_x_real_ip;
+            proxy_cache off;
+            error_page 502 504 = @offair;
+        }
+
+        location = /api/station/heartbeat {
+            limit_except POST { deny all; }
+            limit_req zone=heartbeat burst=1000 nodelay;
+            proxy_pass http://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_real_ip;
+            proxy_set_header X-Forwarded-For $http_x_real_ip;
+            proxy_cache off;
+            error_page 502 504 = @offair;
+        }
+
+        location = /api/requests {
+            limit_except GET POST { deny all; }
+            limit_req zone=req_line burst=20 nodelay;
+            proxy_pass http://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_real_ip;
+            proxy_set_header X-Forwarded-For $http_x_real_ip;
+            proxy_read_timeout 270s;   # < edge's 300s, > moderation worst case 240s
+            proxy_cache off;
+            error_page 502 = @offair;
+            error_page 504 = @request_timeout;
+        }
+
+        location = /api/visitors {
+            limit_except POST { deny all; }
+            limit_req zone=visitors burst=100 nodelay;
+            proxy_pass http://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_real_ip;
+            proxy_set_header X-Forwarded-For $http_x_real_ip;
+            proxy_cache off;
+            error_page 502 504 = @offair;
+        }
+
+        location ~ ^/api/media/[0-9]+$ {
+            limit_except GET { deny all; }
+            proxy_pass http://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_real_ip;
+            proxy_set_header X-Forwarded-For $http_x_real_ip;
+            proxy_cache off;
+            error_page 502 504 = @offair;
+        }
+
+        location / { return 404; }
+
+        # 4. Test-only extra locations (prod: an empty file). The local e2e
+        # render adds ^~ /api/test/ for the e2e server's report endpoint.
+        include @@EXTRA_ALLOW_INCLUDE@@;
+
+        # 9. Gateway-generated off-air bodies. Needed because the edge does not
+        # intercept upstream errors: without these, the edge would pass this
+        # gateway's HTML 502 straight to the browser.
+        location @offair {
+            internal;
+            default_type application/json;
+            add_header Cache-Control "no-store" always;
+            return 503 '{"off_air": true, "detail": "station is off the air"}';
+        }
+
+        location @offair_health {
+            internal;
+            default_type application/json;
+            add_header Cache-Control "no-store" always;
+            return 200 '{"on_air": false, "off_air": true}';
+        }
+
+        location @request_timeout {
+            internal;
+            default_type application/json;
+            add_header Cache-Control "no-store" always;
+            return 504 '{"detail": "request timed out"}';
+        }
+    }
+}

@@ -3,7 +3,7 @@ PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
 FFMPEG := $(HOME)/bin/ffmpeg
 
-.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply
+.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check
 
 # --- setup ---------------------------------------------------------------
 venv:
@@ -33,6 +33,9 @@ tui:
 
 e2e:
 	cd pilgrim/tests/e2e && npx --yes playwright test
+
+deploy-check:
+	bash pilgrim/deploy/local/deploy_check.sh
 
 # --- run --------------------------------------------------------------
 run:
