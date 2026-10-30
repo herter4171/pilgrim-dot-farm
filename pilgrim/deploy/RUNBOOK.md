@@ -209,9 +209,10 @@ bash pilgrim/deploy/edge/cutover_check.sh
 The script prints PASS/FAIL and exits non-zero on any failure. It checks:
 `/edge-health` is 200; `/` serves the site; admin, control and `/api/test/*`
 paths are 404 at both hops; program has `epoch`; media is `MISS` then `HIT`
-with identical bytes and `immutable`; `POST /api/requests` returns origin JSON
-(not a 500 or an nginx error page). Run it once right after deploy: check 6
-expects a cold cache.
+with identical bytes and `immutable`; `POST /api/requests` with empty text
+returns `422 application/json` from the origin (FastAPI validation; it never
+reaches moderation and writes no request row). Run it once right after
+deploy: check 6 expects a cold cache.
 
 Checks 8–10 are local-only (8 reads the local test origin's DB; 9 stops
 services; 10 floods the gateway), so never run them in prod.

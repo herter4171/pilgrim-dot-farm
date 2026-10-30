@@ -87,14 +87,16 @@ else
     fail "6 no media_id in the program"
 fi
 
-# 7. POST /api/requests: origin JSON, never a Python 500 or an nginx error page.
+# 7. POST /api/requests with EMPTY text: FastAPI validation on the origin
+#    returns 422 application/json. This proves the full path, never reaches
+#    moderation, and writes no request row (do not send a real request here).
 code=$(curl -sS -D "$TMP/rh" -o "$TMP/rb" -w '%{http_code}' \
-    -H 'Content-Type: application/json' -d '{"text":"play some polka"}' \
+    -H 'Content-Type: application/json' -d '{"text":""}' \
     "$EDGE/api/requests")
 ctype=$(grep -i '^content-type:' "$TMP/rh" | tr -d '\r')
-if [ "$code" != "500" ] && printf '%s' "$ctype" | grep -qi "application/json" \
+if [ "$code" = "422" ] && printf '%s' "$ctype" | grep -qi "application/json" \
     && ! grep -qi "<html" "$TMP/rb"; then
-    pass "7 POST /api/requests origin JSON (status $code)"
+    pass "7 POST /api/requests empty text -> 422 JSON (no row)"
 else
     fail "7 POST /api/requests: status=$code [$ctype]"
 fi
