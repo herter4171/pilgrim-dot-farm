@@ -518,3 +518,47 @@ def test_stock_gap_zero_means_back_to_back(cfg, tmp_env):
     prod = make_song_producer(cfg, store, FakeVoice(), FakeSong())
     assert asyncio.run(prod.song_step()) is True
     assert asyncio.run(prod.song_step()) is True
+
+
+# --------------------------------------------------------------------------- #
+# RADIO §6.1 — songs.stock_max_library pauses the expensive stock song worker
+# once the library is full; listener requests still produce.
+# --------------------------------------------------------------------------- #
+
+def test_stock_generation_pauses_at_library_cap(cfg, tmp_env):
+    import asyncio
+    cfg, store, _ = tmp_env
+    cfg.songs.stock_gap_s = 0
+    cfg.songs.stock_max_library = 3
+    cfg.inventory.fresh_songs_ready = 10  # keep the fresh target out of the way
+    songs = FakeSong()
+    prod = make_song_producer(cfg, store, FakeVoice(), songs)
+    for _ in range(3):
+        assert asyncio.run(prod.song_step()) is True
+    assert store.count_usable_of_type("song") == 3
+    assert prod.stock_capped() is True
+    assert asyncio.run(prod.song_step()) is False  # at cap: no mlx call
+    assert len([c for c in songs.calls if c[1] is None]) == 3
+    # a listener request still produces, even at the cap
+    req = store.add_request("play a song for Mittens", cap=10)
+    assert asyncio.run(prod.song_step()) is True
+    assert store.get_request(req["id"])["status"] == "ready"
+    assert store.count_usable_of_type("song") == 4
+
+
+def test_stock_cap_zero_disables_the_cap(cfg, tmp_env):
+    import asyncio
+    cfg, store, _ = tmp_env
+    cfg.songs.stock_gap_s = 0
+    cfg.songs.stock_max_library = 0
+    cfg.inventory.fresh_songs_ready = 10  # keep the fresh target out of the way
+    for _ in range(5):
+        make_item(cfg, store, "song", 120.0)
+    prod = make_song_producer(cfg, store, FakeVoice(), FakeSong())
+    assert prod.stock_capped() is False
+    assert asyncio.run(prod.song_step()) is True
+
+
+def test_default_library_cap_is_100(cfg):
+    assert cfg.songs.stock_max_library == 100
+

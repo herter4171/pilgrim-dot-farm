@@ -70,7 +70,7 @@ Notes:
                                                    ▼
                  ┌─────────────── PLAYOUT (scheduler.py) ──────────────────────────────┐
                  │  selector.choose_next()  ─▶ planned items ─▶ contextual items        │
-                 │  rendered just in time ─▶ COMMITTED program (≥10 min ahead)          │
+                 │  rendered just in time ─▶ COMMITTED program (≥5 min ahead)           │
                  └──────────────────────────────────────────────────────────────────────┘
                                                    │  GET /api/station/program
                                                    ▼
@@ -248,7 +248,7 @@ Constraints (applied before drawing):
   (enough to avoid dead air), never a full lookahead of spots or talk. A song
   that lands mid-drought takes the next open slot, within about that horizon.
   Among waiting fresh songs the newest airs first (LIFO, PRIORITIES §2).
-  The ≥10 min committed lookahead (§5.3) holds only while songs are airable.
+  The ≥5 min committed lookahead (§5.3) holds only while songs are airable.
 - **Listener-request songs jump the line** (OVERHAUL 4.7): when a ready
   request song exists and a song is allowed right now (the interjection rule
   above still holds), `song` is committed. Each song airs with its short
@@ -271,7 +271,7 @@ Constraints (applied before drawing):
 
 - **Planned** items are chosen but may still need rendering (contextual items).
 - **Committed** items are fully rendered and visible to the client.
-- The scheduler keeps **≥10 min of committed audio** ahead of the client
+- The scheduler keeps **≥5 min of committed audio** ahead of the client
   playhead (from heartbeat) and plans a few items past that, while songs are
   airable (song droughts and pending listener requests are the exceptions: see
   §5.2 — the window is held at `filler_horizon_s` while a request renders, and
@@ -373,7 +373,7 @@ target, per host worker.
 
 | Item | Target |
 |------|--------|
-| Fresh (unaired) songs ready | ≥ 2, plus 1 generating |
+| Fresh (unaired) songs ready | ≥ 2, plus 1 generating (stock generation stops at `songs.stock_max_library` usable songs) |
 | Song briefs queued for the M5 | ≥ 3 (M5 must never wait on the LLM) |
 | Current news bulletin | 1 valid; refreshed every 30 min |
 | Commercials (library) | ≥ 20 at launch; top up slowly (they repeat on purpose) |
@@ -390,6 +390,14 @@ The song worker spaces stock songs out: after a stock song finishes, it waits
 `songs.stock_gap_s` (default 600 s) before starting the next one, even when
 fresh stock is below target. Queued listener requests skip the gap and are
 produced as soon as the worker is free; they do not reset it.
+
+Song generation is the expensive path (~1.6 s of compute per 1 s of audio), so
+stock production also has a library ceiling: once the library holds
+`songs.stock_max_library` (default 100) usable songs, the stock worker stops
+calling the song model entirely and only queued listener requests are
+produced. The cap counts every non-retired song (aired ones recycle), so a
+full library keeps the station on air without further generation. Setting it
+to 0 disables the ceiling (RADIO §6.1, §12).
 
 SFX are rendered by their own worker (`Producer.sfx_loop`), never at playout
 and never in the voice worker's path: a talk clip is stored and airable as
@@ -788,7 +796,7 @@ voices:
   # speed and seconds_per_word per voice: calibrated at setup
 
 playout:
-  committed_lookahead_s: 600
+  committed_lookahead_s: 300   # 5 min ahead: enough slack without delaying requests
   filler_horizon_s: 60     # song drought / spacing-breaking repeats: commit only this far ahead
   request_hold_max_s: 900  # hold the window for a pending request; cap per request
   weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08,
@@ -821,6 +829,8 @@ songs:
   max_duration_s: 360        # sent to mlx-serve as duration_seconds (1-360); song QC ceiling
   abrupt_fade_s: 2.5         # fade-out applied to songs with hard endings
   stock_gap_s: 600           # idle gap between stock song generations; requests skip it
+  stock_max_library: 100     # pause stock generation once the library holds this many songs;
+                             # listener requests still produce. 0 = no ceiling
   genres: {synthwave: 1, bluegrass: 1, doom metal: 1, bossa nova: 1, polka: 1, ...}
 
 news:

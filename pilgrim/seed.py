@@ -83,10 +83,15 @@ async def seed(cfg: Config, api_key: str) -> int:
     made += db.count_fresh_of_type("news") - n0
     log.info("seeding songs...")
     # §13: songs are seeded too, so cold start isn't dependent on the slow
-    # background song worker. Seed at the fresh-ready target (expensive on mlx).
+    # background song worker. Seed at the fresh-ready target (expensive on mlx),
+    # but never past songs.stock_max_library (§6.1 cap).
     fresh_songs = db.count_fresh_of_type("song")
     target_songs = cfg.inventory.fresh_songs_ready - fresh_songs
-    for _ in range(max(0, target_songs)):
+    capped = prod.stock_capped()
+    if capped:
+        log.info("seed songs skipped: library at songs.stock_max_library (%s)",
+                 cfg.songs.stock_max_library)
+    for _ in range(0 if capped else max(0, target_songs)):
         try:
             brief = await songs.brief(prod._recent_genres())
             item = await songs.produce_song(brief)

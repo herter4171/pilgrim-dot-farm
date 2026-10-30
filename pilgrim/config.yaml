@@ -37,7 +37,7 @@ voices:
   speed: 1.0             # seconds-per-word calibrated at setup; 1.0 is Koken default
 
 playout:
-  committed_lookahead_s: 600     # keep >= this much committed audio ahead
+  committed_lookahead_s: 300     # keep >= this much committed audio ahead (5 min: requests air sooner)
   filler_horizon_s: 60           # repeat a liner/spot inside its spacing only below this coverage
   request_hold_max_s: 900        # hold the window for a pending request (so it airs next); cap per request
   window_trim_keep_s: 120        # keep this much committed history behind "now"
@@ -77,6 +77,7 @@ songs:
   max_duration_s: 360   # sent as duration_seconds (1-360); also the song QC ceiling
   abrupt_fade_s: 2.5    # fade-out for songs with hard endings (OVERHAUL 3.2)
   stock_gap_s: 600      # wait between stock song generations; listener requests skip it (§6.1)
+  stock_max_library: 100  # pause stock generation once the library has this many songs; requests still produce
   genres:
     synthwave: 1
     bluegrass: 1

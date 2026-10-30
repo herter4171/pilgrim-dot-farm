@@ -58,6 +58,8 @@ class Producer:
         self.sfx = sfx  # None = station airs dry (no SFX backend configured)
         # clock.now() when the last stock song finished (None = none yet this run)
         self._last_stock_song_at: float | None = None
+        # one-shot log so a capped stock worker doesn't spam every 20 s
+        self._stock_cap_logged = False
 
     # --------------------------------------------------------------- counts
     def counts(self) -> dict[str, int]:
@@ -483,12 +485,22 @@ class Producer:
 
     async def song_step(self) -> bool:
         """One pass of the song worker. Returns True if it did work.
-        1) Oldest queued listener request gets produced (even at stock target).
-        2) Otherwise, a stock song if fresh stock is below target and
-           songs.stock_gap_s has passed since the last stock song (§6.1)."""
+        1) Oldest queued listener request gets produced (even at stock target
+           and even when stock generation is capped by songs.stock_max_library).
+        2) Otherwise, a stock song if fresh stock is below target, the library
+           is under songs.stock_max_library, and songs.stock_gap_s has passed
+           since the last stock song (§6.1)."""
         req = self.store.next_request_to_produce()
         if req:
             return await self._produce_request_song(req)
+        if self.stock_capped():
+            if not self._stock_cap_logged:
+                log.info("song.stock_capped", extra={
+                    "library_songs": self.store.count_usable_of_type("song"),
+                    "stock_max_library": self.cfg.songs.stock_max_library})
+                self._stock_cap_logged = True
+            return False
+        self._stock_cap_logged = False
         fresh = self.store.count_fresh_of_type("song")
         if fresh >= self.cfg.inventory.fresh_songs_ready:
             return False
@@ -512,6 +524,13 @@ class Producer:
             "title": item.get("title"), "genre": item.get("genre"),
             "duration_s": item.get("duration_s")})
         return True
+
+    def stock_capped(self) -> bool:
+        """True when the library already holds songs.stock_max_library usable
+        (non-retired) songs: stock generation pauses so the expensive mlx song
+        model only runs for listener requests (§6.1). 0 disables the cap."""
+        cap = self.cfg.songs.stock_max_library
+        return cap > 0 and self.store.count_usable_of_type("song") >= cap
 
     async def _produce_request_song(self, req: dict) -> bool:
         """Turn one queued listener request into a song (+ short intro). On a

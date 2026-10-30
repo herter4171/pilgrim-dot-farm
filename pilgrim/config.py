@@ -130,7 +130,9 @@ class SongRotation(BaseModel):
 
 
 class Playout(BaseModel):
-    committed_lookahead_s: int = 600
+    # 300 s (5 min) of committed audio ahead: enough to absorb production
+    # latency without queueing a listener request behind ten minutes of stock.
+    committed_lookahead_s: int = 300
     filler_horizon_s: int = 60  # spacing-breaking repeats only below this coverage
     # While a listener request is pending (queued/producing/ready, not yet
     # committed), hold the window at filler_horizon_s so it takes the next slot.
@@ -171,6 +173,10 @@ class Songs(BaseModel):
     # idle gap between STOCK song generations (finish -> next start); queued
     # listener requests skip it. 0 = back to back (§6.1)
     stock_gap_s: float = 600.0
+    # Song generation is the expensive path: once the library holds this many
+    # usable (non-retired) songs, stock generation pauses entirely and only
+    # listener requests produce. 0 disables the cap (§6.1)
+    stock_max_library: int = 100
 
 
 class News(BaseModel):

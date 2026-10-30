@@ -127,7 +127,7 @@ ALTER TABLE items ADD COLUMN play_count INTEGER DEFAULT 0;
   `time.time()`; hard rule 3).
 - Spacing and weighting read `last_aired_at` (wall clock) instead of the
   in-memory `_last_song_air` air-clock. The station is always on air, so wall
-  time and program time advance together; the only difference is the ≤10 min
+  time and program time advance together; the only difference is the ≤5 min
   of committed lookahead, which is within spacing tolerance. Drop
   `_last_song_air` for songs (commercials can follow later the same way).
 - **One-time backfill:** set `last_aired_at` from
