@@ -395,7 +395,8 @@ pilgrim/tools/render_deploy.py  # template renderer
 Placeholders: `@@EDGE_LISTEN@@`, `@@WEB_ROOT@@`, `@@CACHE_DIR@@`,
 `@@MEDIA_CACHE_MAX@@`, `@@ORIGIN_SCHEME@@` (`http` or `https`),
 `@@ORIGIN_HOSTPORT@@`, `@@ORIGIN_HOST@@`, `@@REALIP_INCLUDE@@`,
-`@@CA_BUNDLE@@`.
+`@@CA_BUNDLE@@`, and `@@EXTRA_ALLOW_INCLUDE@@` (test only: the local e2e
+render adds `^~ /api/test/`; production renders `extra-none.conf`).
 
 Required behaviour, each with a comment in the file:
 
@@ -443,9 +444,10 @@ Required behaviour, each with a comment in the file:
     `GET /api/requests`, `/api/health`): a separate small cache zone,
     `proxy_cache_key "$request_method$request_uri";` (the query string matters
     for `program`), honor origin `max-age`, `proxy_cache_lock on;`.
-    **No** `proxy_cache_use_stale error`: a dead origin must read as off air,
-    not as an old programme. `use_stale updating` is fine. Add
-    `X-Cache-Status` too.
+    **No** `proxy_cache_use_stale error`, and **no** `use_stale updating`
+    either: `updating` can serve the stale body to the request that triggers
+    revalidation, briefly reporting a dead origin as on air. Media keeps its
+    `use_stale` exception. Add `X-Cache-Status` too.
 11. POSTs (`/api/requests`, `/api/station/heartbeat`, `/api/visitors`) are
     never cached. `client_max_body_size 64k;`
 12. Off air: `proxy_intercept_errors off;` (the origin's own 4xx/5xx, such as
@@ -462,14 +464,18 @@ Required behaviour, each with a comment in the file:
     gateway is up but the origin is down, the gateway generates the same
     bodies (Step 6.1.9), and the edge passes them through.
 13. Anything else under `/api/` that is not listed: `return 404;` at the
-    edge. The edge passes only the public route list from Step 1.2.
+    edge. The edge passes only the public route list from Step 1.2. The
+    test-only `@@EXTRA_ALLOW_INCLUDE@@` may add `^~ /api/test/` for the local
+    e2e render; production renders an empty file.
 
 ### 5.4 `make deploy-check`
 
 Add a Makefile target that renders both templates (edge and gateway) into a
 temp directory with local values, then runs `nginx -t` on each in a throwaway
-container: `docker run --rm -v <tmpdir>:/cfg:ro <image> nginx -t -c /cfg/nginx.conf`.
-Use the official `nginx` image pinned to a specific `1.x` tag. Write the tag in
+container: `docker run --rm -v <tmpdir>:/cfg <image> nginx -t -c /cfg/nginx.conf`.
+Mount the temp dir rw, not `:ro`: nginx validates `proxy_cache_path` by
+creating/chowning its cache directories. Use the official `nginx` image pinned
+to an exact patch tag of a supported stable release. Write the tag in
 `pilgrim/deploy/README.md`. The target must pass.
 
 Docs: RADIO.md §18 layout gets `pilgrim/deploy/` and
@@ -612,8 +618,9 @@ just over local."
    start `local/compose.yaml`.
 3. Run the Playwright gap test with `baseURL` set to the edge
    (`http://127.0.0.1:18080`). Change `playwright.config.ts` so that
-   `PILGRIM_E2E_BASE_URL`, when set, replaces `baseURL` and the webServer URL
-   check. Without it, the config behaves exactly as today.
+   `PILGRIM_E2E_BASE_URL`, when set, replaces `baseURL` and **omits**
+   `webServer` (the script already started the origin; Playwright must not
+   spawn a second one). Without it, the config behaves exactly as today.
 4. Always tear down the compose project and the e2e server, even on failure
    (`trap` in a script under `pilgrim/deploy/local/`).
 
@@ -654,7 +661,8 @@ script exits non-zero on any FAIL:
 1. `GET /edge-health` → 200 `ok`.
 2. `GET /` → 200, the body contains the station `index.html`.
 3. `GET /api/admin/dj/state` → 404 (edge). Hit the gateway directly on 18090:
-   also 404.
+   also 404. `GET /api/test/report` → 404 at both (the production allowlist
+   has no test route).
 4. `GET /api/station/start` and `POST /api/station/start` → 404 at both.
 5. `GET /api/station/program` → 200 JSON with `epoch`.
 6. Media: take a `media_id` from the program. The first `GET` returns
@@ -673,7 +681,8 @@ script exits non-zero on any FAIL:
    Then repeat with the **gateway** container stopped instead of the e2e server
    (edge-generated off air): same expected responses, then recovery.
 10. Gateway rate limit: 30 rapid `POST /api/requests` straight to the gateway
-    get at least one 429.
+    get at least one 429, and `GET /api/requests` (the board refresh) is never
+    limited (the limit is POST-only).
 
 ### 7.4 Optional: real origin on this host (only when the operator asks)
 
@@ -725,8 +734,11 @@ any of it. It must contain, in order:
    real-IP include). Note: nginx resolves the upstream hostname at start, so
    the edge's nginx must start **after** tailscaled is up and MagicDNS
    resolves.
-8. **Cut over:** point Cloudflare at the edges. Run the `split-smoke` checks
-   1–7 against the public hostname.
+8. **Cut over:** point Cloudflare at the edges. Run the curl-only checks 1–7
+   from one edge against that edge's local nginx
+   (`pilgrim/deploy/edge/cutover_check.sh`). Run from an edge because the
+   tailnet policy lets only edges reach the gateway, and through Cloudflare the
+   media MISS→HIT is not observable.
 9. **Rollback:** restart the station on the EC2 from its untouched copy.
    Requests and airplay recorded on the M5 after cutover are lost unless the
    operator copies the DB back with the same `.backup` method.

@@ -41,6 +41,14 @@ if [ -n "$GATEWAY" ]; then
     [ "$code" = "404" ] && pass "3 gateway admin 404" || fail "3 gateway admin: $code"
 fi
 
+# 3b. The production allowlist has no test route.
+code=$(curl -s -o /dev/null -w '%{http_code}' "$EDGE/api/test/report")
+[ "$code" = "404" ] && pass "3b edge test route 404" || fail "3b edge test route: $code"
+if [ -n "$GATEWAY" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' "$GATEWAY/api/test/report")
+    [ "$code" = "404" ] && pass "3b gateway test route 404" || fail "3b gateway test route: $code"
+fi
+
 # 4. Station start/stop is 404 at both hops, GET and POST.
 for m in GET POST; do
     code=$(curl -s -o /dev/null -w '%{http_code}' -X "$m" "$EDGE/api/station/start")

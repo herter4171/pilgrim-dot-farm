@@ -32,11 +32,14 @@ and its inventory and airplay history in `pilgrim/station.db`.
 ## Check the station
 
 ```sh
-make lint      # ruff and mypy; install the pyproject.toml dev extras first
-make test      # unit tests with fake backends
-make sim       # 24-hour simulated run with assertions
-make e2e       # Playwright browser tests with fake audio
-make smoke     # explicit real-backend probe
+make lint         # ruff and mypy; install the pyproject.toml dev extras first
+make test         # unit tests with fake backends
+make sim          # 24-hour simulated run with assertions
+make e2e          # Playwright browser tests with fake audio
+make deploy-check # render both nginx templates and nginx -t them
+make e2e-split    # Playwright gap test through the local edge stack
+make split-smoke  # origin + gateway + edge PASS/FAIL checks (real public app)
+make smoke        # explicit real-backend probe
 ```
 
 For lint, install the dev tools with `.venv/bin/pip install -e '.[dev]'`.
@@ -51,6 +54,9 @@ and Chrome. Unit tests and simulation do not call real backends.
   ahead of the listener.
 - The browser schedules decoded clips through the Web Audio API for continuous
   playback.
+- The origin serves two listeners: a public one for the site/API and a
+  loopback admin one for the DJ console. Edges run nginx plus `pilgrim/web/`
+  and reach the origin only through the gateway (see `pilgrim/deploy/`).
 
 All application code, prompts, the station bible, and tests live under
 `pilgrim/`. [RADIO.md](RADIO.md) is the station specification;
@@ -59,10 +65,10 @@ All application code, prompts, the station bible, and tests live under
 ## Secrets
 
 Keep credentials in environment variables or the git-ignored `.env` file.
-`LITELLM_TOKEN` authenticates LLM, moderation, and news requests. The
-[DJ console plan](TUI.md) calls for a separate `PILGRIM_DJ_TOKEN`; its API is
-not wired into the server yet. Never use the LiteLLM token for DJ controls.
-Service URLs belong in `pilgrim/config.yaml`.
+`LITELLM_TOKEN` authenticates LLM, moderation, and news requests.
+`PILGRIM_DJ_TOKEN` authenticates `/api/admin/dj/*` on the admin listener
+(`127.0.0.1:5001`); `make tui` reads it. Never use the LiteLLM token for DJ
+controls. Service URLs belong in `pilgrim/config.yaml`.
 
 
 ![Pilgrim Dot Farm Radio](image.png)

@@ -139,7 +139,10 @@ make lint      # ruff + mypy
 make seed      # seed.py against real backends
 make smoke     # real-backend smoke: /health on all hosts, one Kokoro clip,
                # one LLM brief, one 10 s song (only when asked)
-make run       # start the station server
+make run       # start the station (public + admin listeners from config)
+make deploy-check # render both deploy templates and nginx -t them
+make e2e-split    # Playwright gap test through the local edge stack
+make split-smoke  # origin + gateway + edge PASS/FAIL checks (real public app)
 ```
 
 ---
@@ -152,6 +155,8 @@ Run, in order, and include the results in your report:
 2. `make test`
 3. `make sim` (from M7 onward)
 4. `make e2e` (from M9 onward)
+5. For split/deploy changes: `make deploy-check`, `make split-smoke`, and
+   `make e2e-split`.
 
 **Never report a task as complete without having run these.** If something
 fails and you can't fix it, say so plainly and show the failure. Do not skip,

@@ -1,9 +1,13 @@
 # DJ console — Textual frontend and station controls
 
-Design proposal, 2026-10-01. This document proposes implementation work; it
-does not change the running station, API, configuration, database, or voice
-assignments. RADIO.md remains authoritative. Adopt the proposed changes there
-before implementing new contracts (RADIO §§11–12, 14).
+Design proposal, 2026-10-01. RADIO.md remains authoritative. Adopt proposed
+changes there before implementing new contracts (RADIO §§11–12, 14).
+
+> **Status (2026-10-30).** Implemented: the read-only console, song catalogue,
+> character setup, and phrase jobs against the admin listener (§1 note below).
+> Skip/queue command mutations (§5, §7) are still proposed; those routes are
+> not implemented yet. The §1 discovery table records the pre-implementation
+> state and is kept as history.
 
 Build a Textual console with three jobs: skip the current segment, choose an
 existing song from a sortable **Name / Artist** table, and submit a phrase
@@ -42,9 +46,11 @@ schemas are `{}`, so OpenAPI alone cannot generate a useful typed client.
 | `GET /api/requests`, `POST /api/requests` | POST accepts `{text}` and enters moderated song **generation**. | Keep separate from selecting an existing song or reading an operator phrase. |
 | `POST /api/visitors` | Visitor registration. | No console use. |
 
-There is no song catalogue, skip, queue-edit, phrase-job, or programme revision
-endpoint in the fetched schema. It declares no security schemes; the current
-station routes also contain no operator authentication.
+At planning time there was no song catalogue, skip, queue-edit, phrase-job, or
+programme revision endpoint in the fetched schema, and the station had no
+operator authentication. Since then the read-only DJ routes, song catalogue,
+character setup, phrase jobs, and programme epoch/revision have landed on the
+admin listener (RADIO §11); skip/queue mutations remain proposed.
 
 ### Constraints and discrepancies to resolve
 

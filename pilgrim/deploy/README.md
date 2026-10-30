@@ -12,7 +12,7 @@ throwaway container). Everything else is for the operator.
 
 | File | Who runs it | What it is |
 |---|---|---|
-| `edge/nginx.conf.template` | Edge (EC2) nginx | Full `nginx.conf`: static site, public API proxy, media/micro caches, edge-generated off-air bodies. Render per edge. |
+| `edge/nginx.conf.template` | Edge (EC2) nginx | Full `nginx.conf`: static site (missing paths are 404, never an index.html fallback), public API proxy, media/micro caches, edge-generated off-air bodies. Render per edge. |
 | `edge/cutover_check.sh` | Operator, on one edge | Curl-only cutover checks 1–7 against the edge's local nginx (no Python venv needed). |
 | `edge/realip-local.conf` | Local split test | Empty include (nobody trusted). Production supplies a Cloudflare `real_ip` include instead. |
 | `gateway/nginx.conf.template` | Gateway container (M5) | Path + method allowlist, per-edge rate limits, gateway-generated off-air bodies. The same file is used locally and in production. |
@@ -118,6 +118,9 @@ docker compose --env-file /secure/pilgrim-gateway.env up -d
 The env file (outside the repo) contains `TS_AUTHKEY=...`. Image tags are
 pinned in `gateway/compose.yaml` (`tailscale/tailscale:v1.104.4`,
 `nginx:1.30.6-alpine`); do not use `latest`.
+
+The gateway's request-line rate limit applies to **POST** only: `GET
+/api/requests` (the board refresh) is never throttled.
 
 ### `gateway/serve.json`
 

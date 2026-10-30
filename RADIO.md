@@ -696,6 +696,11 @@ has no random-selector weight and no inventory refill target.
 | GET | `/api/admin/dj/phrases/{job_id}` | Phrase job: stage, character/voice snapshot, cleaned text, expiry, failure, or `{media_id, duration_s}` when ready |
 | POST | `/api/admin/dj/phrases/validate` | Pure cleaned-text validation → `{cleaned_text, changes, text_hash, ok, rejected_reason}`; no synthesis or scheduling |
 
+`/api/admin/dj/skip`, `/api/admin/dj/queue`, and
+`/api/admin/dj/commands/{command_id}` are planned (TUI.md §5, §7) and are not
+implemented in `server.py` yet; the read-only DJ routes, character setup, and
+phrase jobs are.
+
 **Listeners (SPLIT_PLAN §1).** One station process serves two HTTP listeners.
 The **public** listener (`station.host:station.port`; `:5000` on the origin)
 serves only the edge-facing routes: `GET /api/station/program`,
@@ -1064,6 +1069,17 @@ Random selection is chosen for Phase 1 partly because it is easy to test.
 client records each item's scheduled start vs. the previous item's scheduled
 end on the AudioContext clock. Assert contiguity within 1 sample and zero
 `underrun` events.
+
+**Split deployment tests** (SPLIT_PLAN):
+- `make deploy-check` renders both nginx templates with local values and runs
+  `nginx -t` in the pinned image.
+- `make split-smoke` runs the real `create_public_app` behind the gateway's
+  production allowlist and the local edge. PASS/FAIL covers route hiding, cache
+  headers, media MISS→HIT, spoofed client IPs, off air plus recovery at both
+  hops, and the POST-only gateway rate limit.
+- `make e2e-split` runs the Playwright gap test with the edge as `baseURL`.
+- `pilgrim/deploy/edge/cutover_check.sh` repeats checks 1–7 with curl on an
+  edge (no Python venv needed).
 
 **QC unit tests:** known-bad files (silent, clipped, truncated, too long) are
 rejected; known-good files pass.
