@@ -25,6 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.responses import Response
+from starlette.types import Scope
 
 from pilgrim import dj_contracts as dj
 from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_api_key, load_config
@@ -454,11 +456,27 @@ async def _admin_health(station: Station) -> dict:
     return await station.health()
 
 
+class _RevalidatingStaticFiles(StaticFiles):
+    """Static client files are served with `Cache-Control: no-cache`, so a
+    browser (or Cloudflare) revalidates them on each load instead of keeping a
+    heuristically-fresh copy: a web edit goes live on the next page load with
+    no server restart and no cache-busting build step (RADIO §11). Edges set
+    their own `max-age=60` for the copy they serve; media keeps its own
+    immutable header."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        resp = await super().get_response(path, scope)
+        if resp.status_code == 200:
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 def _mount_web(app: FastAPI, cfg: Config) -> None:
     """Mount the static client at "/" (RADIO §9, §11). Mounted last so API
     routes take precedence; html=True serves index.html at "/"."""
     web_dir = ROOT / cfg.library.web_dir
-    app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
+    app.mount("/", _RevalidatingStaticFiles(directory=str(web_dir), html=True),
+              name="web")
 
 
 def _add_public_routes(app: FastAPI, station: Station,

@@ -25,6 +25,9 @@ def test_site_served(tmp_env):
     assert "MODEL CREDITS" in r.text
     assert "HIT COUNTER" in r.text
     assert c.get("/style.css").status_code == 200
+    # static client files must revalidate so a web edit needs no restart
+    assert c.get("/").headers["cache-control"] == "no-cache"
+    assert c.get("/style.css").headers["cache-control"] == "no-cache"
     assert c.get("/player.js").status_code == 200
     assert c.get("/visitors.js").status_code == 200
 

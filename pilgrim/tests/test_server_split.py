@@ -123,5 +123,6 @@ def test_public_cache_headers(tmp_env):
     r = c.post("/api/visitors")
     assert r.headers["cache-control"] == "no-store"
 
-    # static web files are left to the edge
-    assert "cache-control" not in c.get("/style.css").headers
+    # static web files revalidate (no-cache): a web edit needs no restart;
+    # edges override this with their own max-age=60 for the copy they serve
+    assert c.get("/style.css").headers["cache-control"] == "no-cache"

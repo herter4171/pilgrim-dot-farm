@@ -743,13 +743,18 @@ Cloudflare only have to honor it:
 | `GET /api/requests` | `public, max-age=2` |
 | `GET /api/health` (public) | `public, max-age=2` |
 | every POST | `no-store` |
-| static web files | left to the edge |
+| static web files | `no-cache` from the origin mount; an edge sets its own `public, max-age=60` |
 
 A media id always maps to the same bytes: every pipeline writes a new file
 before `add_item()`, retiring keeps the file, and purging deletes it (no
 in-place rewrite exists). The `max-age=1` on `/api/station/state` means
 `server_time` can be up to about 1 s old at the client; DJ cutovers use
 `cutover_lead_s: 1.0` (§5.5), which this plan does not change.
+
+`no-cache` on the static web files is a **revalidate**, not a no-store: the
+browser keeps the file but asks the origin whether its ETag still matches, so
+a web edit reaches listeners on the next page load without a server restart
+and without a build step or a cache-busting filename.
 
 **Edge-generated off-air responses (not origin).** When an edge (or the
 gateway) cannot reach the origin, it answers by itself. The edge also
