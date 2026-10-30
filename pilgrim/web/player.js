@@ -68,21 +68,25 @@
   }, 90);
 
   /* ---------------- health / OFF AIR ---------------- */
+  function showOffAir() {
+    btn.disabled = true; offairEl.classList.remove("hidden"); setState("idle");
+  }
   async function pollHealth() {
     try {
       const r = await fetch("/api/health");
       const h = await r.json();
       if (!h.on_air) {
+        // While playing, health alone must not interrupt committed audio: the
+        // program/media fetches decide (gap test). Buffered audio finishes and
+        // fillWindow shows OFF AIR only once a fetch fails with the buffer dry.
         if (playing) return h;
-        btn.disabled = true; offairEl.classList.remove("hidden"); setState("idle");
-        setStatus(""); return h;
+        showOffAir(); setStatus(""); return h;
       }
       offairEl.classList.add("hidden"); btn.disabled = false;
       return h;
     } catch (e) {
       if (playing) return null;
-      btn.disabled = true; offairEl.classList.remove("hidden"); setState("idle");
-      return null;
+      showOffAir(); return null;
     }
   }
   function startHealth() {
@@ -296,6 +300,13 @@
       } catch (e) {
         if (!playing || token !== session || ptoken !== programToken) return;
         setStatus("waiting for audio: " + e.message);
+        if (ctx.currentTime >= nextWhen - 0.05) {
+          // Buffer is dry and the origin cannot be reached: off air.
+          stop(); showOffAir(); return;
+        }
+        // Back off; a dead origin must not be hammered every 100 ms.
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
       }
       if (cursor >= scheduleCursor) setState("buffering");
       await new Promise(r => setTimeout(r, 100));

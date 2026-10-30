@@ -94,7 +94,10 @@
         body: JSON.stringify({ text }),
       });
       const d = await r.json().catch(() => ({}));
-      if (r.status === 429) {
+      if (r.status === 503 && d.off_air) {
+        showErr("The station is off the air. Requests are closed.");
+        input.select();
+      } else if (r.status === 429) {
         showErr(d.detail || "Easy there — a few requests every ten minutes, please.");
         input.select();
       } else if (d.ok) {
