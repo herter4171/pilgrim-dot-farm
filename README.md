@@ -15,9 +15,13 @@ Put `LITELLM_TOKEN=...` in a git-ignored `.env` file at the repo root.
 ```sh
 make venv       # install Python dependencies
 make seed       # fill a new library using the real backends
-make run        # serve the station at http://localhost:5000
+make run        # start the station: public listener :5000, admin (DJ console) :5001
 make tui        # operator DJ console (Textual; needs PILGRIM_DJ_TOKEN for /api/admin/dj/*)
 ```
+
+The public listener serves the site and the edge-facing API; the admin listener
+(loopback by default) serves the full API and the DJ console. Binds and ports
+come from the `station` block in `pilgrim/config.yaml`.
 
 Seeding generates real audio and can take a while. The server also refills
 inventory in the background. The station keeps its media in `pilgrim/library/`

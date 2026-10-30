@@ -3,9 +3,12 @@
 
 station:
   name: "Pilgrim Dot Farm"
-  port: 5000
-  rng_seed: null          # set for deterministic tests/sim
+  port: 5000               # PUBLIC listener: edge-facing routes only
   host: "0.0.0.0"
+  admin_port: 5001         # ADMIN listener: full API incl. /api/admin/*
+  admin_host: "127.0.0.1"  # loopback only by default; never expose this
+  serve_web: true          # mount web/ on the public listener (single-host run)
+  rng_seed: null           # set for deterministic tests/sim
   timezone: America/Detroit  # DJ clock time (OVERHAUL 5.3)
 
 hosts:

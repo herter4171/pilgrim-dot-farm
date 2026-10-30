@@ -22,6 +22,11 @@ The address was read from `pilgrim/config.yaml` (`station.host` and
 No playback, health fan-out, voice sampling, generation, or administration
 endpoint was exercised.
 
+> **Listener (SPLIT_PLAN §1).** The console connects to the station's **admin
+> listener** — `http://{station.admin_host}:{station.admin_port}`
+> (`127.0.0.1:5001` by default), not the public listener. The public listener
+> deliberately has no `/api/admin/*` or `/api/station/start|stop` routes.
+
 The schema confirms these routes. Response details below come from the
 current `pilgrim/server.py`, not sampled live payloads: almost all response
 schemas are `{}`, so OpenAPI alone cannot generate a useful typed client.

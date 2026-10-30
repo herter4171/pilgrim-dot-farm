@@ -37,7 +37,7 @@ e2e:
 # --- run --------------------------------------------------------------
 run:
 	PATH="$(HOME)/bin:$(PATH)" LITELLM_TOKEN=$$(grep LITELLM_TOKEN .env | cut -d= -f2) \
-		$(BIN)/uvicorn pilgrim.server:create_app --factory --host 0.0.0.0 --port 5000
+		$(PY) -m pilgrim.server   # public + admin listeners from config.yaml
 
 logs:
 	tail -f pilgrim/logs/station.log

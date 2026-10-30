@@ -26,10 +26,12 @@ class DjError(Exception):
 
 class DjClient:
     def __init__(self, cfg: Config, base_url: str | None = None) -> None:
-        host = cfg.station.host
+        # The console talks to the ADMIN listener (SPLIT_PLAN §1.4): the public
+        # listener deliberately has no /api/admin/* routes.
+        host = cfg.station.admin_host
         if host in ("0.0.0.0", "::"):  # bind address is not a usable client URL
             host = "127.0.0.1"
-        self.base_url = (base_url or f"http://{host}:{cfg.station.port}").rstrip("/")
+        self.base_url = (base_url or f"http://{host}:{cfg.station.admin_port}").rstrip("/")
         token = load_dj_token()
         self._headers = {"Authorization": f"Bearer {token}"} if token else {}
         self._timeout = cfg.dj.request_timeout_s

@@ -76,14 +76,21 @@ Notes:
                                                    ▼
                  ┌─────────────── CLIENT (browser) ────────────────────────────────────┐
                  │  fetch ─▶ decodeAudioData ─▶ AudioBufferSourceNode.start(when)       │
-                 │  heartbeat {seq, position} ─▶ server (airplay + playhead)            │
+                 │  heartbeat {seq, position} ─▶ server (airplay + listener count)  │
                  └──────────────────────────────────────────────────────────────────────┘
 ```
 
 Program model: a **sequence** of items with sequence numbers, not wall-clock
-timestamps. Phase 1 assumes a single listener; the client reports its playhead
-via heartbeat, and the scheduler keeps the committed window full relative to
-that playhead. Wall-clock alignment only matters once the hour clock arrives.
+timestamps. Phase 1 assumes a single listener. The playhead runs on the
+**origin's clock** (`scheduler.py`), not on any client report: the scheduler
+keeps the committed window full relative to that clock. Heartbeats
+(`POST /api/station/heartbeat`, every 5 s per playing browser) feed the live
+listener count and the `airplay` ledger; they do **not** drive the playhead.
+Wall-clock alignment only matters once the hour clock arrives.
+
+*(Doc correction, SPLIT_PLAN §1.6: an earlier version of this section claimed
+the client reports its playhead via heartbeat and the scheduler follows it.
+That was never true in the code — see `scheduler.py`'s committed-window clock.)*
 
 Programme identity and manual control (TUI.md): the station carries an
 **`epoch`** (changes on restart) and a programme **`revision`** (changes only
@@ -679,6 +686,23 @@ has no random-selector weight and no inventory refill target.
 | GET | `/api/admin/dj/phrases/{job_id}` | Phrase job: stage, character/voice snapshot, cleaned text, expiry, failure, or `{media_id, duration_s}` when ready |
 | POST | `/api/admin/dj/phrases/validate` | Pure cleaned-text validation → `{cleaned_text, changes, text_hash, ok, rejected_reason}`; no synthesis or scheduling |
 
+**Listeners (SPLIT_PLAN §1).** One station process serves two HTTP listeners.
+The **public** listener (`station.host:station.port`; `:5000` on the origin)
+serves only the edge-facing routes: `GET /api/station/program`,
+`GET /api/station/state`, `POST /api/station/heartbeat`,
+`GET /api/media/{id}`, `GET|POST /api/requests`, `POST /api/visitors`, and
+`GET /api/health`. Its `/api/health` returns only `{"on_air", "time"}` and
+performs no backend or inventory probe — it is the only health shape a browser
+or edge sees. Any other `/api/*` path on the public listener is `404`. The
+**admin** listener (`station.admin_host:station.admin_port`; loopback `:5001`)
+is a superset: every route above plus `/api/station/start`,
+`/api/station/stop`, `/api/admin/voices`, and every `/api/admin/dj/*` route,
+with the full health payload. `/api/admin/*` is admin-only and must never be
+reachable through an edge; production binds the admin listener to loopback.
+The static client is mounted on the public listener only when
+`station.serve_web` is true (single-host runs); edges serve `pilgrim/web/`
+themselves.
+
 **Operator authentication.** Every `/api/admin/dj/*` route requires a dedicated
 bearer token from **`PILGRIM_DJ_TOKEN`** (env; documented in README.md; never
 reuse `LITELLM_TOKEN`). Missing credentials (401/403) disable DJ mutations
@@ -777,6 +801,12 @@ audio:
   min_words_per_s: 1.2
 
 station:
+  name: Pilgrim Dot Farm
+  host: 0.0.0.0             # public listener bind
+  port: 5000                # public listener port (edge-facing routes only)
+  admin_host: 127.0.0.1     # admin listener bind: loopback only
+  admin_port: 5001          # admin listener port; must differ from `port`
+  serve_web: true           # mount web/ on the public listener (single-host runs)
   timezone: America/Detroit   # DJ clock time (OVERHAUL 5.3)
 
 talk:

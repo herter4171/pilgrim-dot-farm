@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 ROOT = Path(__file__).resolve().parent
 
@@ -272,11 +272,32 @@ class Library(BaseModel):
 
 
 class Station(BaseModel):
+    """Station identity + the two listener sockets (SPLIT_PLAN Step 1).
+
+    `host`/`port` are the PUBLIC listener: only the edge-facing routes (§11).
+    `admin_host`/`admin_port` are the ADMIN listener: every route including
+    `/api/admin/*` and `/api/station/start|stop`. The admin bind defaults to
+    loopback; production must never expose it. `serve_web` mounts the static
+    client on the public listener for single-host runs; on the M5 the edges
+    serve the site instead and the operator sets it false.
+    """
     name: str = "Pilgrim Dot Farm"
     port: int = 5000
+    admin_host: str = "127.0.0.1"
+    admin_port: int = 5001
+    serve_web: bool = True
     rng_seed: int | None = None
     host: str = "0.0.0.0"
     timezone: str = "America/Detroit"  # DJ clock time (OVERHAUL 5.3)
+
+    @model_validator(mode="after")
+    def _distinct_listeners(self) -> Station:
+        if self.admin_port == self.port:
+            raise ValueError(
+                f"station.admin_port ({self.admin_port}) must differ from "
+                f"station.port ({self.port}); the public and admin listeners "
+                "are separate sockets")
+        return self
 
 
 class Talk(BaseModel):

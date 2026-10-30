@@ -1,8 +1,10 @@
-"""Station server (RADIO.md §11). FastAPI + uvicorn on config.port.
+"""Station server (RADIO.md §11).
 
-Serves the web client, the program/live endpoints, media, and health. Starts
-the producer + scheduler in the background so the station is on air regardless
-of whether a listener is tuned in.
+Two listeners on one Station (SPLIT_PLAN §1): a PUBLIC app with only the
+edge-facing routes (program/state/heartbeat/media/requests/visitors/health)
+and an ADMIN app with the full API including `/api/admin/*` and station
+control. The scheduler + producer run in the background so the station is on
+air regardless of whether a listener is tuned in.
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ import logging
 import time
 import uuid
 from collections import deque
+from collections.abc import Awaitable, Callable, Iterator
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -393,45 +396,76 @@ class RequestIn(BaseModel):
     text: str = Field(..., min_length=1)
 
 
-def create_app(cfg: Config | None = None) -> FastAPI:
-    cfg = cfg or load_config()
+def build_station(cfg: Config) -> Station:
+    """Create the one Station for this process (store, pipelines, scheduler)."""
     setup_logging(cfg)
     api_key = load_api_key()
     if not api_key:
         logging.getLogger("radio.server").warning(
             "LITELLM_TOKEN not set (env or .env); LLM and MCP calls will fail")
-    station = Station(cfg, api_key)
-    app = FastAPI(title="Pilgrim Dot Farm Radio", version="0.2.0")
-    app.state.station = station
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
-                       allow_headers=["*"])
-    # request-line rate limit: client.host -> timestamps within the window (4.3)
+    return Station(cfg, api_key)
+
+
+def _make_rate_limiter(cfg: Config) -> Callable[[Request], bool]:
+    """Per-app request-line rate limit: client.host -> timestamps (4.3).
+
+    Each app gets its own window, so a client hitting both listeners is
+    limited per listener. The public app is the only one a browser reaches.
+    """
     _rate: dict[str, deque[float]] = {}
+    limit = cfg.requests.per_client_per_10min
 
     def _rate_limited(request: Request) -> bool:
         host = request.client.host if request.client else "unknown"
         now = time.monotonic()
         window = 10 * 60.0
-        dq = _rate.setdefault(host, deque(maxlen=cfg.requests.per_client_per_10min))
+        dq = _rate.setdefault(host, deque(maxlen=limit))
         # drop timestamps outside the 10-minute window
         while dq and now - dq[0] > window:
             dq.popleft()
-        if len(dq) >= cfg.requests.per_client_per_10min:
+        if len(dq) >= limit:
             return True
         dq.append(now)
         return False
 
+    return _rate_limited
+
+
+async def _public_health(station: Station) -> dict:
+    """Public `/api/health`: only what the browser reads.
+
+    No backend probes, no inventory query, no network call (SPLIT_PLAN §1.3).
+    `on_air` is the scheduler's committed coverage, which is pure.
+    """
+    return {"on_air": station.on_air, "time": time.time()}
+
+
+async def _admin_health(station: Station) -> dict:
+    """Full health for the admin listener (unchanged from today)."""
+    return await station.health()
+
+
+def _mount_web(app: FastAPI, cfg: Config) -> None:
+    """Mount the static client at "/" (RADIO §9, §11). Mounted last so API
+    routes take precedence; html=True serves index.html at "/"."""
+    web_dir = ROOT / cfg.library.web_dir
+    app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
+
+
+def _add_public_routes(app: FastAPI, station: Station,
+                       health: Callable[[Station], Awaitable[dict]]) -> None:
+    """Register the edge-facing surface exactly once, shared by both apps.
+
+    Only these routes exist on the public listener (SPLIT_PLAN §1.2). The
+    admin app calls this too, passing the full health handler; admin-only
+    routes are added separately by `_add_admin_routes`.
+    """
+    cfg = station.cfg
+    _rate_limited = _make_rate_limiter(cfg)
+
     @app.get("/api/health")
-    async def health():
-        return await station.health()
-
-    @app.post("/api/station/start")
-    async def start():
-        return {"ok": True, "message": "station is always on air"}
-
-    @app.post("/api/station/stop")
-    async def stop():
-        return {"ok": True, "message": "stop is a no-op in Phase 1 (station stays on air)"}
+    async def health_endpoint():
+        return await health(station)
 
     @app.get("/api/station/program")
     async def program(after_seq: int | None = Query(default=None, ge=0),
@@ -470,6 +504,84 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         if not p.exists():
             raise HTTPException(404, "media missing")
         return FileResponse(str(p), media_type="audio/flac")
+
+    @app.post("/api/requests")
+    async def submit_request(payload: RequestIn, request: Request):
+        if _rate_limited(request):
+            raise HTTPException(
+                429,
+                "Easy there — a few requests every ten minutes, please.")
+        text = payload.text.strip()
+        if not text or len(text) > cfg.requests.max_length:
+            raise HTTPException(422, "request empty or too long")
+        t0 = time.monotonic()
+        # Deterministic pre-filter first: URLs/contact info never reach the LLM (4.1).
+        pref = prefilter(text)
+        if pref:
+            req = station.db.add_request(text, cap=None,
+                                         status="rejected", reason=pref)
+            log.info("request.received", extra={"request_id": req["id"],
+                                                  "len": len(text), "prefilter": True})
+            log.info("request.moderated", extra={
+                "request_id": req["id"], "allowed": False, "reason": pref,
+                "prefilter": True, "duration_ms": 0})
+            board = station.db.request_board(cfg.requests.queue_cap)
+            return {
+                "ok": False, "rejected": True, "request": req, "reason": pref,
+                "queue": board["queue"], "recent": board["recent"],
+                "cap": cfg.requests.queue_cap,
+            }
+        allowed, reason = await station.moderator.moderate(text)
+        status = "queued" if allowed else "rejected"
+        req = station.db.add_request(text, cap=None,
+                                     status=status, reason=None if allowed else reason)
+        log.info("request.received", extra={"request_id": req["id"], "len": len(text)})
+        log.info("request.moderated", extra={
+            "request_id": req["id"], "allowed": allowed, "reason": reason,
+            "prefilter": False,
+            "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
+        board = station.db.request_board(cfg.requests.queue_cap)
+        return {
+            "ok": allowed,
+            "rejected": not allowed,
+            "request": req,
+            "reason": None if allowed else reason,
+            "queue": board["queue"],
+            "recent": board["recent"],
+            "cap": cfg.requests.queue_cap,
+        }
+
+    @app.get("/api/requests")
+    async def list_requests():
+        board = station.db.request_board(cfg.requests.queue_cap)
+        return {**board, "cap": cfg.requests.queue_cap}
+
+    @app.post("/api/visitors")
+    async def register_visitor(request: Request):
+        """Register the server-derived client IP and return the unique count
+        (RADIO §14). Idempotent per client; media fetches / heartbeats / health
+        polls / request submissions never hit this. Always 200 with a count."""
+        n = station.register_visitor(request)
+        resp = JSONResponse({"unique_visitors": n},
+                            headers={"Cache-Control": "no-store"})
+        return resp
+
+
+def _add_admin_routes(app: FastAPI, station: Station) -> None:
+    """Admin-only surface: control + DJ console (SPLIT_PLAN §1.2).
+
+    Never registered on the public app. The admin app is a superset, so the
+    TUI and existing tests keep working against it.
+    """
+    cfg = station.cfg
+
+    @app.post("/api/station/start")
+    async def start():
+        return {"ok": True, "message": "station is always on air"}
+
+    @app.post("/api/station/stop")
+    async def stop():
+        return {"ok": True, "message": "stop is a no-op in Phase 1 (station stays on air)"}
 
     @app.get("/api/admin/voices")
     async def admin_voices():
@@ -565,75 +677,65 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                 "detail": "no phrase job with that id"})
         return job
 
-    @app.post("/api/requests")
-    async def submit_request(payload: RequestIn, request: Request):
-        if _rate_limited(request):
-            raise HTTPException(
-                429,
-                "Easy there — a few requests every ten minutes, please.")
-        text = payload.text.strip()
-        if not text or len(text) > cfg.requests.max_length:
-            raise HTTPException(422, "request empty or too long")
-        t0 = time.monotonic()
-        # Deterministic pre-filter first: URLs/contact info never reach the LLM (4.1).
-        pref = prefilter(text)
-        if pref:
-            req = station.db.add_request(text, cap=None,
-                                         status="rejected", reason=pref)
-            log.info("request.received", extra={"request_id": req["id"],
-                                                  "len": len(text), "prefilter": True})
-            log.info("request.moderated", extra={
-                "request_id": req["id"], "allowed": False, "reason": pref,
-                "prefilter": True, "duration_ms": 0})
-            board = station.db.request_board(cfg.requests.queue_cap)
-            return {
-                "ok": False, "rejected": True, "request": req, "reason": pref,
-                "queue": board["queue"], "recent": board["recent"],
-                "cap": cfg.requests.queue_cap,
-            }
-        allowed, reason = await station.moderator.moderate(text)
-        status = "queued" if allowed else "rejected"
-        req = station.db.add_request(text, cap=None,
-                                     status=status, reason=None if allowed else reason)
-        log.info("request.received", extra={"request_id": req["id"], "len": len(text)})
-        log.info("request.moderated", extra={
-            "request_id": req["id"], "allowed": allowed, "reason": reason,
-            "prefilter": False,
-            "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
-        board = station.db.request_board(cfg.requests.queue_cap)
-        return {
-            "ok": allowed,
-            "rejected": not allowed,
-            "request": req,
-            "reason": None if allowed else reason,
-            "queue": board["queue"],
-            "recent": board["recent"],
-            "cap": cfg.requests.queue_cap,
-        }
 
-    @app.get("/api/requests")
-    async def list_requests():
-        board = station.db.request_board(cfg.requests.queue_cap)
-        return {**board, "cap": cfg.requests.queue_cap}
+def _new_app(title: str) -> FastAPI:
+    app = FastAPI(title=title, version="0.2.0")
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
+                       allow_headers=["*"])
+    return app
 
-    @app.post("/api/visitors")
-    async def register_visitor(request: Request):
-        """Register the server-derived client IP and return the unique count
-        (RADIO §14). Idempotent per client; media fetches / heartbeats / health
-        polls / request submissions never hit this. Always 200 with a count."""
-        n = station.register_visitor(request)
-        resp = JSONResponse({"unique_visitors": n},
-                            headers={"Cache-Control": "no-store"})
-        return resp
+
+def _add_api_404(app: FastAPI) -> None:
+    """Any `/api/*` path the public app does not register is 404, never 405.
+
+    The static mount at "/" would otherwise answer unmatched POSTs with 405
+    (SPLIT_PLAN §1.5 expects 404 for control routes on the public listener).
+    Registered before the static mount; real routes are matched first.
+    """
+
+    @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT",
+                                               "PATCH", "DELETE", "HEAD",
+                                               "OPTIONS"],
+                   include_in_schema=False)
+    async def _unknown_api(rest: str):
+        raise HTTPException(404, "not found")
+
+
+def create_public_app(cfg: Config, station: Station) -> FastAPI:
+    """The public listener: only the edge-facing routes (§1.2)."""
+    app = _new_app("Pilgrim Dot Farm Radio")
+    app.state.station = station
+    _add_public_routes(app, station, _public_health)
+    _add_api_404(app)
+    if cfg.station.serve_web:
+        _mount_web(app, cfg)
+    return app
+
+
+def create_admin_app(cfg: Config, station: Station) -> FastAPI:
+    """The admin listener: full API, no static web mount (§1.2)."""
+    app = _new_app("Pilgrim Dot Farm Radio (admin)")
+    app.state.station = station
+    _add_public_routes(app, station, _admin_health)
+    _add_admin_routes(app, station)
+    return app
+
+
+def create_app(cfg: Config | None = None) -> FastAPI:
+    """Legacy single-app factory for tests (kept name + signature).
+
+    Returns the admin app with the static web mount and the deferred startup
+    hook, exactly as before (SPLIT_PLAN §1.2). Production uses `main()`.
+    """
+    cfg = cfg or load_config()
+    station = build_station(cfg)
+    app = create_admin_app(cfg, station)
+    if cfg.station.serve_web:
+        _mount_web(app, cfg)
 
     @app.on_event("startup")
     async def _startup():
         asyncio.create_task(_post_start(station))
-
-    # Serve the web client (RADIO.md §9, §11 GET / static UI). Mounted last so
-    # the API routes above take precedence; html=True serves index.html at "/".
-    web_dir = ROOT / cfg.library.web_dir
-    app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
 
     return app
 
@@ -644,12 +746,47 @@ async def _post_start(station: Station) -> None:
 
 
 def main() -> None:
+    import signal
+
     import uvicorn
+
     cfg = load_config()
-    app = create_app(cfg)
-    # log_config=None: uvicorn's access/error lines propagate to the root JSON
-    # logger, so they carry timestamps like everything else (AGENTS §5)
-    uvicorn.run(app, host=cfg.station.host, port=cfg.station.port, log_config=None)
+    station = build_station(cfg)
+    public = create_public_app(cfg, station)
+    admin = create_admin_app(cfg, station)
+
+    class _Server(uvicorn.Server):
+        """uvicorn.Server without its own signal capture.
+
+        Two servers share one event loop, so each would install SIGINT/SIGTERM
+        and the second install would replace the first — leaving one listener
+        running after Ctrl-C/SIGTERM. `main()` installs a single handler that
+        stops both (SPLIT_PLAN §1.2, deviation noted in the report).
+        """
+
+        @contextlib.contextmanager
+        def capture_signals(self) -> Iterator[None]:
+            yield
+
+    servers = [
+        _Server(uvicorn.Config(public, host=cfg.station.host,
+                               port=cfg.station.port, log_config=None)),
+        _Server(uvicorn.Config(admin, host=cfg.station.admin_host,
+                               port=cfg.station.admin_port, log_config=None)),
+    ]
+
+    def _shutdown(signum: int, frame: object) -> None:
+        for s in servers:
+            s.should_exit = True
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, _shutdown)
+
+    async def _serve() -> None:
+        await station.startup()  # exactly once per process
+        await asyncio.gather(*(s.serve() for s in servers))
+
+    asyncio.run(_serve())
 
 
 if __name__ == "__main__":
