@@ -131,6 +131,31 @@ grant matches the two tags, enroll edges as ephemeral/pre-approved/tagged with
 keys from SSM, forbid exit nodes and subnet routes on edges, and enable HTTPS
 certificates + MagicDNS. The origin tag must never be a grant source.
 
+## Operator IaC checklist (SPLIT_PLAN §9)
+
+The operator owns Packer, Ansible, AWS, Cloudflare and Tailscale enrollment.
+This repo does not call the Cloudflare API or install Tailscale.
+
+- **AMI.** nginx at the same pinned version; the repo checked out at a pinned
+  SHA (edges use only `pilgrim/web/` and `pilgrim/deploy/`); the rendered edge
+  config; `tailscaled` enrolled at boot as an ephemeral `tag:radio-edge` node
+  with its key read from SSM (never baked into the AMI); nginx started
+  **after** Tailscale is up and MagicDNS resolves the gateway.
+- **Load balancer health check.** `GET /edge-health`. Never an `/api/` path:
+  `/edge-health` never contacts the origin, so an origin outage does not kill
+  healthy edges.
+- **Cloudflare.** Proxied DNS; SSL mode Full (strict) with the edge's Let's
+  Encrypt certificate; a Cache Rule making `/api/media/*` eligible for cache
+  and respecting origin `Cache-Control` (Cloudflare does not cache
+  extensionless paths by default); `/api/*` otherwise follows origin headers;
+  rate-limit rules on `POST /api/requests` and `POST /api/visitors`; real IP
+  via `CF-Connecting-IP` (the edge `realip` include with Cloudflare's
+  published ranges, refreshed periodically). Confirm Cloudflare's terms allow
+  serving FLAC audio at the expected volume.
+- **Deploy order.** Ship API changes to the M5 first and keep them
+  backward-compatible with the UI already on the edges. Ship UI changes as a
+  new AMI plus an instance refresh.
+
 ## Do not
 
 - Do not run these files against the production `pilgrim-nginx` container.
