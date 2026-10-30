@@ -52,6 +52,7 @@ placeholder would remain in the output.
 | `@@ORIGIN_HOST@@` | gateway hostname (Host header, TLS SNI/verify) | `127.0.0.1` |
 | `@@REALIP_INCLUDE@@` | real-IP include file | `/cfg/realip.conf` |
 | `@@CA_BUNDLE@@` | CA bundle for upstream TLS | `/etc/ssl/certs/ca-certificates.crt` |
+| `@@EXTRA_ALLOW_INCLUDE@@` | extra locations (test only) | `/cfg/extra-none.conf` |
 
 ### Gateway (`gateway/nginx.conf.template`)
 

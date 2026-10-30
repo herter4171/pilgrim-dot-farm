@@ -3,7 +3,7 @@ PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
 FFMPEG := $(HOME)/bin/ffmpeg
 
-.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check
+.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke
 
 # --- setup ---------------------------------------------------------------
 venv:
@@ -36,6 +36,12 @@ e2e:
 
 deploy-check:
 	bash pilgrim/deploy/local/deploy_check.sh
+
+e2e-split:
+	bash pilgrim/deploy/local/e2e_split.sh
+
+split-smoke:
+	bash pilgrim/deploy/local/smoke.sh
 
 # --- run --------------------------------------------------------------
 run:

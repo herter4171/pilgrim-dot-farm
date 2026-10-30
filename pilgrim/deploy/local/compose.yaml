@@ -1,0 +1,50 @@
+# Pilgrim Dot Farm — LOCAL SPLIT (SPLIT_PLAN §7.1)
+#
+# Origin (e2e server, started by stack.sh) + gateway + edge, all on loopback.
+# Both nginx services use the pinned production image and the SAME rendered
+# configs as production; only the addresses/values differ. `network_mode: host`
+# makes 127.0.0.1:18080/18090 host loopback (Linux; this host).
+#
+# stack.sh exports the PILGRIM_* paths below and runs:
+#   docker compose -f local/compose.yaml --env-file <state>/env -p pilgrim-split-local up -d
+#
+# Project name is fixed so it can never collide with pilgrim-nginx.
+
+name: pilgrim-split-local
+
+services:
+  gateway:
+    image: nginx:1.27-alpine
+    network_mode: host
+    read_only: true
+    # Run as the invoking user so the host-mounted cache/config files stay
+    # owned by that user and teardown can remove them (the prod gateway runs
+    # as the image's nginx user instead).
+    user: "${PILGRIM_UID:-0}:${PILGRIM_GID:-0}"
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    tmpfs:
+      - /var/cache/nginx:mode=1777
+      - /var/run:mode=1777
+      - /var/log/nginx:mode=1777
+      - /tmp:mode=1777
+    volumes:
+      - ${PILGRIM_GATEWAY_CONF:?stack.sh must export PILGRIM_GATEWAY_CONF}:/etc/nginx/nginx.conf:ro
+      - ${PILGRIM_EXTRA_CONF:?stack.sh must export PILGRIM_EXTRA_CONF}:/etc/nginx/extra.conf:ro
+
+  edge:
+    image: nginx:1.27-alpine
+    network_mode: host
+    read_only: true
+    user: "${PILGRIM_UID:-0}:${PILGRIM_GID:-0}"
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    tmpfs:
+      - /var/cache/nginx:mode=1777
+      - /var/run:mode=1777
+      - /var/log/nginx:mode=1777
+      - /tmp:mode=1777
+    volumes:
+      - ${PILGRIM_EDGE_CONF:?stack.sh must export PILGRIM_EDGE_CONF}:/etc/nginx/nginx.conf:ro
+      - ${PILGRIM_REALIP_CONF:?stack.sh must export PILGRIM_REALIP_CONF}:/etc/nginx/realip.conf:ro
+      - ${PILGRIM_EXTRA_CONF:?stack.sh must export PILGRIM_EXTRA_CONF}:/etc/nginx/extra.conf:ro
+      - ${PILGRIM_WEB_ROOT:?stack.sh must export PILGRIM_WEB_ROOT}:/web:ro
+      - ${PILGRIM_CACHE_DIR:?stack.sh must export PILGRIM_CACHE_DIR}:/cache

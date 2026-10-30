@@ -15,7 +15,12 @@ print(station.model_dump_json())`,
 ], { cwd: root, encoding: "utf8" });
 process.env.PILGRIM_E2E_STATION = stationJSON;
 const station = JSON.parse(stationJSON);
-const baseURL = `http://${station.host}:${station.port}`;
+// SPLIT_PLAN §7.2: when the split stack is managed externally (make
+// e2e-split), baseURL is the EDGE and Playwright must not spawn the e2e
+// server itself (the script already started it). Without the env var the
+// config behaves exactly as before.
+const externalBaseURL = process.env.PILGRIM_E2E_BASE_URL;
+const baseURL = externalBaseURL || `http://${station.host}:${station.port}`;
 
 export default defineConfig({
   testDir: "./",
@@ -23,7 +28,7 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   use: { baseURL, viewport: { width: 480, height: 400 }, headless: true, channel: "chrome" },
-  webServer: {
+  webServer: externalBaseURL ? undefined : {
     command: `.venv/bin/python -m uvicorn pilgrim.tests.e2e.e2e_server:app --host ${station.host} --port ${station.port}`,
     cwd: root,
     url: `${baseURL}/api/health`,

@@ -18,6 +18,7 @@ EDGE_VALUES = {
     "ORIGIN_HOST": "127.0.0.1",
     "REALIP_INCLUDE": "/cfg/realip.conf",
     "CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
+    "EXTRA_ALLOW_INCLUDE": "/cfg/extra-none.conf",
 }
 
 GATEWAY_VALUES = {

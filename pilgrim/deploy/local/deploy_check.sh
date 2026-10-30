@@ -27,7 +27,8 @@ cd "$ROOT"
     --set ORIGIN_HOSTPORT=127.0.0.1:18090 \
     --set ORIGIN_HOST=127.0.0.1 \
     --set REALIP_INCLUDE=/cfg/realip.conf \
-    --set CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+    --set CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    --set EXTRA_ALLOW_INCLUDE=/cfg/extra-none.conf
 
 "$PY" -m pilgrim.tools.render_deploy \
     pilgrim/deploy/gateway/nginx.conf.template "$TMP/gateway/nginx.conf" \

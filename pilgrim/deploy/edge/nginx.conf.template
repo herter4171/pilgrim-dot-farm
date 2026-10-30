@@ -226,6 +226,10 @@ http {
         # (not ^~) so the media regex above still matches.
         location /api/ { return 404; }
 
+        # Test-only extra locations (prod: an empty file). The local e2e
+        # render adds ^~ /api/test/ for the e2e server's report endpoint.
+        include @@EXTRA_ALLOW_INCLUDE@@;
+
         # 12. Edge-generated off-air bodies. These are NOT from the origin; the
         # origin's own 4xx/5xx pass through untouched.
         location @offair {

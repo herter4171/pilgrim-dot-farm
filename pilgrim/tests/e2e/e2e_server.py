@@ -117,22 +117,24 @@ def build_app() -> FastAPI:
         else:
             items = store.program_after(after_seq)
             start_offset = 0.0
-        return {"items": [{"seq": it["seq"], "media_id": it["item_id"],
+        return JSONResponse({"items": [{"seq": it["seq"], "media_id": it["item_id"],
                            "type": it["type"], "duration_s": it["duration_s"],
                            "sfx": sched.overlays_for(it["seq"]),
                            "title": (store.get_item(it["item_id"]) or {}).get("title") or "",
                            "artist": (store.get_item(it["item_id"]) or {}).get("artist") or ""}
                           for it in items], "start_offset_s": start_offset,
                 "epoch": sched.epoch, "revision": sched.revision,
-                "reset": stale, "server_time": time.time()}
+                "reset": stale, "server_time": time.time()},
+                headers={"Cache-Control": "public, max-age=1"})
 
     @app.get("/api/station/state")
     async def state():
         seq, offset = sched.on_air()
-        return {"epoch": sched.epoch, "revision": sched.revision,
+        return JSONResponse({"epoch": sched.epoch, "revision": sched.revision,
                 "server_time": time.time(), "current_seq": seq,
                 "current_offset_s": offset, "prepared_cutover": None,
-                "listeners": 0}
+                "listeners": 0},
+                headers={"Cache-Control": "public, max-age=1"})
 
     @app.post("/api/station/heartbeat")
     async def heartbeat(payload: dict):
@@ -143,20 +145,26 @@ def build_app() -> FastAPI:
             started_at=payload.get("started_at"),
             position=payload.get("position"),
             underrun=1 if payload.get("underrun") else 0)
-        return {"ok": True}
+        return JSONResponse({"ok": True},
+                            headers={"Cache-Control": "no-store"})
 
     @app.get("/api/media/{item_id}")
     async def media(item_id: int):
         it = store.get_item(item_id)
         if not it:
-            return {"error": "no such item"}
+            return JSONResponse({"detail": "no such item"}, status_code=404,
+                                headers={"Cache-Control": "public, max-age=30"})
         p = Path(it["media_path"])
-        return FileResponse(str(p), media_type="audio/flac")
+        return FileResponse(str(p), media_type="audio/flac",
+                            headers={"Cache-Control":
+                                     "public, max-age=31536000, immutable"})
 
     @app.get("/api/health")
     async def health():
-        return {"on_air": True, "committed_coverage_s": sched.coverage(),
-                "inventory": {}, "time": time.time()}
+        return JSONResponse({"on_air": True,
+                "committed_coverage_s": sched.coverage(),
+                "inventory": {}, "time": time.time()},
+                headers={"Cache-Control": "public, max-age=2"})
 
     @app.post("/api/visitors")
     async def visitors(request: Request):
@@ -169,7 +177,8 @@ def build_app() -> FastAPI:
 
     @app.get("/api/requests")
     async def list_requests():
-        return {"queue": [], "recent": [], "cap": 10}
+        return JSONResponse({"queue": [], "recent": [], "cap": 10},
+                            headers={"Cache-Control": "public, max-age=2"})
 
     @app.post("/api/requests")
     async def submit_request(payload: dict):
@@ -177,8 +186,9 @@ def build_app() -> FastAPI:
         recent = [{"id": i, "text": f"played {i}",
                    "song_title": f"Song {i}", "song_artist": "Artist"}
                   for i in range(1, 6)]
-        return {"ok": True, "rejected": False, "queue": [],
-                "recent": recent, "cap": 10}
+        return JSONResponse({"ok": True, "rejected": False, "queue": [],
+                "recent": recent, "cap": 10},
+                headers={"Cache-Control": "no-store"})
 
     @app.post("/api/test/splice")
     async def splice():
@@ -212,8 +222,12 @@ def build_app() -> FastAPI:
             if row["item_type"] and (not seqs or row["seq"] != seqs[-1]):
                 seqs.append(row["seq"])
         underrun = sum(1 for r in rows if r["underrun"])
+        # SPLIT_PLAN §7.3 check 8: the origin-side canonical visitor IPs, so
+        # the smoke test can prove a spoofed X-Real-IP was discarded.
+        ips = [r[0] for r in store._conn.execute(
+            "SELECT ip FROM visitor_ips ORDER BY ip").fetchall()]
         return {"seqs": seqs, "underrun": underrun,
-                "coverage_s": sched.coverage()}
+                "coverage_s": sched.coverage(), "visitor_ips": ips}
 
     web_dir = Path(__file__).resolve().parents[2] / "web"
     app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
