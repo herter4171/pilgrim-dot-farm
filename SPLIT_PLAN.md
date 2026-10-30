@@ -290,6 +290,22 @@ safely.
   the **first** entry of `X-Forwarded-For` (today's behaviour). From an
   untrusted peer, use the peer address and ignore both headers (today's
   behaviour).
+- **One trust decision, not two.** uvicorn 0.54 defaults to
+  `proxy_headers=True` with `forwarded_allow_ips="127.0.0.1,::1"`. It
+  rewrites `request.client.host` from `X-Forwarded-For` **before** our code
+  runs, so `_client_ip`'s "peer" is often already the browser IP, and the
+  trust list only appears to work. In `main()`, pass `proxy_headers=False` to
+  **both** `uvicorn.Config(...)` calls. `visitors.trusted_proxies` is then the
+  only place that decides trust. `make run` uses `main()`, so it is covered
+  too.
+- **The request-line rate limiter must key on the resolved client IP.**
+  `_make_rate_limiter` (server.py) keys on `request.client.host`. Once
+  `proxy_headers=False` is set, behind the gateway that is the gateway's
+  address for everyone, so the whole station would share one
+  3-per-10-minutes bucket. Key it on `station._client_ip(request)` (fall
+  back to `request.client.host` only when that returns `None`). Test: two
+  requests from a trusted peer with different `X-Real-IP` values are limited
+  separately, and the same `X-Real-IP` is limited together.
 
 ### 3.3 Tests (fakes only)
 
