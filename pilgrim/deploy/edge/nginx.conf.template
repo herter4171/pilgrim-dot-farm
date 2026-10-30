@@ -69,7 +69,9 @@ http {
 
         # 4. Static site. Edges set the static cache policy.
         location / {
-            try_files $uri $uri/ /index.html;
+            # A missing file is a 404, never index.html with a 200 (the
+            # origin static mount never did that; a typo must show up).
+            try_files $uri $uri/ =404;
             add_header Cache-Control "public, max-age=60" always;
         }
 

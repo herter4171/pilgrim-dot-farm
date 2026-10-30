@@ -14,7 +14,7 @@ name: pilgrim-split-local
 
 services:
   gateway:
-    image: nginx:1.27-alpine
+    image: nginx:1.30.6-alpine
     network_mode: host
     read_only: true
     # Run as the invoking user so the host-mounted cache/config files stay
@@ -32,7 +32,7 @@ services:
       - ${PILGRIM_EXTRA_CONF:?stack.sh must export PILGRIM_EXTRA_CONF}:/etc/nginx/extra.conf:ro
 
   edge:
-    image: nginx:1.27-alpine
+    image: nginx:1.30.6-alpine
     network_mode: host
     read_only: true
     user: "${PILGRIM_UID:-0}:${PILGRIM_GID:-0}"

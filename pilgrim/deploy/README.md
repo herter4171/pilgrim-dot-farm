@@ -27,7 +27,8 @@ throwaway container). Everything else is for the operator.
 
 ## Pinned images
 
-- nginx: **`nginx:1.27-alpine`** (official image). `make deploy-check` uses this
+- nginx: **`nginx:1.30.6-alpine`** (official image; equals `stable-alpine`, digest
+  `sha256:0e52bd05…`, checked 2026-10-30). `make deploy-check` uses this
   exact tag.
 - tailscale: pinned to an exact release tag in `gateway/compose.yaml`
   (Step 6). Do not use `latest`.
@@ -75,7 +76,7 @@ placeholder would remain in the output.
 ```
 
 `make deploy-check` renders both templates into a temp directory and validates
-them with `nginx -t` in a throwaway `nginx:1.27-alpine` container. The temp dir
+them with `nginx -t` in a throwaway `nginx:1.30.6-alpine` container. The temp dir
 is mounted rw because nginx validates `proxy_cache_path` by creating/chowning
 its cache directories.
 
@@ -113,7 +114,7 @@ docker compose --env-file /secure/pilgrim-gateway.env up -d
 
 The env file (outside the repo) contains `TS_AUTHKEY=...`. Image tags are
 pinned in `gateway/compose.yaml` (`tailscale/tailscale:v1.104.4`,
-`nginx:1.27-alpine`); do not use `latest`.
+`nginx:1.30.6-alpine`); do not use `latest`.
 
 ### `gateway/serve.json`
 

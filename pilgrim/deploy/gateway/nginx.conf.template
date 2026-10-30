@@ -24,7 +24,13 @@ http {
     # 6. Rate limits keyed by the connecting edge ($remote_addr). These protect
     # the M5 if an edge is compromised and floods it with fake client IPs.
     # Starting points; the operator tunes them.
-    limit_req_zone $remote_addr zone=req_line:10m rate=1r/s;
+    # The request-line limit applies to POST (submissions) only: the GET
+    # board refresh shares the location, and an empty key is never limited.
+    map $request_method $req_line_key {
+        POST    $binary_remote_addr;
+        default "";
+    }
+    limit_req_zone $req_line_key zone=req_line:10m rate=1r/s;
     limit_req_zone $remote_addr zone=visitors:10m rate=10r/s;
     limit_req_zone $remote_addr zone=heartbeat:10m rate=200r/s;
     limit_req_status 429;

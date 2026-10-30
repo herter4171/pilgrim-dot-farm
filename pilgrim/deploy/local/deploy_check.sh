@@ -6,7 +6,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 PY="$ROOT/.venv/bin/python"
-IMAGE="nginx:1.27-alpine"
+IMAGE="nginx:1.30.6-alpine"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

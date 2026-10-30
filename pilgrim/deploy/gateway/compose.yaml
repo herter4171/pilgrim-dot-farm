@@ -1,7 +1,8 @@
 # Pilgrim Dot Farm — ORIGIN GATEWAY compose (SPLIT_PLAN §6.2)
 #
 # Operator runs this on the M5. Two services share one network namespace:
-#   tailscale: joins the tailnet as an ephemeral-ish origin node and serves
+#   tailscale: joins the tailnet as a PERSISTENT origin node (state volume;
+#              never ephemeral, unlike the edges) and serves
 #              HTTPS :443 on the tailnet, proxying to 127.0.0.1:8090.
 #   gateway:   the allowlist nginx, listening on 127.0.0.1:8090 inside that
 #              same namespace. No published ports.
@@ -28,13 +29,17 @@ services:
       TS_USERSPACE: "true"
       TS_STATE_DIR: /var/lib/tailscale
       TS_SERVE_CONFIG: /config/serve.json
+      # Log in only when not already logged in (state persists in the
+      # volume), so a restart never re-auths with an expired one-off key.
+      # Verified in v1.104.4 cmd/containerboot (settings.go, main.go).
+      TS_AUTH_ONCE: "true"
     volumes:
       - tailscale-state:/var/lib/tailscale
       - ./serve.json:/config/serve.json:ro
     # No published ports: Tailscale serve publishes 443 on the tailnet.
 
   gateway:
-    image: nginx:1.27-alpine
+    image: nginx:1.30.6-alpine
     container_name: pilgrim-gateway
     restart: unless-stopped
     network_mode: "service:tailscale"
