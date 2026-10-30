@@ -5,11 +5,11 @@
  *  disturbs PLAY or the request line. */
 import { test, expect } from "@playwright/test";
 
-test("page layout: pane order, ON AIR title, credits + hit counter", async ({ page }) => {
+test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", async ({ page }) => {
   await page.goto("/");
   const order = await page.$$eval(".window", els => els.map(e => e.getAttribute("data-win")));
   expect(order).toEqual(["radio", "requests", "credits", "hit", "soundcloud"]);
-  expect(await page.textContent('[data-win="radio"] .win-title')).toBe("ON AIR");
+  expect(await page.textContent('[data-win="radio"] .win-title')).toBe("RADIO BROADCAST");
   expect(await page.$('[data-win="credits"]')).toBeTruthy();
   expect(await page.$('[data-win="hit"]')).toBeTruthy();
   expect(await page.textContent('[data-win="soundcloud"] .win-title')).toBe("SOUNDCLOUD");

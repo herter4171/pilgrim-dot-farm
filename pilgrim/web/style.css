@@ -90,7 +90,7 @@ body {
 .win-body { padding: 24px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
 
 .indicator {
-  display: inline-flex; align-items: center; gap: 8px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   font-size: 13px; letter-spacing: 2px; text-transform: uppercase;
   padding: 6px 14px; border-radius: 20px; border: 1px solid var(--dim); color: var(--dim);
 }
@@ -111,7 +111,21 @@ body {
 .big-btn:disabled { filter: grayscale(.7); cursor: not-allowed; }
 .big-btn.stop { background: linear-gradient(90deg, var(--warn), var(--magenta)); }
 
-#level { width: 100%; height: 40px; }
+/* Radio pane: compact body, and the streaming indicator shares one row with
+   PLAY/STOP at the same height (operator layout request, 2026-10-30). */
+.win-body.radio { padding: 18px 24px; gap: 12px; }
+.play-row {
+  display: flex; align-items: stretch; justify-content: center;
+  gap: 12px; width: 100%;
+}
+.play-row .indicator { flex: 0 0 auto; height: 44px; padding: 0 16px; }
+.play-row .big-btn {
+  flex: 1 1 auto; min-width: 0; height: 44px; padding: 0 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+/* Half-height level meter: 20px tall (was 40px). */
+#level { width: 100%; height: 20px; display: block; }
 
 /* Song label under the meter (COSMETIC_PATCHING §3): centered, wraps for long
    names. Empty (not 'undefined'/'null'/bare hyphen) when not a named song. */
@@ -177,7 +191,9 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   #titlebar .tagline { font-size: 10px; }
   #desktop { padding: 12px; gap: 14px; }
   .win-body { padding: 16px; gap: 14px; }
-  .big-btn { padding: 14px 26px; font-size: 18px; width: 100%; }
+  .win-body.radio { padding: 14px 16px; gap: 10px; }
+  .play-row { gap: 10px; }
+  .play-row .big-btn { font-size: 18px; padding: 0 18px; }
 }
 
 @media (max-width: 340px) {

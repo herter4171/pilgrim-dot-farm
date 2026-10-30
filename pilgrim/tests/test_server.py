@@ -19,9 +19,9 @@ def test_site_served(tmp_env):
     c = TestClient(app)
     r = c.get("/")
     assert r.status_code == 200
-    # station name retained in the browser title + header; ON AIR title is exact
+    # station name retained in the browser title + header; pane title is exact
     assert "PILGRIM" in r.text
-    assert "ON AIR" in r.text
+    assert "RADIO BROADCAST" in r.text
     assert "MODEL CREDITS" in r.text
     assert "HIT COUNTER" in r.text
     assert c.get("/style.css").status_code == 200

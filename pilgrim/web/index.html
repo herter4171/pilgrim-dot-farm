@@ -16,15 +16,17 @@
 <main id="desktop">
   <section class="window" data-win="radio">
     <div class="win-bar">
-      <span class="win-title">ON AIR</span>
+      <span class="win-title">RADIO BROADCAST</span>
     </div>
-    <div class="win-body">
-      <div id="indicator" class="indicator idle">
-        <span class="dot"></span>
-        <span id="ind-label">idle</span>
+    <div class="win-body radio">
+      <div class="play-row">
+        <div id="indicator" class="indicator idle">
+          <span class="dot"></span>
+          <span id="ind-label">idle</span>
+        </div>
+        <button id="btn-play" class="big-btn">▶&nbsp; PLAY</button>
       </div>
-      <button id="btn-play" class="big-btn">▶&nbsp; PLAY</button>
-      <canvas id="level" width="320" height="40"></canvas>
+      <canvas id="level" width="640" height="20"></canvas>
       <div id="song-label" class="song-label"></div>
       <div id="offair" class="offair hidden">⚠ OFF THE AIR — waiting for playable audio. Retrying…</div>
       <div id="status" class="status"></div>
