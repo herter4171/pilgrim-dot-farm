@@ -149,8 +149,20 @@ This repo does not call the Cloudflare API or install Tailscale.
 - **AMI.** nginx at the same pinned version; the repo checked out at a pinned
   SHA (edges use only `pilgrim/web/` and `pilgrim/deploy/`); the rendered edge
   config; `tailscaled` enrolled at boot as an ephemeral `tag:radio-edge` node
-  with its key read from SSM (never baked into the AMI); nginx started
-  **after** Tailscale is up and MagicDNS resolves the gateway.
+  with its key read from SSM (never baked into the AMI), using:
+
+  ```sh
+  tailscale up --auth-key=<SSM> --advertise-tags=tag:radio-edge \
+    --shields-up --accept-routes=false --accept-dns=true
+  ```
+
+  No `--ssh`, `--advertise-routes`, or `--advertise-exit-node`. `--shields-up`
+  blocks all inbound to the edge even if a later policy edit grants something.
+  Start nginx **after** Tailscale is up and MagicDNS resolves the gateway.
+- **Origin key.** Tagged `tag:radio-origin`, **not** ephemeral, single use,
+  pre-approved. Tagged nodes have key expiry disabled by default, and the
+  gateway compose sets `TS_AUTH_ONCE=true` so a restart does not
+  re-authenticate with a spent one-off key.
 - **Load balancer health check.** `GET /edge-health`. Never an `/api/` path:
   `/edge-health` never contacts the origin, so an origin outage does not kill
   healthy edges.

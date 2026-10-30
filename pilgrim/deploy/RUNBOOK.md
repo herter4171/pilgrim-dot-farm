@@ -138,7 +138,11 @@ exposes the host differently.
 docker compose --env-file /secure/pilgrim-gateway.env up -d
 ```
 
-The env file (outside the repo, mode 600) holds `TS_AUTHKEY=...`.
+The env file (outside the repo, mode 600) holds `TS_AUTHKEY=...`. The origin
+key must be tagged `tag:radio-origin`, **not** ephemeral, single use, and
+pre-approved. Tagged nodes have key expiry disabled by default, and
+`TS_AUTH_ONCE=true` in `gateway/compose.yaml` keeps a restart from
+re-authenticating with a spent one-off key.
 
 Do **not** try this from another tailnet machine: the policy lets only
 `tag:radio-edge` reach the origin, so the operator's own devices cannot. All
@@ -195,6 +199,17 @@ Render `pilgrim/deploy/edge/nginx.conf.template` with production values:
 (`real_ip_header CF-Connecting-IP;` + `set_real_ip_from` for each published
 Cloudflare range, refreshed periodically). TLS is the operator's IaC
 (Cloudflare → edge), not this template.
+
+Enroll each edge with:
+
+```sh
+tailscale up --auth-key=<SSM> --advertise-tags=tag:radio-edge \
+  --shields-up --accept-routes=false --accept-dns=true
+```
+
+Do **not** add `--ssh`, `--advertise-routes`, or `--advertise-exit-node`.
+`--shields-up` blocks all inbound to the edge even if a later policy edit
+grants something. The auth key comes from SSM, never the AMI.
 
 **Order matters:** nginx resolves the upstream hostname at start, so start the
 edge's nginx **after** tailscaled is up and MagicDNS resolves
