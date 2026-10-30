@@ -571,9 +571,12 @@ wipe; `clear_library --keep-songs` keeps the pack.
 Retro window shell on a vertical stack, scrollable `#desktop` so every pane
 stays reachable on small screens:
 
-- **RADIO BROADCAST** (title exactly `RADIO BROADCAST`): one row holding the
-streaming indicator (idle / buffering / on air, with the pulsing dot) and
-PLAY/STOP at the same height, a horizontal live level meter driven by an
+- **RADIO BROADCAST** (title exactly `RADIO BROADCAST`): one row split into
+two equal half-width cells — the streaming indicator (idle / buffering / on
+air, with the pulsing dot) centered in the left half and PLAY/STOP centered
+in the right half, both 44 px tall; the indicator sizes itself to its label
+so it widens and narrows freely inside its half. Below the row, a horizontal
+live level meter driven by an
 `AnalyserNode` (proves audio flows; half height, 20 px), and a centered
 **song label**
 below the meter showing exactly `` ${title} - ${artist} `` for the audible

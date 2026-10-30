@@ -20,11 +20,15 @@
     </div>
     <div class="win-body radio">
       <div class="play-row">
-        <div id="indicator" class="indicator idle">
-          <span class="dot"></span>
-          <span id="ind-label">idle</span>
+        <div class="play-cell">
+          <div id="indicator" class="indicator idle">
+            <span class="dot"></span>
+            <span id="ind-label">idle</span>
+          </div>
         </div>
-        <button id="btn-play" class="big-btn">▶&nbsp; PLAY</button>
+        <div class="play-cell">
+          <button id="btn-play" class="big-btn">▶&nbsp; PLAY</button>
+        </div>
       </div>
       <canvas id="level" width="640" height="20"></canvas>
       <div id="song-label" class="song-label"></div>

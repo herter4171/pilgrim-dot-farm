@@ -112,15 +112,21 @@ body {
 .big-btn.stop { background: linear-gradient(90deg, var(--warn), var(--magenta)); }
 
 /* Radio pane: compact body, and the streaming indicator shares one row with
-   PLAY/STOP at the same height (operator layout request, 2026-10-30). */
+   PLAY/STOP at the same height (operator layout request, 2026-10-30). The row
+   is split into two equal halves; each control is centered inside its half and
+   the indicator is free to grow/shrink with its label. */
 .win-body.radio { padding: 18px 24px; gap: 12px; }
 .play-row {
   display: flex; align-items: stretch; justify-content: center;
   gap: 12px; width: 100%;
 }
-.play-row .indicator { flex: 0 0 auto; height: 44px; padding: 0 16px; }
-.play-row .big-btn {
-  flex: 1 1 auto; min-width: 0; height: 44px; padding: 0 24px;
+.play-cell {
+  flex: 1 1 0; min-width: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.play-cell .indicator { flex: 0 1 auto; max-width: 100%; height: 44px; padding: 0 16px; }
+.play-cell .big-btn {
+  flex: 0 1 auto; max-width: 100%; height: 44px; padding: 0 24px;
   display: inline-flex; align-items: center; justify-content: center;
 }
 
@@ -193,7 +199,8 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   .win-body { padding: 16px; gap: 14px; }
   .win-body.radio { padding: 14px 16px; gap: 10px; }
   .play-row { gap: 10px; }
-  .play-row .big-btn { font-size: 18px; padding: 0 18px; }
+  .play-cell .indicator { font-size: 11px; letter-spacing: 1px; padding: 0 10px; gap: 6px; }
+  .play-cell .big-btn { font-size: 18px; padding: 0 16px; }
 }
 
 @media (max-width: 340px) {
