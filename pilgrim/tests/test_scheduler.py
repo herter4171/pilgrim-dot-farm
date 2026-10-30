@@ -392,6 +392,110 @@ def test_request_not_taken_right_after_dj_talk(cfg, tmp_env):
     assert types[idx - 1] == "intro"
 
 
+def test_pending_request_holds_window_and_takes_next_slot(cfg, tmp_env):
+    """A pending listener request holds the committed window at
+    filler_horizon_s: the stock songs already ahead drain and no new ones queue
+    in front of it. When its song + intro land, they take the next slot instead
+    of airing behind a full lookahead (the 'up next for three songs' bug; §5.2)."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=8, n_liner=12, n_com=8, n_dj=4)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
+    sched.commit_lookahead()
+    assert sched.coverage() >= cfg.playout.committed_lookahead_s
+
+    req = store.add_request("play for Mittens", cap=10)
+    req_song = make_item(cfg, store, "song", 120.0, fresh=True)
+    intro_id = store.add_item(
+        type_="intro", media_path="/i.flac", duration_s=8.0,
+        evergreen=False, fresh=True,
+        meta={"song_item_id": req_song, "request_id": req["id"]})
+
+    # queued, not ready yet: the window drains to the filler horizon and no
+    # stock song is committed ahead of the request.
+    before = store.max_seq()
+    clock.advance(cfg.playout.committed_lookahead_s)
+    sched.commit_lookahead()
+    assert sched.coverage() <= cfg.playout.filler_horizon_s + 45.0
+    new_types = [r["type"] for r in store.program_after(before)]
+    assert "song" not in new_types
+
+    # ready: song + intro take the next slot; nothing queues behind them.
+    store.mark_request_ready(req["id"], req_song, intro_id)
+    clock.advance(2)
+    sched.commit_lookahead()
+    rows = store.program_since(1)
+    ids = [r["item_id"] for r in rows]
+    assert req_song in ids
+    assert ids[ids.index(req_song) - 1] == intro_id  # intro glued in front
+    # the request is the NEXT song after the playhead (spliced ahead of stock)
+    future_songs = [(r["item_id"], sched._cum[i]) for i, r in enumerate(sched._items)
+                    if r["type"] == "song" and sched._cum[i] > sched.position()]
+    assert future_songs and future_songs[0][0] == req_song
+
+    # playhead reaches the tail: the request is marked aired, not before.
+    clock.advance(sched.coverage() + 1)
+    sched.commit_lookahead()
+    assert store.get_request(req["id"])["status"] == "aired"
+
+
+def test_ready_request_splices_ahead_of_committed_songs(cfg, tmp_env):
+    """A ready request is spliced into the next song slot ahead of already-
+    committed stock songs, its intro lands immediately before it, and the
+    programme revision bumps so revision-aware clients refetch (TUI.md §5)."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=20, n_liner=20, n_com=20, n_dj=6)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
+    sched.commit_lookahead()
+    assert sched.coverage() >= cfg.playout.committed_lookahead_s
+    rev_before = sched.revision
+
+    req = store.add_request("play my song", cap=10)
+    req_song = make_item(cfg, store, "song", 120.0, fresh=True)
+    intro_id = store.add_item(type_="intro", media_path="/i.flac", duration_s=8.0,
+                              evergreen=False, fresh=True,
+                              meta={"song_item_id": req_song, "request_id": req["id"]})
+    store.mark_request_ready(req["id"], req_song, intro_id)
+    sched.commit_lookahead()
+
+    pos = sched.position()
+    future_songs = [(r["item_id"], sched._cum[i]) for i, r in enumerate(sched._items)
+                    if r["type"] == "song" and sched._cum[i] > pos]
+    assert future_songs and future_songs[0][0] == req_song
+    ids = [r["item_id"] for r in sched._items]
+    assert ids[ids.index(req_song) - 1] == intro_id
+    # splice bumps the revision; every seq stays unique and ordered
+    assert sched.revision == rev_before + 1
+    seqs = [r["seq"] for r in sched._items]
+    assert seqs == sorted(seqs) and len(seqs) == len(set(seqs))
+    # it airs at the next boundary, not behind the full committed lookahead
+    assert future_songs[0][1] - pos < 300.0
+
+
+def test_request_hold_releases_after_limit(cfg, tmp_env):
+    """A request stuck in the queue (backend down) must not pin the station at
+    a shallow lookahead forever: after request_hold_max_s the stock-song
+    fallback resumes."""
+    _, store, _ = tmp_env
+    cfg.playout.request_hold_max_s = 30
+    seed_pool(store, cfg, n_song=8, n_liner=12, n_com=8, n_dj=4)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
+    sched.commit_lookahead()
+    store.add_request("stuck request", cap=10)  # queued, never becomes ready
+
+    # first cycle starts the hold; the window drains
+    clock.advance(cfg.playout.committed_lookahead_s)
+    sched.commit_lookahead()
+    assert sched.coverage() <= cfg.playout.filler_horizon_s + 45.0
+
+    # past the hold limit, normal lookahead resumes (stock songs fill again)
+    clock.advance(cfg.playout.request_hold_max_s + 1)
+    sched.commit_lookahead()
+    assert sched.coverage() >= cfg.playout.committed_lookahead_s
+
+
 # --------------------------------------------------------------------------- #
 # PRIORITIES — fresher songs (work the plan top to bottom)
 # --------------------------------------------------------------------------- #

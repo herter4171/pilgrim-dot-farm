@@ -249,6 +249,16 @@ Constraints (applied before drawing):
   treated as part of their song for all constraints. A stock intro is skipped
   if it would land right after a `dj_talk`; a **request** is never taken in
   that slot (its intro is the on-air thank-you), it takes the next song slot.
+  When the song + intro are ready they are **spliced into the next song slot**
+  ahead of already-committed stock songs, not appended at the tail, so the
+  request airs at the next boundary instead of behind the lookahead. The splice
+  renumbers future occurrences with fresh seqs (never reusing an old seq) and
+  bumps the programme revision; revision-aware clients cancel their obsolete
+  future sources and refetch the snapshot (TUI.md §5, §9.2). While a request is
+  still queued/producing, the committed window is held at
+  `playout.filler_horizon_s` so no stock song queues ahead of it; the hold is
+  bounded per request by `playout.request_hold_max_s` (a stuck request releases
+  it rather than pinning a shallow lookahead).
 
 ### 5.3 Planned vs. committed
 
@@ -256,7 +266,9 @@ Constraints (applied before drawing):
 - **Committed** items are fully rendered and visible to the client.
 - The scheduler keeps **≥10 min of committed audio** ahead of the client
   playhead (from heartbeat) and plans a few items past that, while songs are
-  airable (song droughts: see §5.2).
+  airable (song droughts and pending listener requests are the exceptions: see
+  §5.2 — the window is held at `filler_horizon_s` while a request renders, and
+  a ready request is spliced into the next song slot with a revision bump).
 - When a `dj_talk` is planned, the scheduler first fixes its neighbors, then
   requests the copy from `qwen38` with previous/next metadata, then renders via
   Kokoro. If it isn't rendered by the time it would enter the committed window,
@@ -593,8 +605,12 @@ the station name.
   `GET /api/station/state` (epoch/revision/current+offset/prepared cutover)
   independently of its buffered programme length. On a revision change it
   cancels obsolete scheduled sources, stops their SFX, releases their buffers
-  and ignores stale fetch/decode completions — hold explicit source references
-  by occurrence (`scheduleOne()` currently retains no source to cancel). On an
+  and ignores stale fetch/decode completions — explicit source references are
+  held by occurrence (`_src`/`_gain`), so a reset can stop the future without
+  touching the audible item; the new snapshot is then rescheduled from that
+  item's audio-clock end (or cut over to the snapshot's on-air item when the
+  current occurrence vanished). This is what makes a spliced listener request
+  air at the next boundary. On an
   activated cutover it maps server time to the AudioContext clock, starts the
   successor at that boundary, applies a brief configured anti-click fade and
   stops the skipped source at the same boundary; for queue-next it keeps the
@@ -700,6 +716,7 @@ voices:
 playout:
   committed_lookahead_s: 600
   filler_horizon_s: 60     # song drought / spacing-breaking repeats: commit only this far ahead
+  request_hold_max_s: 900  # hold the window for a pending request; cap per request
   weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08,
             field_report: 0.05}
   max_consecutive_non_song: 2

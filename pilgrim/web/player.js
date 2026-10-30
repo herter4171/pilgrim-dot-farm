@@ -21,6 +21,13 @@
   let playing = false;
   let hbTimer = null;
   let session = 0;
+  // Programme epoch/revision (TUI.md §5, §9.2). A revision change means
+  // already-published future playback moved (e.g. a listener request was
+  // spliced into the next song slot): cancel obsolete future sources and
+  // refetch the snapshot instead of playing the stale rows.
+  let epoch = null, revision = null;
+  let programToken = 0;      // invalidates in-flight fillWindow work on reset
+  let stateTimer = null;
 
   /* Cross-tab single-listener guard: if this page is open in more than one
      tab/browser, we want audio ONLY when the user presses PLAY, and only from
@@ -84,11 +91,15 @@
   }
 
   /* ---------------- program + decode ---------------- */
-  async function fetchProgram(afterSeq) {
-    const url = afterSeq == null ? "/api/station/program" : "/api/station/program?after_seq=" + afterSeq;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error("program HTTP " + r.status);
-    return r.json();
+  async function fetchProgram(afterSeq, e, r) {
+    const params = new URLSearchParams();
+    if (afterSeq != null) params.set("after_seq", afterSeq);
+    if (e != null) params.set("epoch", e);
+    if (r != null) params.set("revision", r);
+    const q = params.toString();
+    const res = await fetch("/api/station/program" + (q ? "?" + q : ""));
+    if (!res.ok) throw new Error("program HTTP " + res.status);
+    return res.json();
   }
   async function decode(mediaId, audioContext) {
     const r = await fetch("/api/media/" + mediaId);
@@ -125,6 +136,7 @@
     src.start(nextWhen, offset);
     it._when = nextWhen;
     it._offset = offset;
+    it._src = src;           // held so a revision reset can cancel it
     const end = nextWhen + (it.buffer.duration - offset);
     it._end = end;
     nextWhen = end;
@@ -132,12 +144,51 @@
     it._gain = g;
     scheduleOverlays(it);
     src.addEventListener("ended", () => {
+      const wasScheduled = it._scheduled;
       src.disconnect(); g.disconnect(); src.buffer = null;
-      it.buffer = null; it._gain = null;
+      it.buffer = null; it._gain = null; it._src = null;
       for (const ov of it.sfx || []) if (!ov._scheduled) ov.buffer = null;
-      if (playing && token === session) advancePlayhead();
+      // a source cancelled by a revision reset must not advance the playhead
+      if (wasScheduled && playing && token === session) advancePlayhead();
     });
     return src;
+  }
+
+  /* Stop every scheduled source that has not started yet (revision reset).
+     The audible item keeps playing; its remaining future is replaced by the
+     new snapshot. */
+  function cancelFuture() {
+    const now = ctx ? ctx.currentTime : 0;
+    const stopSource = (holder) => {
+      holder._scheduled = false;
+      try { holder._src.stop(); } catch (e) {}
+      try { holder._src.disconnect(); } catch (e) {}
+      try { if (holder._gain) holder._gain.disconnect(); } catch (e) {}
+      holder._src = null; holder._gain = null; holder.buffer = null;
+    };
+    for (const it of items) {
+      if (it._scheduled && it._src && it._when > now + 0.02) stopSource(it);
+      for (const ov of it.sfx || []) {
+        if (ov._scheduled && ov._src && ov._when > now + 0.02) stopSource(ov);
+      }
+    }
+  }
+
+  /* Cutover case: the current occurrence changed or vanished. Stop everything
+     and restart from the snapshot's on-air item (a short fade/gap is expected
+     for an edit; normal joins stay sample-contiguous). */
+  function stopAllSources() {
+    const stopSource = (holder) => {
+      holder._scheduled = false;
+      try { holder._src.stop(); } catch (e) {}
+      try { holder._src.disconnect(); } catch (e) {}
+      try { if (holder._gain) holder._gain.disconnect(); } catch (e) {}
+      holder._src = null; holder._gain = null;
+    };
+    for (const it of items) {
+      if (it._src) stopSource(it);
+      for (const ov of it.sfx || []) if (ov._src) stopSource(ov);
+    }
   }
 
   /* SFX sidecars ride on their host: started at host start + offset_s on the
@@ -162,10 +213,12 @@
     const s = ctx.createBufferSource(); s.buffer = ov.buffer; s._sfx = true;
     const g = ctx.createGain(); g.gain.value = ov.gain ?? 0.5;
     s.connect(g); g.connect(analyser);
+    ov._src = s; ov._gain = g; ov._when = when;
     s.start(when, skip);
     s.stop(it._end);
     s.addEventListener("ended", () => {
       s.disconnect(); g.disconnect(); s.buffer = null; ov.buffer = null;
+      ov._src = null; ov._gain = null;
     });
     const level = ov.duck ?? 1;
     if (level >= 1) return;
@@ -207,21 +260,21 @@
 
   /* The audio clock advances the decode window as clips finish. Keep current
      plus next two decoded and schedule each as soon as it is ready (§9.2). */
-  async function fillWindow(startOffset, token) {
-    while (playing && token === session) {
+  async function fillWindow(startOffset, token, ptoken = programToken) {
+    while (playing && token === session && ptoken === programToken) {
       try {
         advancePlayhead();
         if (items.length < cursor + 3) {
           const lastSeq = items.length ? items[items.length - 1].seq : null;
-          const p = await fetchProgram(lastSeq);
-          if (!playing || token !== session) return;
+          const p = await fetchProgram(lastSeq, epoch, revision);
+          if (!playing || token !== session || ptoken !== programToken) return;
           for (const it of p.items || []) {
             if (!items.some(x => x.seq === it.seq)) items.push(it);
           }
         }
         while (scheduleCursor < Math.min(items.length, cursor + 3)) {
           await getDecoded(scheduleCursor);
-          if (!playing || token !== session) return;
+          if (!playing || token !== session || ptoken !== programToken) return;
           // A slow fetch must not schedule a source in the past. Record the
           // underrun honestly, then resume as soon as rendered audio is ready.
           if (nextWhen < ctx.currentTime) {
@@ -241,12 +294,72 @@
           advancePlayhead();
         }
       } catch (e) {
-        if (!playing || token !== session) return;
+        if (!playing || token !== session || ptoken !== programToken) return;
         setStatus("waiting for audio: " + e.message);
       }
       if (cursor >= scheduleCursor) setState("buffering");
       await new Promise(r => setTimeout(r, 100));
     }
+  }
+
+  /* Revision-aware refresh (TUI.md §5, §9.2). A revision change means the
+     published future moved — e.g. a listener request was spliced ahead of the
+     stock songs. Keep the audible item, cancel the obsolete future sources,
+     and reschedule the new snapshot from the audio clock. */
+  async function resetProgram() {
+    if (!playing || !ctx) return;
+    const token = session;
+    const ptoken = ++programToken;
+    cancelFuture();
+    let p;
+    try {
+      p = await fetchProgram(null, epoch, revision);
+    } catch (e) {
+      if (playing && token === session && ptoken === programToken) {
+        setStatus("program refresh failed: " + e.message);
+      }
+      return;
+    }
+    if (!playing || token !== session || ptoken !== programToken) return;
+    epoch = p.epoch; revision = p.revision;
+    const all = p.items || [];
+    const cur = items[cursor];
+    const onAir = all[0] || null;
+    const keepCurrent = !!(cur && onAir && cur.seq === onAir.seq && cur._scheduled
+      && cur._when <= ctx.currentTime && cur._end > ctx.currentTime);
+    if (keepCurrent) {
+      // Keep the audible item; replace only what comes after it.
+      const curIdx = all.findIndex(it => it.seq === cur.seq);
+      const future = (curIdx >= 0 ? all.slice(curIdx + 1)
+                                  : all.filter(it => it.seq > cur.seq))
+        .map(it => ({ ...it, buffer: null }));
+      items = [cur, ...future];
+      cursor = 0;
+      scheduleCursor = 1;
+      nextWhen = cur._end;
+      void fillWindow(0, token, ptoken);
+    } else {
+      // The current occurrence changed or vanished: cut over to the snapshot.
+      stopAllSources();
+      items = all.map(it => ({ ...it, buffer: null }));
+      cursor = 0;
+      scheduleCursor = 0;
+      nextWhen = ctx.currentTime + 0.05;
+      void fillWindow(p.start_offset_s || 0, token, ptoken);
+    }
+  }
+
+  async function pollState() {
+    if (!playing) return;
+    try {
+      const r = await fetch("/api/station/state");
+      if (!r.ok) return;
+      const st = await r.json();
+      if (st.epoch !== epoch || st.revision !== revision) {
+        epoch = st.epoch; revision = st.revision;
+        await resetProgram();
+      }
+    } catch (e) { /* keep the current audio; retry on the next poll */ }
   }
 
   /* ---------------- heartbeat ---------------- */
@@ -293,6 +406,7 @@
       if (!playing || token !== session) return;
       const p = await fetchProgram(null);
       if (!playing || token !== session) return;
+      epoch = p.epoch; revision = p.revision;
       items = p.items.map(it => ({ ...it, buffer: null }));  // sfx[] rides along
       cursor = 0; scheduleCursor = 0;
       nextWhen = ctx.currentTime + 0.2;
@@ -303,6 +417,7 @@
         const it = items[cursor];
         if (it?._started) sendHeartbeat(it.seq, it._offset + ctx.currentTime - it._when);
       }, 5000);
+      stateTimer = setInterval(pollState, 2000);
       void fillWindow(p.start_offset_s || 0, token);
     } catch (e) {
       if (token !== session) return;
@@ -315,6 +430,9 @@
     session++;
     if (!remote && bc) bc.postMessage({ kind: "stopped", id: myId, at: Date.now() });
     if (hbTimer) clearInterval(hbTimer); hbTimer = null;
+    if (stateTimer) clearInterval(stateTimer); stateTimer = null;
+    programToken++;
+    epoch = null; revision = null;
     if (raf) cancelAnimationFrame(raf); raf = null;
     if (ctx) { try { ctx.close(); } catch (e) {} ctx = null; }
     analyser = null;

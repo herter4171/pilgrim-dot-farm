@@ -131,6 +131,10 @@ class SongRotation(BaseModel):
 class Playout(BaseModel):
     committed_lookahead_s: int = 600
     filler_horizon_s: int = 60  # spacing-breaking repeats only below this coverage
+    # While a listener request is pending (queued/producing/ready, not yet
+    # committed), hold the window at filler_horizon_s so it takes the next slot.
+    # Bounded per request so a stuck request cannot pin a shallow lookahead.
+    request_hold_max_s: int = 900
     window_trim_keep_s: int = 120
     weights: dict[str, float] = Field(
         default_factory=lambda: {"song": .55, "dj_talk": .12,

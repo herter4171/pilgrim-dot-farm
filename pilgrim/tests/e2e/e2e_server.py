@@ -104,9 +104,12 @@ def build_app() -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/station/program")
-    async def program(after_seq: int | None = None):
+    async def program(after_seq: int | None = None, epoch: str | None = None,
+                      revision: int | None = None):
         sched.commit_lookahead()
-        if after_seq is None:
+        stale = ((epoch is not None and epoch != sched.epoch)
+                 or (revision is not None and revision != sched.revision))
+        if after_seq is None or stale:
             seq, offset = sched.on_air()
             since = seq if seq is not None else store.max_seq()
             items = store.program_since(since if since else 1)
@@ -119,7 +122,17 @@ def build_app() -> FastAPI:
                            "sfx": sched.overlays_for(it["seq"]),
                            "title": (store.get_item(it["item_id"]) or {}).get("title") or "",
                            "artist": (store.get_item(it["item_id"]) or {}).get("artist") or ""}
-                          for it in items], "start_offset_s": start_offset}
+                          for it in items], "start_offset_s": start_offset,
+                "epoch": sched.epoch, "revision": sched.revision,
+                "reset": stale, "server_time": time.time()}
+
+    @app.get("/api/station/state")
+    async def state():
+        seq, offset = sched.on_air()
+        return {"epoch": sched.epoch, "revision": sched.revision,
+                "server_time": time.time(), "current_seq": seq,
+                "current_offset_s": offset, "prepared_cutover": None,
+                "listeners": 0}
 
     @app.post("/api/station/heartbeat")
     async def heartbeat(payload: dict):
@@ -166,6 +179,27 @@ def build_app() -> FastAPI:
                   for i in range(1, 6)]
         return {"ok": True, "rejected": False, "queue": [],
                 "recent": recent, "cap": 10}
+
+    @app.post("/api/test/splice")
+    async def splice():
+        """Test-only: submit a rendered request and let the scheduler splice it
+        into the next song slot (revision-aware client reset, TUI.md §5)."""
+        lib = tmp / "library"
+        song_f = lib / "req_song.flac"
+        intro_f = lib / "req_intro.flac"
+        _make_flac(song_f, 2.0)
+        _make_flac(intro_f, 0.8)
+        req = store.add_request("e2e request", cap=10)
+        song = store.add_item(type_="song", media_path=str(song_f), duration_s=2.0,
+                              fresh=True, title="Request Song", artist="Listener")
+        intro = store.add_item(type_="intro", media_path=str(intro_f), duration_s=0.8,
+                               evergreen=False, fresh=True,
+                               meta={"song_item_id": song, "request_id": req["id"]})
+        store.mark_request_ready(req["id"], song, intro)
+        sched.commit_lookahead()
+        song_seq = next((r["seq"] for r in sched._items if r["item_id"] == song), None)
+        return {"ok": True, "revision": sched.revision,
+                "song_id": song, "song_seq": song_seq}
 
     @app.get("/api/test/report")
     async def report():

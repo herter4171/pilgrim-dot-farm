@@ -59,6 +59,29 @@ test("PLAY continues past three clips with sample-contiguous joins", async ({ pa
   expect(errors).toEqual([]);
 });
 
+test("a listener request is spliced ahead of committed stock songs", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", e => errors.push(e.message));
+  await page.goto("/");
+  await page.click("#btn-play");
+  await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 15_000 });
+  await page.waitForTimeout(3_000);
+
+  // Server-side splice: a ready request's intro + song jump into the next slot
+  // and the revision bumps. The client must cancel its obsolete future sources
+  // and reschedule from the new snapshot (TUI.md §5, §9.2).
+  const splice = await page.request.post("/api/test/splice").then(r => r.json());
+  expect(splice.ok).toBe(true);
+  expect(splice.song_seq).toBeGreaterThan(0);
+
+  await page.waitForTimeout(10_000);
+  const report = await page.request.get("/api/test/report").then(r => r.json());
+  expect(report.seqs, "the spliced request song aired").toContain(splice.song_seq);
+  expect(report.underrun, "the revision reset did not underrun").toBe(0);
+  await expect(page.locator("#indicator")).toHaveClass(/onair/);
+  expect(errors).toEqual([]);
+});
+
 test("health failures do not stop committed audio", async ({ page }) => {
   await page.goto("/");
   await page.click("#btn-play");

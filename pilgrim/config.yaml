@@ -36,6 +36,7 @@ voices:
 playout:
   committed_lookahead_s: 600     # keep >= this much committed audio ahead
   filler_horizon_s: 60           # repeat a liner/spot inside its spacing only below this coverage
+  request_hold_max_s: 900        # hold the window for a pending request (so it airs next); cap per request
   window_trim_keep_s: 120        # keep this much committed history behind "now"
   weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08,
             field_report: 0.05}

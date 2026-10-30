@@ -24,6 +24,11 @@ from pilgrim.store import Store
 # names the song that follows it.
 CALLOUT_TYPES = frozenset({"liner", "station_id", "dj_talk", "field_report", "intro"})
 
+# Segment types that can bridge air while a listener request waits for its
+# song slot. A stock song is never one of them: it would queue ahead of the
+# request (§5.2, request priority).
+NON_SONG_TYPES = ("dj_talk", "commercial_break", "liner", "news", "field_report")
+
 # Types a manually-placed operator phrase must never sit adjacent to in either
 # order (RADIO §11: "DJ-like news adjacency", TUI.md §6). A song is the only
 # guaranteed separator.
@@ -83,6 +88,12 @@ class Scheduler:
         # committed request songs not yet on air: seq -> request_id. A request
         # is 'aired' when the playhead reaches its song, not when committed.
         self._pending_aired: dict[int, int] = {}
+        # While a listener request is still waiting for its song slot, hold the
+        # committed window at filler_horizon_s so no stock song queues ahead of
+        # it (§5.2). Tracked per request id so a stuck request releases the hold
+        # after playout.request_hold_max_s instead of starving the lookahead.
+        self._hold_request_id: int | None = None
+        self._hold_since: float = 0.0
         # SFX overlays that air with each committed host: seq -> overlays, plus
         # the absolute program start of recent stingers (rolling budget).
         # Live-only, like the program itself (SFX.md §7.2).
@@ -264,19 +275,46 @@ class Scheduler:
 
     # -------------------------------------------------------------- committing
     def commit_lookahead(self) -> None:
-        """Append committed items until coverage >= lookahead (or no inventory)."""
+        """Append committed items until coverage >= lookahead (or no inventory).
+
+        While a listener request is pending (queued/producing/ready and not yet
+        committed), the window is held at filler_horizon_s instead of the full
+        lookahead. That drains the stock songs already ahead of the request and
+        keeps new ones from queueing in front of it, so the moment the song +
+        intro land they take the next slot instead of airing three songs later
+        (§5.2 request priority).
+        """
         cfg = self.cfg.playout
         lookahead = cfg.committed_lookahead_s
         guard = 0
         # types that came up empty (e.g. every liner is inside its no-repeat
         # window): re-draw without them until something commits
         self._settle_aired()
+        # A ready request jumps into the next song slot before the window fills
+        # with stock songs; only then is the window held for requests still
+        # rendering (§5.2).
+        self._splice_ready_requests()
+        request_waiting = self._request_hold()
         blocked: set[str] = set()
         while self.coverage() < lookahead and guard < 100:
             guard += 1
             st = self.build_state()
             for t in blocked:
                 st.available[t] = False
+            if request_waiting:
+                ready_req = st.request_songs_ready > 0
+                if ready_req:
+                    # A ready request takes the next song slot. If the last
+                    # committed item is a song, the selector supplies the
+                    # required interjection first; then the request follows.
+                    pass
+                elif self.coverage() >= cfg.filler_horizon_s:
+                    break  # let the window drain; the request takes the tail
+                elif any(st.available[t] for t in NON_SONG_TYPES
+                         if t not in blocked):
+                    # No stock song may queue ahead of the request. Bridge with
+                    # words/spots; fall back to a song only to avoid dead air.
+                    st.available["song"] = False
             try:
                 type_ = self.selector.choose_next(st)
             except ValueError:
@@ -536,6 +574,28 @@ class Scheduler:
             return self.rng.choice(candidates)
         return self.rng.choices(candidates, weights=weights, k=1)[0]
 
+    def _request_hold(self) -> bool:
+        """True while a listener request is still waiting for its slot.
+
+        Requests are produced FIFO and their song + intro land together, so the
+        oldest uncommitted pending request is the one to hold for. The hold is
+        bounded per request by `playout.request_hold_max_s`: a backend outage
+        that leaves a request queued forever must not pin the station at a
+        shallow lookahead (the stock song fallback resumes after the limit)."""
+        committed = set(self._pending_aired.values())
+        pending = [r for r in self.store.pending_requests()
+                   if r["id"] not in committed]
+        if not pending:
+            self._hold_request_id = None
+            self._hold_since = 0.0
+            return False
+        rid = int(pending[0]["id"])
+        if self._hold_request_id != rid:
+            self._hold_request_id = rid
+            self._hold_since = self.clock.now()
+        return (self.clock.now() - self._hold_since
+                <= self.cfg.playout.request_hold_max_s)
+
     def _uncommitted_ready_requests(self) -> list[dict]:
         """Ready requests not already committed (they stay 'ready' until the
         playhead reaches them, so filter out the ones waiting in the window)."""
@@ -663,6 +723,129 @@ class Scheduler:
         return [{"item_id": item_id, "type": "news", "duration_s": ni["duration_s"],
                  "consume": True}]
 
+    # ------------------------------------------------- request splice (§5.2)
+    def _splice_ready_requests(self) -> None:
+        """Splice every ready, uncommitted request song into the next song slot.
+
+        This is what makes a request air *as soon as* its song + intro are
+        rendered: appending at the tail would leave it behind the already-
+        committed lookahead (the 'up next for three songs' bug). Each splice
+        bumps the programme revision; the revision-aware client cancels its
+        obsolete future sources and refetches the snapshot (TUI.md §5, §9.2)."""
+        committed = set(self._pending_aired.values())
+        for req in self.store.ready_request_songs():
+            if req["id"] in committed:
+                continue
+            self.place_request_next(int(req["id"]))
+            committed.add(req["id"])
+
+    def _request_splice_index(self) -> int:
+        """First future item (or the tail). The request lands immediately
+        after whatever is playing, before the next committed item."""
+        pos = self.position()
+        for i in range(len(self._items)):
+            if self._cum[i] > pos + 1e-6:
+                return i
+        return len(self._items)
+
+    def _next_nonsong_index(self, start: int) -> int:
+        """First non-song at/after `start` (or the tail): the fallback splice
+        point when no liner is available to separate a request from a song."""
+        for i in range(start, len(self._items)):
+            if self._items[i]["type"] != "song":
+                return i
+        return len(self._items)
+
+    def place_request_next(self, request_id: int) -> int | None:
+        """Splice a ready request's intro + song into the next song slot.
+
+        Future rows are renumbered with fresh seqs (never reusing an old
+        occurrence id), and the revision is bumped so revision-aware clients
+        refetch the snapshot. The request stays `ready` until the playhead
+        reaches its song (`_settle_aired`). Returns the new song seq, or None
+        when the request is not ready / has no song / is already committed."""
+        req = self.store.get_request(request_id)
+        if not req or req["status"] != "ready":
+            return None
+        if request_id in self._pending_aired.values():
+            return None
+        song_id = req.get("song_item_id")
+        if not song_id:
+            return None
+        song = self.store.get_item(int(song_id))
+        if not song or song["type"] != "song" or song["retired"]:
+            return None
+        intro = (self.store.get_item(int(req["intro_item_id"]))
+                 if req.get("intro_item_id") else None)
+        entries: list[dict] = []
+        if intro and intro["type"] == "intro" and not intro["retired"]:
+            entries.append({"item_id": intro["id"], "type": "intro",
+                            "duration_s": intro["duration_s"], "consume": True})
+        entries.append({"item_id": song["id"], "type": "song",
+                        "duration_s": song["duration_s"], "consume": True})
+
+        k = self._request_splice_index()
+        # The request's thank-you intro must not sit right after DJ talk (§5.2):
+        # let a non-song bridge it, or place it after the next item.
+        if k > 0 and self._items[k - 1]["type"] == "dj_talk":
+            bridge = self._pick_callout_fallback()
+            if bridge:
+                entries = bridge + entries
+            elif k < len(self._items):
+                k += 1  # the next item bridges DJ talk and the intro
+            else:
+                return None  # no legal slot this cycle
+        # The no-song-after-song rule still applies: if the request would land
+        # directly before a committed song, put a liner/ID after it (or, with no
+        # liner available, place it after the next non-song instead). Without an
+        # intro, a preceding song needs the same bridge before the request.
+        if not intro and k > 0 and self._items[k - 1]["type"] == "song":
+            bridge = self._pick_callout_fallback()
+            if not bridge:
+                return None  # cannot place legally; leave it for the tail path
+            entries = bridge + entries
+        if k < len(self._items) and self._items[k]["type"] == "song":
+            bridge = self._pick_callout_fallback()
+            if bridge:
+                entries = entries + bridge
+            else:
+                k = self._next_nonsong_index(k)
+        after = self._items[k:]
+        high = int(self.store.max_seq() or 0)
+        spliced = [(e, high + 1 + i) for i, e in enumerate(entries)]
+        shifted = [(r, high + 1 + len(entries) + i) for i, r in enumerate(after)]
+        remap = {r["seq"]: seq for r, seq in shifted}
+        # remap live references before the rows move
+        if remap:
+            self._pending_aired = {
+                remap.get(s, s): rid for s, rid in self._pending_aired.items()}
+            self._sfx_by_seq = {
+                remap.get(s, s): v for s, v in self._sfx_by_seq.items()}
+        for e, seq in spliced:
+            self.store.append_program_at(
+                item_id=e["item_id"], type_=e["type"],
+                duration_s=e["duration_s"], seq=seq)
+        for r, seq in sorted(shifted, key=lambda x: x[0]["seq"], reverse=True):
+            self.store.update_program_seq(r["seq"], seq)
+        if shifted:
+            self.store.set_program_seq_high(shifted[-1][1])
+        song_seq = next(seq for e, seq in spliced if e["type"] == "song")
+        self._pending_aired[song_seq] = request_id
+        for e in entries:
+            if e.get("consume"):
+                self.store.mark_aired(e["item_id"])
+        self._air_clock += sum(e["duration_s"] for e in entries)
+        self._rebuild_program()
+        # Persist the song's scheduled air time (as _append does for songs) so
+        # it cannot be re-picked as recycled stock inside its spacing window.
+        idx = next(i for i, r in enumerate(self._items) if r["seq"] == song_seq)
+        self.store.commit_song_air(song["id"], self._slot_wall(self._cum[idx]))
+        self.advance_revision()
+        log.info("request.spliced", extra={
+            "request_id": request_id, "item_id": song["id"],
+            "seq": song_seq, "revision": self.revision})
+        return song_seq
+
     # ------------------------------------------------------- operator phrases
     def _drain_phrases(self) -> None:
         """Append ready operator phrases at the committed tail (head-of-queue).
@@ -683,12 +866,10 @@ class Scheduler:
     def place_phrase(self, item_id: int, duration_s: float) -> int | None:
         """Append an operator phrase at the TAIL of the committed program.
 
-        Legacy clients merge fetched rows by seq only (TUI.md §9.2 — the
-        revision-aware browser has not landed): a splice inside rows they
-        already fetched is silently lost — the phrase never airs — and the
-        shifted rows can even be played twice. A tail append is always a brand
-        new seq that every client receives on its next fetch, so the tail is
-        the only placement a listener is guaranteed to hear.
+        Phrases are still tail-appended (no need to splice them ahead of stock
+        songs); the revision-aware browser refetches on the bump and hears it at
+        the tail. A tail append is always a brand-new seq, so it is safe even for
+        a client that has already fetched the current window.
 
         The tail is legal when its predecessor is not dj_talk / news / another
         phrase (RADIO §11; TUI.md §6). Otherwise the caller defers and retries

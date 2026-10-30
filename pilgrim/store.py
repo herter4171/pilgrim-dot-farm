@@ -359,6 +359,31 @@ class Store:
             self._conn.commit()
         return int(seq)
 
+    def update_program_seq(self, old_seq: int, new_seq: int) -> None:
+        """Renumber one committed row (request splice). New seqs are always
+        above the current high-water mark, so an old occurrence id is never
+        reused for a different item (TUI.md §5)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE program SET seq=? WHERE seq=?", (new_seq, old_seq))
+            self._conn.commit()
+
+    def set_program_seq_high(self, seq: int) -> None:
+        """Raise the AUTOINCREMENT high-water mark after a splice renumbers
+        future rows; otherwise the next append could reuse a shifted seq."""
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT seq FROM sqlite_sequence WHERE name='program'").fetchone()
+            if r:
+                self._conn.execute(
+                    "UPDATE sqlite_sequence SET seq=? WHERE name='program'",
+                    (max(int(r[0]), int(seq)),))
+            else:
+                self._conn.execute(
+                    "INSERT INTO sqlite_sequence (name, seq) VALUES ('program', ?)",
+                    (int(seq),))
+            self._conn.commit()
+
     def shift_program_up_from(self, seq: int) -> None:
         """Shift all committed rows with seq >= ``seq`` up by one, descending so
         the AUTOINCREMENT primary key never collides. Used to open a slot for a
@@ -552,6 +577,16 @@ class Store:
                 "UPDATE requests SET status='queued', updated_at=? "
                 "WHERE id=? AND status='producing'", (_now_iso(), request_id))
             self._conn.commit()
+
+    def pending_requests(self) -> list[dict[str, Any]]:
+        """Requests still awaiting air (queued, producing, or ready), oldest
+        first. The scheduler holds the committed window short while one of these
+        is uncommitted so it can air as soon as its song + intro are ready."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM requests WHERE status IN "
+                "('queued','producing','ready') ORDER BY id ASC").fetchall()
+        return [dict(r) for r in rows]
 
     def ready_request_songs(self) -> list[dict[str, Any]]:
         """`ready` requests, oldest first (their songs are ready to air)."""

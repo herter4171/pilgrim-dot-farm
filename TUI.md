@@ -272,11 +272,13 @@ the server can apply a validated edit without waiting for a browser.
 
 On a revision change the browser must cancel obsolete scheduled sources,
 stop their SFX, release obsolete buffers, and ignore stale fetch/decode
-completions. Hold explicit source references by occurrence; current
-`scheduleOne()` does not retain them for later cancellation. Keep playback
-labels and heartbeat events tied to the audio-clock start, not command
-acceptance. Normal joins remain sample-contiguous; intentional skip fades
-are measured separately from underruns (RADIO §9.2).
+completions. Hold explicit source references by occurrence — `scheduleOne()`
+now stores `_src`/`_gain` on the item (and overlays) so a reset can stop the
+future without touching the audible item, then reschedule the new snapshot
+from that item's audio-clock end. Keep playback labels and heartbeat events
+tied to the audio-clock start, not command acceptance. Normal joins remain
+sample-contiguous; intentional skip fades are measured separately from
+underruns (RADIO §9.2).
 
 ### Rules that manual controls still enforce
 

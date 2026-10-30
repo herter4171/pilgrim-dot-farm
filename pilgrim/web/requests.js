@@ -27,6 +27,10 @@
       li.textContent = "— no requests yet —";
       queueEl.appendChild(li);
     } else {
+      // FIFO queue: the oldest ready request is the next one to air; any
+      // later ready request is rendered but still behind it. Don't label both
+      // "up next" (the old bug that claimed a slot three songs away).
+      let readySeen = false;
       lastQueue.forEach((r, i) => {
         const li = document.createElement("li");
         li.className = "req-item";
@@ -36,7 +40,12 @@
         t.className = "req-text"; t.textContent = r.text;  // textContent = no HTML injection
         const s = document.createElement("span");
         s.className = "req-status";
-        s.textContent = ({ queued: "in line", producing: "being written", ready: "up next" })[r.status] || "";
+        let label = ({ queued: "in line", producing: "being written" })[r.status] || "";
+        if (r.status === "ready") {
+          label = readySeen ? "ready to air" : "up next";
+          readySeen = true;
+        }
+        s.textContent = label;
         li.appendChild(n); li.appendChild(t); li.appendChild(s);
         queueEl.appendChild(li);
       });
