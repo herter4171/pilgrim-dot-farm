@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Cutover smoke checks 1-7 (SPLIT_PLAN §8.8), run ON an edge EC2.
+# Cutover smoke checks 1-7 plus optional tailnet isolation check 11
+# (SPLIT_PLAN §8.8 / Step 10.4), run ON an edge EC2.
 #
 # curl + coreutils only: the edge AMI ships nginx, pilgrim/web/ and
 # pilgrim/deploy/, not a Python venv. Checks 8-10 are local-only and are not
@@ -100,6 +101,56 @@ if [ "$code" = "422" ] && printf '%s' "$ctype" | grep -qi "application/json" \
 else
     fail "7 POST /api/requests: status=$code [$ctype]"
 fi
+
+# 11. Optional tailnet isolation (SPLIT_PLAN Step 10.4). Set ORIGIN_TS_IP to
+#     the origin's tailnet IP (`tailscale ip -4 pilgrim-origin` on the edge).
+#     Proves a compromised edge can reach only the gateway's :443.
+if [ -n "${ORIGIN_TS_IP:-}" ]; then
+    if timeout 3 bash -c "</dev/tcp/$ORIGIN_TS_IP/443" 2>/dev/null; then
+        pass "11 origin $ORIGIN_TS_IP:443 reachable"
+    else
+        fail "11 origin $ORIGIN_TS_IP:443 unreachable"
+    fi
+    for port in 22 80 5000 5001 8090; do
+        if timeout 3 bash -c "</dev/tcp/$ORIGIN_TS_IP/$port" 2>/dev/null; then
+            fail "11 origin $ORIGIN_TS_IP:$port unexpectedly reachable"
+        else
+            pass "11 origin $ORIGIN_TS_IP:$port blocked"
+        fi
+    done
+
+    # Origin peer's PeerAPIURL, if `tailscale status --json` lists one.
+    # grep only (no jq): a PeerAPIURL is an http://<tailnet IP>:<port> URL.
+    origin_peerapi=""
+    if command -v tailscale >/dev/null 2>&1; then
+        origin_peerapi=$(tailscale status --json 2>/dev/null \
+            | grep -o "http://[0-9.]*:[0-9]*" \
+            | grep "$ORIGIN_TS_IP" | head -1)
+    fi
+    if [ -n "$origin_peerapi" ]; then
+        if curl -fsS --max-time 3 "$origin_peerapi" >/dev/null 2>&1; then
+            fail "11 origin PeerAPIURL reachable: $origin_peerapi"
+        else
+            pass "11 origin PeerAPIURL blocked"
+        fi
+    else
+        echo "SKIP 11 origin PeerAPIURL not listed"
+    fi
+else
+    echo "SKIP 11 tailnet isolation (set ORIGIN_TS_IP)"
+fi
+
+# Optional: other tailnet devices that must be unreachable from an edge
+# (space-separated, e.g. the M5 host's own Tailscale IP).
+for ip in ${DENY_TS_IPS:-}; do
+    for port in 22 443 5000 5001; do
+        if timeout 3 bash -c "</dev/tcp/$ip/$port" 2>/dev/null; then
+            fail "11 $ip:$port unexpectedly reachable"
+        else
+            pass "11 $ip:$port blocked"
+        fi
+    done
+done
 
 printf '\n'
 if [ "$FAIL" -eq 0 ]; then

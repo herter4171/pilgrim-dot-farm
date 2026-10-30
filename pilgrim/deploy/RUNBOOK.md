@@ -217,6 +217,22 @@ deploy: check 6 expects a cold cache.
 Checks 8–10 are local-only (8 reads the local test origin's DB; 9 stops
 services; 10 floods the gateway), so never run them in prod.
 
+Optional tailnet isolation (check 11) proves the edge can reach only the
+origin gateway. On the edge:
+
+```sh
+ORIGIN_TS_IP=$(tailscale ip -4 pilgrim-origin) \
+DENY_TS_IPS="<other tailnet IPs>" \
+bash pilgrim/deploy/edge/cutover_check.sh
+```
+
+With `ORIGIN_TS_IP` set, TCP `:443` must succeed and ports 22, 80, 5000, 5001,
+8090 must fail within 3 s each. If `tailscale status --json` lists the origin
+peer's `PeerAPIURL`, a curl to it must fail; otherwise the script prints
+`SKIP`. `DENY_TS_IPS` (space-separated) checks ports 22, 443, 5000 and 5001 on
+other tailnet devices (e.g. the M5 host's own Tailscale IP). Without
+`ORIGIN_TS_IP`, check 11 prints `SKIP`.
+
 Then, from anywhere, sanity-check the public path through Cloudflare:
 `curl -s https://<public host>/edge-health` → `ok`, `curl -sI https://<public host>/`
 → 200, and `curl -s https://<public host>/api/health` → `"on_air": true`.
