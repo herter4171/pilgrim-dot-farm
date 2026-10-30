@@ -1,6 +1,6 @@
 # AGENTS.md — Pilgrim Dot Farm Radio
 
-Active work plan: SPLIT_PLAN.md (work it top to bottom).
+Active work plan: SPLIT_PLAN.md (Steps 1–9 accepted; work Step 10).
 
 You are building an AI-generated radio station. **`RADIO.md` is the source of
 truth.** Read the relevant section of RADIO.md before implementing anything,

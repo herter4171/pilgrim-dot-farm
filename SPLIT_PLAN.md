@@ -772,6 +772,124 @@ Tailscale enrollment.
 
 ---
 
+## Step 10. Review follow-ups (2026-10-30): the Tailscale hop
+
+Steps 1–9 are accepted. These fixes come from reading the Tailscale serve
+source at the pinned release (`tailscale/tailscale` v1.104.4,
+`ipn/ipnlocal/serve.go`). Two facts drive them:
+
+- Serve's reverse proxy calls `addProxyForwardedHeaders`, which does
+  `Header.Set("X-Forwarded-For", <connecting tailnet peer IP>)`. It
+  **overwrites** whatever the edge sent, so at the gateway `$http_x_forwarded_for`
+  is the edge's tailnet IP, and an edge cannot forge it.
+- Serve's `httputil.ReverseProxy` sets no `ErrorHandler`. If the gateway
+  nginx is down while tailscaled is up, the edge gets an **upstream-sent**
+  `502` with an empty body. The local stack has no serve hop, so it never
+  produces this case.
+
+One commit per item, citing "SPLIT_PLAN Step 10.N". Run every check in
+AGENTS.md §7, including the split targets, before reporting.
+
+### 10.1 Gateway rate limits really per edge (`gateway/nginx.conf.template`)
+
+In production every connection to the gateway comes from serve on
+`127.0.0.1`. Keying on `$remote_addr` / `$binary_remote_addr` therefore puts
+**all edges in one bucket**: one compromised edge can use up the heartbeat,
+visitor and request budget for every other edge. Add:
+
+```nginx
+map $http_x_forwarded_for $edge_key {
+    ""      $remote_addr;           # local stack: no serve hop
+    default $http_x_forwarded_for;  # prod: serve's edge tailnet IP
+}
+```
+
+Then key all three zones on `$edge_key` (`req_line` maps `POST` to
+`$edge_key`). Leave the upstream headers as they are: the gateway still sends
+`X-Real-IP` and `X-Forwarded-For` as `$http_x_real_ip`. Fix the comments:
+"per-edge" must be true in production, and say why it is. Update
+`pilgrim/deploy/README.md` and §6.1 of this file.
+
+### 10.2 Edge intercepts upstream 502/504 (`edge/nginx.conf.template`)
+
+Set `proxy_intercept_errors on;` at server level, in place of `off`.
+Interception only applies to status codes that have an `error_page`. The edge
+defines one only for 502 and 504, so the origin's 4xx and the gateway's 503
+`{off_air:true}` still pass through untouched. Rewrite comment 12 to say
+exactly this, and why: serve sends a bare 502 when the gateway is down.
+
+Add split-smoke **check 9c**, "upstream-sent bare 502":
+1. Stop the local gateway container.
+2. Bind a stub on the gateway's port (`127.0.0.1:18090`) that answers every
+   request with `502` and an empty body.
+3. Expect `/api/health` → 200 `{"on_air": false, ...}` and
+   `/api/station/program` → 503 JSON with `off_air: true`, both through the
+   edge.
+4. Stop the stub and restart the gateway, as check 9 does.
+
+The check must fail with intercept `off`. Confirm that, then say so in the
+report.
+
+### 10.3 Cutover check 7 must not create a real request (`edge/cutover_check.sh`)
+
+`{"text":"play some polka"}` gets through moderation on the live station and
+queues a real song generation. Send `{"text":""}` instead. Expect `422` with
+`application/json`. That is FastAPI validation on the origin: it proves the
+full path, never reaches moderation and writes no row. Update the RUNBOOK §8
+description to match. The local split-smoke check 7 may keep the real text.
+
+### 10.4 Tailnet isolation checks from the edge (`edge/cutover_check.sh`, new check 11)
+
+Optional, when `ORIGIN_TS_IP` is set (the operator gets it from
+`tailscale ip -4 pilgrim-origin` on the edge). Use curl and bash only:
+
+- TCP connect to `ORIGIN_TS_IP:443` **succeeds**.
+- TCP connect to `ORIGIN_TS_IP` on ports 22, 80, 5000, 5001 and 8090
+  **fails** within 3 s each (`timeout 3 bash -c "</dev/tcp/$ip/$port"`).
+- If `tailscale status --json` lists a `PeerAPIURL` for the origin peer
+  (extract it with grep/sed, no jq), a curl to it **fails**. If none is
+  listed, print `SKIP`.
+- Optional `DENY_TS_IPS` (space-separated): other tailnet devices, such as the
+  M5 host's own Tailscale IP if the Mac runs the Tailscale app. Ports 22, 443,
+  5000 and 5001 must all **fail** on each of them.
+
+Document these in RUNBOOK §8. They are the proof that "a compromised EC2 can
+reach only the origin's host:port".
+
+### 10.5 RUNBOOK §6: observe the peer address without the tailnet
+
+"From another tailnet machine" contradicts the policy: only `tag:radio-edge`
+can reach the origin, so the operator's own devices cannot. Replace it with
+these steps, all on the M5:
+
+- `docker exec pilgrim-gateway wget -qO- http://127.0.0.1:8090/api/health`
+  must answer through the gateway.
+- `docker exec pilgrim-gateway wget -qO- http://127.0.0.1:8090/api/admin/dj/state`
+  must be 404.
+- Read the gateway's peer address on the station side with
+  `lsof -nP -iTCP:5000 -sTCP:ESTABLISHED`. The upstream keepalive holds the
+  connection open, so this shows it. The uvicorn access line in
+  `station.out.log` / `.err.log` shows it too.
+- Do not rely on `visitor_ips` here: with no `X-Real-IP` from an edge, a
+  trusted peer records nothing.
+
+Then decide `trusted_proxies`:
+- If the peer is `127.0.0.1`, the default `trusted_proxies` is already right.
+- Otherwise add exactly that address as a `/32`, never a Docker range.
+
+### 10.6 Enrollment flags (`pilgrim/deploy/README.md` IaC checklist, RUNBOOK)
+
+- **Edges:**
+  `tailscale up --auth-key=<SSM> --advertise-tags=tag:radio-edge --shields-up --accept-routes=false --accept-dns=true`.
+  - No `--ssh`, `--advertise-routes` or `--advertise-exit-node`.
+  - `--shields-up` blocks all inbound to edges even if a later policy edit
+    grants something.
+- **Origin key:** tagged (`tag:radio-origin`), not ephemeral, single use,
+  pre-approved. Tagged nodes have key expiry disabled by default, and
+  `TS_AUTH_ONCE` keeps a restart from re-authenticating.
+
+---
+
 ## Deferred (do not build now)
 
 - Edge-side heartbeat aggregation (one summary per edge every 5 s). Needs a
