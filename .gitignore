@@ -20,6 +20,7 @@ dist/
 .pi/
 
 # Runtime data
+*.bak
 station.db
 station.db-wal
 station.db-shm
