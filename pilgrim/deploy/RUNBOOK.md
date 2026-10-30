@@ -188,25 +188,31 @@ edge's nginx **after** tailscaled is up and MagicDNS resolves
 
 ## 8. Cut over
 
-Point Cloudflare at the edges, then run the split-smoke checks **1–7 from one
-edge EC2, against that edge's own nginx**. Two reasons: the tailnet policy lets
-only edges reach the gateway (checks 3–4 hit it directly), and through
-Cloudflare + the load balancer check 6's two media fetches can land on
-different edges or be answered by Cloudflare, so MISS→HIT is not observable.
-Use the edge's local listen address (`EDGE_LISTEN`), not the public hostname:
+Point Cloudflare at the edges, then run the curl-only cutover check **from one
+edge EC2, against that edge's own nginx**. The edge AMI ships nginx,
+`pilgrim/web/` and `pilgrim/deploy/` — no Python venv — so the check is
+`pilgrim/deploy/edge/cutover_check.sh` (curl + coreutils only).
+
+Why from an edge: the tailnet policy lets only edges reach the gateway
+(checks 3–4 hit it directly), and through Cloudflare + the load balancer
+check 6's two media fetches can land on different edges or be answered by
+Cloudflare, so MISS→HIT is not observable. Use the edge's local listen
+address (`EDGE_LISTEN`), not the public hostname:
 
 ```sh
 # on one edge EC2, from the repo checkout
-.venv/bin/python -m pilgrim.tools.split_smoke \
-  --edge http://127.0.0.1:8080 \
-  --gateway https://pilgrim-origin.<tailnet>.ts.net \
-  --state-dir /tmp/unused \
-  --max-check 7
+EDGE=http://127.0.0.1:8080 \
+GATEWAY=https://pilgrim-origin.<tailnet>.ts.net \
+bash pilgrim/deploy/edge/cutover_check.sh
 ```
 
-Confirm: `/edge-health` is 200; `/` serves the site; admin, control and
-`/api/test/*` paths are 404 at both hops; program has `epoch`; media is
-`MISS` then `HIT` with `immutable`; `POST /api/requests` returns origin JSON.
+The script prints PASS/FAIL and exits non-zero on any failure. It checks:
+`/edge-health` is 200; `/` serves the site; admin, control and `/api/test/*`
+paths are 404 at both hops; program has `epoch`; media is `MISS` then `HIT`
+with identical bytes and `immutable`; `POST /api/requests` returns origin JSON
+(not a 500 or an nginx error page). Run it once right after deploy: check 6
+expects a cold cache.
+
 Checks 8–10 are local-only (8 reads the local test origin's DB; 9 stops
 services; 10 floods the gateway), so never run them in prod.
 

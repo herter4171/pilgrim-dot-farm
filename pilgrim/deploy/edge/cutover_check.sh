@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Cutover smoke checks 1-7 (SPLIT_PLAN §8.8), run ON an edge EC2.
+#
+# curl + coreutils only: the edge AMI ships nginx, pilgrim/web/ and
+# pilgrim/deploy/, not a Python venv. Checks 8-10 are local-only and are not
+# run here (8 reads a test DB; 9 stops services; 10 floods the gateway).
+#
+#   EDGE=http://127.0.0.1:8080 \
+#   GATEWAY=https://pilgrim-origin.<tailnet>.ts.net \
+#   bash pilgrim/deploy/edge/cutover_check.sh
+#
+# Check 6 expects a COLD media cache (first MISS, second HIT). Run it once
+# right after deploy; on a rerun the first fetch may already be HIT.
+set -uo pipefail
+
+EDGE="${EDGE:-http://127.0.0.1:8080}"
+GATEWAY="${GATEWAY:-}"
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+FAIL=0
+
+pass() { printf 'PASS  %s\n' "$1"; }
+fail() { printf 'FAIL  %s\n' "$1"; FAIL=1; }
+
+# 1. Load-balancer health, no origin contact.
+body=$(curl -fsS "$EDGE/edge-health" 2>/dev/null) || body=""
+[ "$body" = "ok" ] && pass "1 edge-health 200 ok" || fail "1 edge-health: ${body:-no response}"
+
+# 2. Static site.
+if curl -fsS "$EDGE/" 2>/dev/null | grep -q "PILGRIM"; then
+    pass "2 GET / serves index.html"
+else
+    fail "2 GET / does not serve the site"
+fi
+
+# 3. Admin route is 404 at the edge and at the gateway.
+code=$(curl -s -o /dev/null -w '%{http_code}' "$EDGE/api/admin/dj/state")
+[ "$code" = "404" ] && pass "3 edge admin 404" || fail "3 edge admin: $code"
+if [ -n "$GATEWAY" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' "$GATEWAY/api/admin/dj/state")
+    [ "$code" = "404" ] && pass "3 gateway admin 404" || fail "3 gateway admin: $code"
+fi
+
+# 4. Station start/stop is 404 at both hops, GET and POST.
+for m in GET POST; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' -X "$m" "$EDGE/api/station/start")
+    [ "$code" = "404" ] && pass "4 edge $m start 404" || fail "4 edge $m start: $code"
+    if [ -n "$GATEWAY" ]; then
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X "$m" "$GATEWAY/api/station/start")
+        [ "$code" = "404" ] && pass "4 gateway $m start 404" || fail "4 gateway $m start: $code"
+    fi
+done
+
+# 5. Program has an epoch.
+prog=$(curl -fsS "$EDGE/api/station/program" 2>/dev/null) || prog=""
+if printf '%s' "$prog" | grep -q '"epoch"'; then
+    pass "5 program 200 with epoch"
+else
+    fail "5 program missing epoch"
+fi
+
+# 6. Media MISS -> HIT, identical bytes, immutable cache header.
+mid=$(printf '%s' "$prog" | sed -n 's/.*"media_id":[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)
+if [ -n "$mid" ]; then
+    curl -sS -D "$TMP/h1" -o "$TMP/b1" "$EDGE/api/media/$mid"
+    curl -sS -D "$TMP/h2" -o "$TMP/b2" "$EDGE/api/media/$mid"
+    cs1=$(grep -i '^x-cache-status:' "$TMP/h1" | awk '{print $2}' | tr -d '\r')
+    cs2=$(grep -i '^x-cache-status:' "$TMP/h2" | awk '{print $2}' | tr -d '\r')
+    h1=$(sha256sum "$TMP/b1" | awk '{print $1}')
+    h2=$(sha256sum "$TMP/b2" | awk '{print $1}')
+    cc=$(grep -i '^cache-control:' "$TMP/h1" | tr -d '\r')
+    if [ "$cs1" = "MISS" ] && [ "$cs2" = "HIT" ] && [ "$h1" = "$h2" ] \
+        && printf '%s' "$cc" | grep -q "immutable"; then
+        pass "6 media $mid MISS->HIT, identical, immutable"
+    else
+        fail "6 media $mid: $cs1/$cs2 hashes=$([ "$h1" = "$h2" ] && echo same || echo DIFF) [$cc]"
+    fi
+else
+    fail "6 no media_id in the program"
+fi
+
+# 7. POST /api/requests: origin JSON, never a Python 500 or an nginx error page.
+code=$(curl -sS -D "$TMP/rh" -o "$TMP/rb" -w '%{http_code}' \
+    -H 'Content-Type: application/json' -d '{"text":"play some polka"}' \
+    "$EDGE/api/requests")
+ctype=$(grep -i '^content-type:' "$TMP/rh" | tr -d '\r')
+if [ "$code" != "500" ] && printf '%s' "$ctype" | grep -qi "application/json" \
+    && ! grep -qi "<html" "$TMP/rb"; then
+    pass "7 POST /api/requests origin JSON (status $code)"
+else
+    fail "7 POST /api/requests: status=$code [$ctype]"
+fi
+
+printf '\n'
+if [ "$FAIL" -eq 0 ]; then
+    echo "cutover checks 1-7 passed"
+    exit 0
+fi
+echo "cutover checks FAILED"
+exit 1
