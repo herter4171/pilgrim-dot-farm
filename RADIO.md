@@ -807,7 +807,7 @@ requests:
 
 visitors:
   enabled: true
-  trusted_proxies: [127.0.0.1, "::1"]  # peers whose X-Real-IP we trust (§14)
+  trusted_proxies: [127.0.0.1, "::1"]  # peers (IP or CIDR) whose X-Real-IP we trust (§14)
   listener_timeout_s: 15   # live listener drops after this long without a heartbeat
   max_listeners: 1000      # cap on tracked player IDs
 
@@ -944,12 +944,21 @@ table stores the **raw canonical client IP** (operator decision, 2026-10-01;
 supersedes the earlier HMAC-only `visitor_signatures` table, which is
 dropped). One distinct canonical public client IP counts once for the
 lifetime of the counter; the count starts at 0. The IP is resolved through
-the deployment's trusted-proxy setup (verified: nginx on loopback sets
-`X-Real-IP` to `$remote_addr`; `visitors.trusted_proxies` in config) — a
-spoofable header from an untrusted peer is ignored. When no canonical identity
-can be resolved, registration is skipped and the current count is returned;
-the counter never breaks radio/requests. Raw IPs are personal data: no
-retention/pruning policy is implemented yet.
+the deployment's trusted-proxy chain. Each hop passes the browser IP on and
+the edge always overwrites whatever the client sent:
+
+| Hop | Trusts | Sets `X-Real-IP` to |
+|-----|--------|---------------------|
+| Edge nginx | Cloudflare's IP ranges (prod) / nobody (local) | `$remote_addr` after `real_ip` processing (the browser) |
+| Gateway nginx | the edge peers that reach it (tailnet in prod, loopback locally) | the edge's `X-Real-IP`, unchanged |
+| Origin | `visitors.trusted_proxies` (single IPs **and** CIDRs) | reads `X-Real-IP`; falls back to the first `X-Forwarded-For` entry |
+
+A peer is trusted only when its canonical address is inside a configured
+network. From an untrusted peer both headers are ignored and the socket peer
+address is used, so a spoofable header cannot reach the counter. When no
+canonical identity can be resolved, registration is skipped and the current
+count is returned; the counter never breaks radio/requests. Raw IPs are
+personal data: no retention/pruning policy is implemented yet.
 
 **Live listeners.** Not stored: the server keeps an in-memory map of
 heartbeat `player_id` → last heartbeat time (injected clock). A player counts

@@ -340,14 +340,19 @@ class Station:
 
     def _client_ip(self, request: Request) -> str | None:
         """Resolve the canonical public client IP through the deployment's
-        verified trusted-proxy setup (nginx sets X-Real-IP to $remote_addr on
-        loopback; COSMETIC_PATCHING §6). Never trust a spoofable header from an
-        untrusted peer — use the socket peer address directly."""
+        trusted-proxy chain (SPLIT_PLAN §3.2).
+
+        A peer is trusted only when its canonical address is inside a
+        configured network (`visitors.trusted_proxies`, single IPs and CIDRs).
+        From a trusted peer: `X-Real-IP`, else the first `X-Forwarded-For`
+        entry. From an untrusted peer: the socket peer address; both headers
+        are ignored so a spoof cannot reach the visitor counter."""
         peer = request.client.host if (request.client and request.client.host) else None
-        trusted = set(self.cfg.visitors.trusted_proxies)
-        if peer in trusted:
-            header = (request.headers.get("x-real-ip")
-                      or request.headers.get("x-forwarded-for"))
+        if self.cfg.visitors.is_trusted(self._canonical_ip(peer)):
+            header = request.headers.get("x-real-ip")
+            if not header:
+                xff = request.headers.get("x-forwarded-for")
+                header = xff.split(",")[0].strip() if xff else None
         else:
             header = peer
         return self._canonical_ip(header)

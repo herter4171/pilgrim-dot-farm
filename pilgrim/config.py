@@ -1,6 +1,7 @@
 """Configuration loading, Clock and RNG abstractions (RADIO.md §12, AGENTS §4)."""
 from __future__ import annotations
 
+import ipaddress
 import os
 import random
 import time
@@ -8,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 ROOT = Path(__file__).resolve().parent
 
@@ -195,6 +196,34 @@ class Visitors(BaseModel):
     trusted_proxies: list[str] = Field(default_factory=lambda: ["127.0.0.1", "::1"])
     listener_timeout_s: float = 15.0
     max_listeners: int = 1000
+
+    # Parsed at load time (SPLIT_PLAN §3.2). Private so it never leaks into
+    # model_dump()/JSON (the e2e server dumps station config).
+    _networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = PrivateAttr(
+        default_factory=list)
+
+    @model_validator(mode="after")
+    def _parse_trusted_proxies(self) -> Visitors:
+        networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+        for entry in self.trusted_proxies:
+            try:
+                networks.append(ipaddress.ip_network(entry, strict=False))
+            except ValueError:
+                raise ValueError(
+                    f"visitors.trusted_proxies entry {entry!r} is not a valid "
+                    "IP address or CIDR network") from None
+        self._networks = networks
+        return self
+
+    def is_trusted(self, canonical_ip: str | None) -> bool:
+        """True when `canonical_ip` is inside any configured trusted network."""
+        if not canonical_ip:
+            return False
+        try:
+            addr = ipaddress.ip_address(canonical_ip)
+        except ValueError:
+            return False
+        return any(addr in net for net in self._networks)
 
 
 class Requests(BaseModel):

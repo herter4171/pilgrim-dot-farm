@@ -8,6 +8,7 @@ Only backend-free endpoints are exercised here.
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from pilgrim.config import Visitors
 from pilgrim.server import create_app
 
 
@@ -185,9 +186,9 @@ def test_canonical_ip_folds_mapped_v6_and_takes_first_xff():
 
 def test_visitors_trusted_proxy_counts_unique(tmp_env, monkeypatch):
     cfg, store, _ = tmp_env
-    cfg.visitors.trusted_proxies = ["testclient"]
+    cfg.visitors = Visitors(trusted_proxies=["127.0.0.1"])
     app = create_app(cfg)
-    c = TestClient(app)
+    c = TestClient(app, client=("127.0.0.1", 50000))
     def post(ip=None):
         h = {"X-Real-IP": ip} if ip else None
         return c.post("/api/visitors", headers=h)
@@ -206,23 +207,25 @@ def test_visitors_trusted_proxy_counts_unique(tmp_env, monkeypatch):
 
 def test_visitors_persist_across_restart(tmp_env, monkeypatch):
     cfg, store, _ = tmp_env
-    cfg.visitors.trusted_proxies = ["testclient"]
+    cfg.visitors = Visitors(trusted_proxies=["127.0.0.1"])
     cfg.library.db = str(store.path)
     app1 = create_app(cfg)
-    assert TestClient(app1).post(
+    assert TestClient(app1, client=("127.0.0.1", 50000)).post(
         "/api/visitors", headers={"X-Real-IP": "9.9.9.9"}).json()["unique_visitors"] == 1
     # a fresh app/connection on the same db keeps the count
     app2 = create_app(cfg)
-    r = TestClient(app2).post("/api/visitors", headers={"X-Real-IP": "9.9.9.9"})
+    r = TestClient(app2, client=("127.0.0.1", 50000)).post(
+        "/api/visitors", headers={"X-Real-IP": "9.9.9.9"})
     assert r.json()["unique_visitors"] == 1
 
 
 def test_visitors_stores_raw_ip_without_any_secret(tmp_env, monkeypatch):
     cfg, store, _ = tmp_env
-    cfg.visitors.trusted_proxies = ["testclient"]
+    cfg.visitors = Visitors(trusted_proxies=["127.0.0.1"])
     monkeypatch.delenv("VISITOR_HASH_SECRET", raising=False)
     app = create_app(cfg)
-    r = TestClient(app).post("/api/visitors", headers={"X-Real-IP": "1.2.3.4"})
+    r = TestClient(app, client=("127.0.0.1", 50000)).post(
+        "/api/visitors", headers={"X-Real-IP": "1.2.3.4"})
     assert r.status_code == 200 and r.json()["unique_visitors"] == 1
     rows = store._conn.execute("SELECT ip FROM visitor_ips").fetchall()
     assert [row[0] for row in rows] == ["1.2.3.4"]
