@@ -188,21 +188,31 @@ edge's nginx **after** tailscaled is up and MagicDNS resolves
 
 ## 8. Cut over
 
-Point Cloudflare at the edges, then run the split-smoke checks **1–7** against
-the public hostname (checks 8–10 are local-only):
+Point Cloudflare at the edges, then run the split-smoke checks **1–7 from one
+edge EC2, against that edge's own nginx**. Two reasons: the tailnet policy lets
+only edges reach the gateway (checks 3–4 hit it directly), and through
+Cloudflare + the load balancer check 6's two media fetches can land on
+different edges or be answered by Cloudflare, so MISS→HIT is not observable.
+Use the edge's local listen address (`EDGE_LISTEN`), not the public hostname:
 
 ```sh
+# on one edge EC2, from the repo checkout
 .venv/bin/python -m pilgrim.tools.split_smoke \
-  --edge https://radio.example.com \
+  --edge http://127.0.0.1:8080 \
   --gateway https://pilgrim-origin.<tailnet>.ts.net \
   --state-dir /tmp/unused \
   --max-check 7
 ```
 
-Confirm: `/edge-health` is 200; `/` serves the site; admin/control paths are
-404 at both hops; program has `epoch`; media is `MISS` then `HIT` with
-`immutable`; `POST /api/requests` returns origin JSON; a spoofed `X-Real-IP`
-is discarded (check 8 needs the origin's test hook, so skip it in prod).
+Confirm: `/edge-health` is 200; `/` serves the site; admin, control and
+`/api/test/*` paths are 404 at both hops; program has `epoch`; media is
+`MISS` then `HIT` with `immutable`; `POST /api/requests` returns origin JSON.
+Checks 8–10 are local-only (8 reads the local test origin's DB; 9 stops
+services; 10 floods the gateway), so never run them in prod.
+
+Then, from anywhere, sanity-check the public path through Cloudflare:
+`curl -s https://<public host>/edge-health` → `ok`, `curl -sI https://<public host>/`
+→ 200, and `curl -s https://<public host>/api/health` → `"on_air": true`.
 
 ## 9. Rollback
 
