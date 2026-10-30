@@ -1,6 +1,7 @@
 # Pilgrim Dot Farm — LOCAL SPLIT (SPLIT_PLAN §7.1)
 #
-# Origin (e2e server, started by stack.sh) + gateway + edge, all on loopback.
+# Origin (started by stack.sh: e2e_server or split_origin) + gateway + edge, all
+# on loopback.
 # Both nginx services use the pinned production image and the SAME rendered
 # configs as production; only the addresses/values differ. `network_mode: host`
 # makes 127.0.0.1:18080/18090 host loopback (Linux; this host).
@@ -16,17 +17,19 @@ services:
   gateway:
     image: nginx:1.30.6-alpine
     network_mode: host
+    # Same hardening as the PROD gateway (gateway/compose.yaml), so the local
+    # run exercises it: image nginx user 101, read-only root, tmpfs only. The
+    # gateway mounts nothing writable from the host, so teardown is unaffected.
     read_only: true
-    # Run as the invoking user so the host-mounted cache/config files stay
-    # owned by that user and teardown can remove them (the prod gateway runs
-    # as the image's nginx user instead).
-    user: "${PILGRIM_UID:-0}:${PILGRIM_GID:-0}"
+    user: "101:101"
     entrypoint: ["nginx", "-g", "daemon off;"]
+    # tmpfs is root-owned by default; nginx as 101 must own its writable dirs
+    # or it cannot start (found by running this in make split-smoke).
     tmpfs:
-      - /var/cache/nginx:mode=1777
-      - /var/run:mode=1777
-      - /var/log/nginx:mode=1777
-      - /tmp:mode=1777
+      - /var/cache/nginx:uid=101,gid=101,mode=0700
+      - /var/run:uid=101,gid=101,mode=0755
+      - /var/log/nginx:uid=101,gid=101,mode=0700
+      - /tmp:uid=101,gid=101,mode=0700
     volumes:
       - ${PILGRIM_GATEWAY_CONF:?stack.sh must export PILGRIM_GATEWAY_CONF}:/etc/nginx/nginx.conf:ro
       - ${PILGRIM_EXTRA_CONF:?stack.sh must export PILGRIM_EXTRA_CONF}:/etc/nginx/extra.conf:ro
@@ -35,6 +38,8 @@ services:
     image: nginx:1.30.6-alpine
     network_mode: host
     read_only: true
+    # Invoking user: the edge's media cache is a host mount, and nginx as 101
+    # would leave files teardown cannot remove. Prod edge users are IaC's call.
     user: "${PILGRIM_UID:-0}:${PILGRIM_GID:-0}"
     entrypoint: ["nginx", "-g", "daemon off;"]
     tmpfs:

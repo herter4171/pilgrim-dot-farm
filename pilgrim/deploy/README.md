@@ -21,7 +21,9 @@ throwaway container). Everything else is for the operator.
 | `gateway/serve.json` | Tailscale serve | HTTPS on 443 -> gateway on 8090 (Step 6). |
 | `tailscale/policy.example.hujson` | Operator | Tailnet policy fragment (Step 6). |
 | `launchd/farm.pilgrim.station.plist.example` | Operator, on the M5 | launchd unit for the origin (Step 8). |
-| `local/compose.yaml` | `make e2e-split` / local proof | Edge + gateway on loopback (Step 7). |
+| `local/compose.yaml` | `make e2e-split` / `make split-smoke` | Edge + gateway on loopback (Step 7). The gateway runs with the prod hardening (uid 101, read-only, tmpfs). |
+| `local/stack.sh` | both local targets | `PILGRIM_SPLIT_ORIGIN=e2e` (default): `e2e_server` + `extra-e2e.conf`, for the Playwright gap test. `=real`: `pilgrim/tests/e2e/split_origin.py` (the **real** `create_public_app`, fakes, temp library) + the **prod** allowlist (`extra-none.conf`). |
+| `local/smoke.sh` | `make split-smoke` | Always `real` mode: the smoke checks must exercise `server.py`, never `e2e_server`. |
 | `local/deploy_check.sh` | `make deploy-check` | Renders both templates with local values and runs `nginx -t`. |
 | `RUNBOOK.md` | Operator | Move-the-origin runbook (Step 8). |
 

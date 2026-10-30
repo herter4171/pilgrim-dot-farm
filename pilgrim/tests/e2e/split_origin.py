@@ -1,0 +1,81 @@
+"""Real-origin runner for the local split smoke checks (SPLIT_PLAN §7.3).
+
+`e2e_server.py` reimplements the endpoints in its own app, so it cannot prove
+anything about `server.py`. This runner serves the REAL `create_public_app`
+(Step 1 route split, Step 2 cache headers, Step 3 trusted-proxy chain with
+`proxy_headers=False`) over a temp library:
+
+- every backend host points at a closed loopback port, and the moderation LLM
+  is the in-process `FakeLLM`: no real backend is ever contacted (AGENTS §1.2);
+- only the scheduler runs (no producer/song/news/SFX loops);
+- `<state-dir>/station.db` is reused on restart (smoke check 9b), and the smoke
+  script reads visitor IPs straight from it: there is no test route on the
+  public app.
+
+    python -m pilgrim.tests.e2e.split_origin --port N --state-dir DIR
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+from pathlib import Path
+
+from pilgrim.config import Config, Visitors, ensure_dirs, load_config
+from pilgrim.server import build_station, create_admin_app, create_public_app, listener_configs
+from pilgrim.store import Store
+from pilgrim.tests.e2e.e2e_server import _seed
+from pilgrim.tests.fakes import FakeLLM
+
+CLOSED = "http://127.0.0.1:9"  # discard port: nothing listens, calls fail fast
+
+
+def _config(state: Path, port: int) -> Config:
+    cfg = load_config().model_copy(deep=True)
+    cfg.library.dir = str(state / "library")
+    cfg.library.db = str(state / "station.db")
+    cfg.logging.dir = str(state / "logs")
+    for name in type(cfg.hosts).model_fields:
+        setattr(cfg.hosts, name, CLOSED)
+    cfg.station.host = "127.0.0.1"
+    cfg.station.port = port
+    cfg.station.admin_port = port + 1 if port < 65535 else port - 1  # unused
+    cfg.station.serve_web = False      # the edge serves the site
+    cfg.visitors = Visitors(trusted_proxies=["127.0.0.1", "::1"])  # the gateway
+    # 2 s clips: scale spacing like e2e_server so 30 songs aren't a drought
+    cfg.playout.song_min_spacing_s = [30, 20, 10]
+    ensure_dirs(cfg)
+    return cfg
+
+
+async def _serve(cfg: Config, fresh: bool) -> None:
+    import uvicorn
+
+    if fresh:
+        _seed(cfg, Store(Path(cfg.library.db)), Path(cfg.library.dir).parent)
+    station = build_station(cfg)
+    station.llm = FakeLLM()  # type: ignore[assignment]
+    station.moderator.llm = station.llm  # type: ignore[assignment]
+    public = create_public_app(cfg, station)
+    station.scheduler.commit_lookahead()
+    task = asyncio.create_task(station.scheduler.run())
+    # Production listener settings (proxy_headers=False), public listener only.
+    config = listener_configs(cfg, public, create_admin_app(cfg, station))[0]
+    try:
+        await uvicorn.Server(config).serve()
+    finally:
+        task.cancel()
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--port", type=int, required=True)
+    ap.add_argument("--state-dir", type=Path, required=True)
+    args = ap.parse_args(argv)
+    state = args.state_dir.resolve()
+    state.mkdir(parents=True, exist_ok=True)
+    fresh = not (state / "station.db").exists()
+    asyncio.run(_serve(_config(state, args.port), fresh))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,8 +1,9 @@
 """Local split smoke checks (SPLIT_PLAN §7.3).
 
-Runs against the loopback stack from `pilgrim/deploy/local/stack.sh`
-(e2e origin + gateway + edge). Every check prints PASS/FAIL; the process exits
-non-zero if any FAIL. No real backends are contacted.
+Runs against the loopback stack from `pilgrim/deploy/local/stack.sh` in
+`real` mode: the REAL public app (`pilgrim.tests.e2e.split_origin`) behind the
+gateway's PRODUCTION allowlist and the edge. Every check prints PASS/FAIL; the
+process exits non-zero if any FAIL. No real backends are contacted.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import hashlib
 import os
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -39,12 +41,29 @@ def _wait_port_closed(port: int, timeout: float = 5.0) -> bool:
     return False
 
 
+def _origin_cmd(state: Path, port: int) -> list[str]:
+    """Restart the same origin stack.sh started (its mode is recorded)."""
+    mode = (state / "origin_mode").read_text().strip()
+    if mode == "real":
+        return [sys.executable, "-m", "pilgrim.tests.e2e.split_origin",
+                "--port", str(port), "--state-dir", str(state / "origin")]
+    return [sys.executable, "-m", "uvicorn", "pilgrim.tests.e2e.e2e_server:app",
+            "--host", "127.0.0.1", "--port", str(port)]
+
+
+def _visitor_ips(state: Path) -> list[str]:
+    """Read the real origin's temp DB directly: no test route on the public app."""
+    con = sqlite3.connect(f"file:{state / 'origin' / 'station.db'}?mode=ro", uri=True)
+    try:
+        return [r[0] for r in con.execute("SELECT ip FROM visitor_ips ORDER BY ip")]
+    finally:
+        con.close()
+
+
 def _start_origin(state: Path, port: int) -> None:
     log = open(state / "origin.log", "ab")  # noqa: SIM115 - held by the child
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "pilgrim.tests.e2e.e2e_server:app",
-         "--host", "127.0.0.1", "--port", str(port)],
-        cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(_origin_cmd(state, port),
+                            cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
     (state / "origin.pid").write_text(str(proc.pid))
     deadline = time.time() + 10.0
     while time.time() < deadline:
@@ -55,7 +74,7 @@ def _start_origin(state: Path, port: int) -> None:
         except httpx.HTTPError:
             pass
         time.sleep(0.1)
-    raise RuntimeError("e2e origin did not restart")
+    raise RuntimeError("origin did not restart")
 
 
 def _compose(state: Path, *args: str) -> None:
@@ -117,10 +136,11 @@ def run(edge_url: str, gateway_url: str, state: Path,
                 f"{r.status_code}")
 
     def check_3():
-        a = edge.get("/api/admin/dj/state")
-        b = gateway.get("/api/admin/dj/state")
-        return (a.status_code == 404 and b.status_code == 404,
-                f"edge={a.status_code} gateway={b.status_code}")
+        # admin routes, and (prod allowlist) the e2e-only /api/test/ routes
+        codes = {f"{name}:{path}": client.get(path).status_code
+                 for path in ("/api/admin/dj/state", "/api/test/report")
+                 for name, client in (("edge", edge), ("gateway", gateway))}
+        return all(c == 404 for c in codes.values()), f"{codes}"
 
     def check_4():
         codes = []
@@ -169,11 +189,10 @@ def run(edge_url: str, gateway_url: str, state: Path,
 
     def check_8():
         r = edge.post("/api/visitors",
-                      headers={"X-Real-IP": "203.0.113.9"})
-        rep = edge.get("/api/test/report").json()
-        ips = rep.get("visitor_ips", [])
-        ok = (r.status_code == 200 and "127.0.0.1" in ips
-              and "203.0.113.9" not in ips)
+                      headers={"X-Real-IP": "203.0.113.9",
+                               "X-Forwarded-For": "203.0.113.10"})
+        ips = _visitor_ips(state)
+        ok = (r.status_code == 200 and ips == ["127.0.0.1"])
         return ok, f"recorded={ips}"
 
     record("1 edge-health 200 ok", check_1)
@@ -245,18 +264,24 @@ def run(edge_url: str, gateway_url: str, state: Path,
 
     record("9d recovery after gateway restart", check_9_recover_gateway)
 
-    def one_request() -> int:
+    def one_request() -> tuple[int, bool]:
         with httpx.Client(base_url=gateway_url, timeout=15.0) as c:
-            return c.post("/api/requests", json={"text": "play polka"}).status_code
+            r = c.post("/api/requests", json={"text": "play polka"})
+            # nginx's limit_req page is HTML; the origin's own 4.3 limiter
+            # answers JSON. Only the gateway's 429s count here.
+            return r.status_code, "json" in r.headers.get("content-type", "")
 
     def check_10():
         with concurrent.futures.ThreadPoolExecutor(max_workers=30) as ex:
-            codes = list(ex.map(lambda _: one_request(), range(30)))
-        n429 = codes.count(429)
-        return n429 >= 1, f"429s={n429} statuses={sorted(set(codes))}"
+            res = list(ex.map(lambda _: one_request(), range(30)))
+        gw429 = sum(1 for code, is_json in res if code == 429 and not is_json)
+        origin429 = sum(1 for code, is_json in res if code == 429 and is_json)
+        board = gateway.get("/api/requests").status_code  # GET is never limited
+        return (gw429 >= 1 and board == 200,
+                f"gateway 429s={gw429} origin 429s={origin429} board GET={board}")
 
     if max_check >= 10:
-        record("10 gateway rate limit returns 429", check_10)
+        record("10 gateway rate limit: POST 429s from nginx, GET board unlimited", check_10)
 
     edge.close()
     gateway.close()

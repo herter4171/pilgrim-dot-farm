@@ -8,6 +8,9 @@ STATE="${PILGRIM_SPLIT_STATE:-/tmp/pilgrim-split-local}"
 EDGE_PORT="${PILGRIM_EDGE_PORT:-18080}"
 GATEWAY_PORT="${PILGRIM_GATEWAY_PORT:-18090}"
 
+# The smoke checks run against the REAL public app with the PRODUCTION
+# gateway allowlist (SPLIT_PLAN §7.3), never e2e_server.
+export PILGRIM_SPLIT_ORIGIN=real
 trap 'bash "$ROOT/pilgrim/deploy/local/stack.sh" stop' EXIT
 bash "$ROOT/pilgrim/deploy/local/stack.sh" start
 

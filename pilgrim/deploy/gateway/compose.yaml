@@ -50,11 +50,13 @@ services:
     user: "101:101"
     read_only: true
     entrypoint: ["nginx", "-g", "daemon off;"]
+    # tmpfs is root-owned by default; nginx as 101 must own its writable dirs
+    # or it cannot start (found by running this in make split-smoke).
     tmpfs:
-      - /var/cache/nginx
-      - /var/run
-      - /var/log/nginx
-      - /tmp
+      - /var/cache/nginx:uid=101,gid=101,mode=0700
+      - /var/run:uid=101,gid=101,mode=0755
+      - /var/log/nginx:uid=101,gid=101,mode=0700
+      - /tmp:uid=101,gid=101,mode=0700
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./extra-none.conf:/etc/nginx/extra-none.conf:ro

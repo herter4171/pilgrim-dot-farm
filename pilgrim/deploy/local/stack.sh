@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Local split stack lifecycle (SPLIT_PLAN §7.1/§7.2): e2e origin + gateway +
-# edge on loopback. `start` renders both templates with local values, starts
-# the e2e server on an OS-chosen free port, then brings up the compose project.
+# Local split stack lifecycle (SPLIT_PLAN §7.1-§7.3): origin + gateway + edge
+# on loopback. `start` renders both templates with local values, starts the
+# origin on an OS-chosen free port, then brings up the compose project.
 # `stop` tears everything down (including the origin process).
+#
+# PILGRIM_SPLIT_ORIGIN picks the origin:
+#   e2e  (default) pilgrim.tests.e2e.e2e_server + the test-only /api/test/
+#        allowance: for the Playwright gap test (make e2e-split).
+#   real pilgrim.tests.e2e.split_origin (the REAL create_public_app) + the
+#        PRODUCTION allowlist (extra-none.conf): for make split-smoke.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -12,6 +18,8 @@ EDGE_PORT="${PILGRIM_EDGE_PORT:-18080}"
 GATEWAY_PORT="${PILGRIM_GATEWAY_PORT:-18090}"
 PROJECT="pilgrim-split-local"
 COMPOSE="$ROOT/pilgrim/deploy/local/compose.yaml"
+MODE="${PILGRIM_SPLIT_ORIGIN:-e2e}"
+case "$MODE" in e2e|real) ;; *) echo "error: PILGRIM_SPLIT_ORIGIN=$MODE (e2e|real)" >&2; exit 2;; esac
 
 port_free() {
     ! ss -ltnH | awk '{print $4}' | grep -qE "[:.]$1$"
@@ -37,11 +45,16 @@ wait_url() {
 
 start_origin() {
     local port=$1
-    ( cd "$ROOT" && exec "$PY" -m uvicorn pilgrim.tests.e2e.e2e_server:app \
-        --host 127.0.0.1 --port "$port" >> "$STATE/origin.log" 2>&1 ) &
+    if [ "$MODE" = real ]; then
+        ( cd "$ROOT" && exec "$PY" -m pilgrim.tests.e2e.split_origin \
+            --port "$port" --state-dir "$STATE/origin" >> "$STATE/origin.log" 2>&1 ) &
+    else
+        ( cd "$ROOT" && exec "$PY" -m uvicorn pilgrim.tests.e2e.e2e_server:app \
+            --host 127.0.0.1 --port "$port" >> "$STATE/origin.log" 2>&1 ) &
+    fi
     echo $! > "$STATE/origin.pid"
     wait_url "http://127.0.0.1:$port/api/health" || {
-        echo "error: e2e origin failed to start on port $port" >&2
+        echo "error: $MODE origin failed to start on port $port" >&2
         tail -30 "$STATE/origin.log" >&2
         return 1
     }
@@ -59,7 +72,11 @@ render() {
     mkdir -p "$STATE/cache/media" "$STATE/cache/micro" \
              "$STATE/edge" "$STATE/gateway"
     cp "$ROOT/pilgrim/deploy/edge/realip-local.conf" "$STATE/realip.conf"
-    cp "$ROOT/pilgrim/deploy/gateway/extra-e2e.conf" "$STATE/extra.conf"
+    if [ "$MODE" = real ]; then
+        cp "$ROOT/pilgrim/deploy/gateway/extra-none.conf" "$STATE/extra.conf"
+    else
+        cp "$ROOT/pilgrim/deploy/gateway/extra-e2e.conf" "$STATE/extra.conf"
+    fi
 
     ( cd "$ROOT" && "$PY" -m pilgrim.tools.render_deploy \
         pilgrim/deploy/edge/nginx.conf.template "$STATE/edge/nginx.conf" \
@@ -107,6 +124,7 @@ start)
     mkdir -p "$STATE"
     ORIGIN_PORT=$(pick_port)
     echo "$ORIGIN_PORT" > "$STATE/origin_port"
+    echo "$MODE" > "$STATE/origin_mode"
     render "$ORIGIN_PORT"
     write_env
     start_origin "$ORIGIN_PORT"
@@ -123,7 +141,7 @@ start)
         docker compose -f "$COMPOSE" --env-file "$STATE/env" -p "$PROJECT" logs --tail 40 >&2
         exit 1
     }
-    echo "split stack up: origin=$ORIGIN_PORT gateway=$GATEWAY_PORT edge=$EDGE_PORT"
+    echo "split stack up ($MODE origin): origin=$ORIGIN_PORT gateway=$GATEWAY_PORT edge=$EDGE_PORT"
     ;;
 stop)
     if [ -f "$STATE/env" ]; then
