@@ -6,11 +6,13 @@ contacted (AGENTS §2).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from pilgrim.config import Config
 from pilgrim.server import build_station, create_admin_app, create_public_app
-from pilgrim.tests.fakes import FakeKokoro, FakeLLM
+from pilgrim.tests.fakes import FakeKokoro, FakeLLM, tone_wav
 from pydantic import ValidationError
 
 ADMIN_ROUTES = [
@@ -86,3 +88,40 @@ def test_public_web_mount_follows_serve_web(tmp_env):
     r = c.get("/")
     assert r.status_code == 200
     assert "PILGRIM" in r.text
+
+
+def test_public_cache_headers(tmp_env):
+    """SPLIT_PLAN §2: one assertion per row of the caching table."""
+    cfg, station = _station(tmp_env)
+    media = Path(cfg.library.dir) / "tone.flac"
+    media.write_bytes(tone_wav(0.2))
+    item_id = station.db.add_item(type_="song", media_path=str(media),
+                                  duration_s=0.2)
+    c = TestClient(create_public_app(cfg, station))
+
+    r = c.get(f"/api/media/{item_id}")
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+    r = c.get("/api/media/999999")
+    assert r.status_code == 404
+    assert r.headers["cache-control"] == "public, max-age=30"
+
+    for path, expected in [
+        ("/api/station/program", "public, max-age=1"),
+        ("/api/station/state", "public, max-age=1"),
+        ("/api/requests", "public, max-age=2"),
+        ("/api/health", "public, max-age=2"),
+    ]:
+        r = c.get(path)
+        assert r.status_code == 200, path
+        assert r.headers["cache-control"] == expected, path
+
+    # every POST is no-store, including the prefilter path and the counter
+    r = c.post("/api/requests", json={"text": "check out mysite.com"})
+    assert r.headers["cache-control"] == "no-store"
+    r = c.post("/api/visitors")
+    assert r.headers["cache-control"] == "no-store"
+
+    # static web files are left to the edge
+    assert "cache-control" not in c.get("/style.css").headers

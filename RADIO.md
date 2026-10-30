@@ -703,6 +703,26 @@ The static client is mounted on the public listener only when
 `station.serve_web` is true (single-host runs); edges serve `pilgrim/web/`
 themselves.
 
+**Caching (SPLIT_PLAN §2).** The origin states cache intent once, so edges and
+Cloudflare only have to honor it:
+
+| Route | `Cache-Control` |
+|-------|-----------------|
+| `GET /api/media/{id}` (200) | `public, max-age=31536000, immutable` |
+| `GET /api/media/{id}` (404) | `public, max-age=30` |
+| `GET /api/station/program` | `public, max-age=1` |
+| `GET /api/station/state` | `public, max-age=1` |
+| `GET /api/requests` | `public, max-age=2` |
+| `GET /api/health` (public) | `public, max-age=2` |
+| every POST | `no-store` |
+| static web files | left to the edge |
+
+A media id always maps to the same bytes: every pipeline writes a new file
+before `add_item()`, retiring keeps the file, and purging deletes it (no
+in-place rewrite exists). The `max-age=1` on `/api/station/state` means
+`server_time` can be up to about 1 s old at the client; DJ cutovers use
+`cutover_lead_s: 1.0` (§5.5), which this plan does not change.
+
 **Operator authentication.** Every `/api/admin/dj/*` route requires a dedicated
 bearer token from **`PILGRIM_DJ_TOKEN`** (env; documented in README.md; never
 reuse `LITELLM_TOKEN`). Missing credentials (401/403) disable DJ mutations

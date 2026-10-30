@@ -465,18 +465,21 @@ def _add_public_routes(app: FastAPI, station: Station,
 
     @app.get("/api/health")
     async def health_endpoint():
-        return await health(station)
+        return JSONResponse(await health(station),
+                            headers={"Cache-Control": "public, max-age=2"})
 
     @app.get("/api/station/program")
     async def program(after_seq: int | None = Query(default=None, ge=0),
                       epoch: str | None = Query(default=None, max_length=64),
                       revision: int | None = Query(default=None, ge=0)):
-        return station.program_response(after_seq, epoch, revision)
+        return JSONResponse(station.program_response(after_seq, epoch, revision),
+                            headers={"Cache-Control": "public, max-age=1"})
 
     @app.get("/api/station/state")
     async def station_state():
         """Cheap public station state for DJ-aware clients (RADIO §11, §5.3)."""
-        return station.public_state()
+        return JSONResponse(station.public_state(),
+                            headers={"Cache-Control": "public, max-age=1"})
 
     @app.post("/api/station/heartbeat")
     async def heartbeat(payload: dj.HeartbeatIn):
@@ -499,11 +502,18 @@ def _add_public_routes(app: FastAPI, station: Station,
     async def media(item_id: int):
         it = station.db.get_item(item_id)
         if not it:
-            raise HTTPException(404, "no such item")
+            return JSONResponse({"detail": "no such item"}, status_code=404,
+                                headers={"Cache-Control": "public, max-age=30"})
         p = ROOT / it["media_path"]
         if not p.exists():
-            raise HTTPException(404, "media missing")
-        return FileResponse(str(p), media_type="audio/flac")
+            return JSONResponse({"detail": "media missing"}, status_code=404,
+                                headers={"Cache-Control": "public, max-age=30"})
+        # A media id always maps to the same bytes: every pipeline writes a new
+        # file before add_item(); retire keeps it, purge deletes it (SPLIT_PLAN
+        # §2 check, no in-place rewrite exists). Safe to cache for a year.
+        return FileResponse(str(p), media_type="audio/flac",
+                            headers={"Cache-Control":
+                                     "public, max-age=31536000, immutable"})
 
     @app.post("/api/requests")
     async def submit_request(payload: RequestIn, request: Request):
@@ -554,7 +564,8 @@ def _add_public_routes(app: FastAPI, station: Station,
     @app.get("/api/requests")
     async def list_requests():
         board = station.db.request_board(cfg.requests.queue_cap)
-        return {**board, "cap": cfg.requests.queue_cap}
+        return JSONResponse({**board, "cap": cfg.requests.queue_cap},
+                            headers={"Cache-Control": "public, max-age=2"})
 
     @app.post("/api/visitors")
     async def register_visitor(request: Request):
@@ -682,6 +693,19 @@ def _new_app(title: str) -> FastAPI:
     app = FastAPI(title=title, version="0.2.0")
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                        allow_headers=["*"])
+
+    @app.middleware("http")
+    async def _no_store_posts(request: Request, call_next):
+        """SPLIT_PLAN §2: every POST is no-store, including error responses.
+
+        GET cache policy is set by the individual handlers; static files are
+        left to the edge.
+        """
+        response = await call_next(request)
+        if request.method == "POST":
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     return app
 
 
