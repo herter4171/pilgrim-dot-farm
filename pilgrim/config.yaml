@@ -110,7 +110,7 @@ news:
 # Listener request line. FIFO top-N with LLM moderation: clean/playful requests ok,
 # adult *allusion* ok, but explicit/crass/hate/illegal are rejected by the moderator.
 requests:
-  queue_cap: 10          # request-board display size (public line never evicts)
+  queue_cap: 20          # request-board display size (public line never evicts)
   max_length: 160        # chars allowed per request
   moderation_model: qwen38  # stricter reasoning model for the gate
   moderation_max_tokens: 4096  # cap for the moderation call (OVERHAUL 4.2)
@@ -231,3 +231,27 @@ sfx:
     drum_roll: {prompt: "a comedic drum roll that builds then lands on a final cymbal and bass hit, rapid snare crescendo then a big crash, dry close drum recording", duration_s: 2.5, seed: 171, evergreen: true}
     harp_gliss: {prompt: "a magical harp glissando, a quick upward sweep of plucked strings ending in a bright shimmer, delicate airy tone, close studio recording", duration_s: 2.0, seed: 181, evergreen: true}
     kazoo: {prompt: "a kazoo playing a short comedic ta-daa tune, buzzy nasal plastic-reed sound, dry close studio recording", duration_s: 1.5, seed: 191, evergreen: true}
+
+# Paid priority requests (PAYMENT.md §2.1). Default off: also inactive when any
+# of STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY / STRIPE_WEBHOOK_SECRET is unset.
+payments:
+  enabled: false
+  api_base: https://api.stripe.com
+  api_version: "2026-10-28.endive"
+  price_id_live: price_1UWQHdKOiB5HDXLd4qNMoosI
+  price_id_test: ""            # test-mode price, filled in from Step 0.3
+  currency: usd
+  min_cents: 300               # defence in depth; Stripe enforces it too
+  max_cents: 6769
+  timeout_s: 10                # every Stripe HTTP call
+  retries: 2                   # create/retrieve only; backoff 0.5 s, 1 s
+  checkout_expiry_s: 1800      # Stripe minimum is 30 min
+  webhook_tolerance_s: 300     # max age of a signed webhook timestamp
+  reconcile_after_s: 10        # status poll may ask Stripe after this long
+  reconcile_min_interval_s: 5  # at most one retrieve per row per interval
+  abandon_after_s: 86400       # awaiting_payment rows older than this -> abandoned
+  paid_max_length: 1200
+  paid_max_lines: 24
+  per_client_per_10min: 6      # rate limit on POST /api/paid-requests
+  max_attempts: 5              # production attempts before `failed`
+  managed_payments: false      # send managed_payments[enabled]=false (tax code ineligible)

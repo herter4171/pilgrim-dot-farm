@@ -90,5 +90,20 @@ Keep credentials in environment variables or the git-ignored `.env` file.
 (`127.0.0.1:5001`); `make tui` reads it. Never use the LiteLLM token for DJ
 controls. Service URLs belong in `pilgrim/config.yaml`.
 
+Stripe (PAYMENT.md Step 0.8) — all three must be set, and `payments.enabled`
+must be true, or paid requests are closed:
+
+- `STRIPE_SECRET_KEY` — `sk_live_…` / `rk_live_…` (or the `_test_` pair).
+  Server only. Mode comes from the prefix; the matching price is picked from
+  `payments.price_id_live` / `price_id_test`. Never commit, log, or return it.
+- `STRIPE_PUBLISHABLE_KEY` — `pk_live_…` / `pk_test_…`. Safe in the browser;
+  the server hands it to the page in the `POST /api/paid-requests` response.
+  Never hard-code it in the static files.
+- `STRIPE_WEBHOOK_SECRET` — `whsec_…` from Dashboard → Developers → Webhooks
+  (endpoint → Signing secret → Reveal), or the value `stripe listen` prints.
+  Server only; used to verify `Stripe-Signature`.
+
+Never commit them. Rotate the webhook secret if it is ever exposed.
+
 
 ![Pilgrim Dot Farm Radio](image.png)

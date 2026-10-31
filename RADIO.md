@@ -877,11 +877,35 @@ news:
   budget_s: 60
 
 requests:
-  queue_cap: 10          # request-board display size (no eviction on the public line)
+  queue_cap: 20          # request-board display size (no eviction on the public line)
   max_length: 160
   moderation_model: qwen38
   moderation_max_tokens: 4096
   per_client_per_10min: 3   # request-line rate limit
+
+# Paid priority requests (PAYMENT.md §2.1). Off by default; also inactive when
+# any of STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY / STRIPE_WEBHOOK_SECRET is unset.
+payments:
+  enabled: false
+  api_base: https://api.stripe.com
+  api_version: "2026-10-28.endive"
+  price_id_live: price_1UWQHdKOiB5HDXLd4qNMoosI
+  price_id_test: ""            # test-mode price (Step 0.3)
+  currency: usd
+  min_cents: 300
+  max_cents: 6769
+  timeout_s: 10
+  retries: 2                   # create/retrieve only; backoff 0.5 s, 1 s
+  checkout_expiry_s: 1800      # Stripe minimum
+  webhook_tolerance_s: 300
+  reconcile_after_s: 10
+  reconcile_min_interval_s: 5
+  abandon_after_s: 86400
+  paid_max_length: 1200
+  paid_max_lines: 24
+  per_client_per_10min: 6
+  max_attempts: 5
+  managed_payments: false      # managed_payments[enabled]=false (tax code ineligible)
 
 visitors:
   enabled: true

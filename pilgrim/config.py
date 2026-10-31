@@ -5,6 +5,7 @@ import ipaddress
 import os
 import random
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -250,11 +251,78 @@ class Visitors(BaseModel):
 
 class Requests(BaseModel):
     """Listener request line (FIFO + LLM moderation)."""
-    queue_cap: int = 10
+    queue_cap: int = 20
     max_length: int = 160
     moderation_model: str = "qwen38"
     moderation_max_tokens: int = 4096  # replaces the hardcoded value (OVERHAUL 4.2)
     per_client_per_10min: int = 3  # rate limit on the request line (OVERHAUL 4.3)
+
+
+class Payments(BaseModel):
+    """Stripe paid priority requests (PAYMENT.md §2.1). Off by default so every
+    existing test and deployment behaves exactly as before."""
+    enabled: bool = False
+    api_base: str = "https://api.stripe.com"
+    api_version: str = "2026-10-28.endive"  # Stripe-Version on every call (Step 1)
+    price_id_live: str = "price_1UWQHdKOiB5HDXLd4qNMoosI"
+    price_id_test: str = ""
+    currency: str = "usd"
+    min_cents: int = 300
+    max_cents: int = 6769
+    timeout_s: float = 10.0
+    retries: int = 2
+    checkout_expiry_s: int = 1800  # Stripe's minimum is 30 min
+    webhook_tolerance_s: int = 300
+    reconcile_after_s: int = 10
+    reconcile_min_interval_s: int = 5
+    abandon_after_s: int = 86400
+    paid_max_length: int = 1200
+    paid_max_lines: int = 24
+    per_client_per_10min: int = 6
+    max_attempts: int = 5
+    # Managed Payments is on by default for the account; the product tax code
+    # is ineligible, so sessions send managed_payments[enabled]=false.
+    managed_payments: bool = False
+
+    @model_validator(mode="after")
+    def _validate_limits(self) -> Payments:
+        if self.min_cents <= 0:
+            raise ValueError("payments.min_cents must be positive")
+        if self.min_cents >= self.max_cents:
+            raise ValueError("payments.min_cents must be below payments.max_cents")
+        if self.checkout_expiry_s < 1800:
+            raise ValueError("payments.checkout_expiry_s must be >= 1800 (Stripe minimum)")
+        if self.webhook_tolerance_s <= 0 or self.timeout_s <= 0:
+            raise ValueError("payments timeouts must be positive")
+        if self.retries < 0:
+            raise ValueError("payments.retries must be >= 0")
+        if self.paid_max_length <= 0 or self.paid_max_lines <= 0:
+            raise ValueError("payments paid limits must be positive")
+        if self.per_client_per_10min <= 0 or self.max_attempts <= 0:
+            raise ValueError("payments rate limit and attempts must be positive")
+        return self
+
+    def mode(self, secret_key: str) -> str:
+        """`test` or `live` from the key prefix; `""` when unrecognised."""
+        key = (secret_key or "").strip()
+        if key.startswith(("sk_test_", "rk_test_")):
+            return "test"
+        if key.startswith(("sk_live_", "rk_live_")):
+            return "live"
+        return ""
+
+    def price_id(self, secret_key: str) -> str:
+        """Price for the key's mode. Live keys never see the test price."""
+        return self.price_id_test if self.mode(secret_key) == "test" else self.price_id_live
+
+    def active(self, env: Mapping[str, str]) -> bool:
+        """True only when enabled and all three env vars are present."""
+        return bool(
+            self.enabled
+            and env.get("STRIPE_SECRET_KEY", "").strip()
+            and env.get("STRIPE_PUBLISHABLE_KEY", "").strip()
+            and env.get("STRIPE_WEBHOOK_SECRET", "").strip()
+        )
 
 
 class Audio(BaseModel):
@@ -404,6 +472,7 @@ class Config(BaseModel):
     songs: Songs = Field(default_factory=Songs)
     news: News = Field(default_factory=News)
     requests: Requests = Field(default_factory=Requests)
+    payments: Payments = Field(default_factory=Payments)
     visitors: Visitors = Field(default_factory=Visitors)
     audio: Audio = Field(default_factory=Audio)
     logging: Logging = Field(default_factory=Logging)
