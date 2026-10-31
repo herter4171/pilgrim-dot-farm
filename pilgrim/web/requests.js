@@ -36,6 +36,14 @@
         li.className = "req-item";
         const n = document.createElement("span");
         n.className = "req-num"; n.textContent = "#" + (i + 1);
+        if (r.paid) {
+          const icon = document.createElement("img");
+          icon.className = "req-paid-icon";
+          icon.src = "img/cornucopia.png";
+          icon.alt = "Paid priority request";
+          icon.width = 48; icon.height = 40;
+          li.appendChild(icon);
+        }
         const t = document.createElement("span");
         t.className = "req-text"; t.textContent = r.text;  // textContent = no HTML injection
         const s = document.createElement("span");
@@ -54,8 +62,8 @@
     const recentEl = $("req-recent");
     if (!recentEl) return;
     recentEl.textContent = "";
-    // defensive: server may send more than 3 during mixed-version deploy (§4)
-    ((recent || []).slice(0, 3)).forEach((r) => {
+    // defensive: server sends 5; slice keeps a mixed-version deploy honest
+    ((recent || []).slice(0, 5)).forEach((r) => {
       const li = document.createElement("li");
       li.className = "req-recent-item";
       const t = document.createElement("span");
@@ -64,6 +72,10 @@
       s.className = "req-recent-song";
       s.textContent = r.song_title ? ("→ " + r.song_title + (r.song_artist ? " · " + r.song_artist : "")) : "";
       li.appendChild(t); li.appendChild(s);
+      const w = document.createElement("span");
+      w.className = "req-wait";
+      w.textContent = waitLabel(r.wait_s);
+      li.appendChild(w);
       recentEl.appendChild(li);
     });
     if (!recentEl.childElementCount) {
@@ -74,12 +86,25 @@
     }
   }
 
+  function waitLabel(seconds) {
+    if (typeof seconds !== "number" || !isFinite(seconds)) return "";
+    const mins = Math.round(seconds / 60);
+    if (mins < 60) return "aired in " + Math.max(1, mins) + " min";
+    const hours = Math.floor(mins / 60), rem = mins % 60;
+    if (hours < 48) return "aired in " + hours + " h" + (rem ? " " + rem + " m" : "");
+    const days = Math.floor(hours / 24), hh = hours % 24;
+    return "aired in " + days + " d" + (hh ? " " + hh + " h" : "");
+  }
+
   async function refresh() {
     try {
       const r = await fetch("/api/requests");
       if (!r.ok) return;
       const d = await r.json();
       render(d.queue, d.recent);
+      if (window.PD_PAY && typeof window.PD_PAY.setEnabled === "function") {
+        window.PD_PAY.setEnabled(d.paid_enabled !== false);
+      }
     } catch (e) { /* station down: keep last known queue */ }
   }
 
@@ -108,6 +133,10 @@
         input.select();
       }
       render(d.queue || lastQueue, d.recent);
+      if (window.PD_PAY && typeof window.PD_PAY.setEnabled === "function"
+          && typeof d.paid_enabled === "boolean") {
+        window.PD_PAY.setEnabled(d.paid_enabled);
+      }
     } catch (e) {
       showErr("Couldn't reach the station. Try again.");
     } finally {

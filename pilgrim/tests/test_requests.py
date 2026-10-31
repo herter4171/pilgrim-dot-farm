@@ -249,10 +249,13 @@ def test_request_board_queue_and_recent(cfg):
     s.mark_request_aired(c["id"])
     board = s.request_board(cap=10)
     q = board["queue"]
-    assert [x["id"] for x in q] == [a["id"], b["id"]]  # producing + ready, oldest first
+    # projected rows only: {text, status, paid} (PAYMENT.md §3.4)
+    assert [x["text"] for x in q] == ["play mittens a song", "alien abductions"]
     assert q[0]["status"] == "producing" and q[1]["status"] == "ready"
+    assert set(q[0]) == {"text", "status", "paid"}
     recent = board["recent"]
-    assert any(r["id"] == c["id"] and r["song_title"] for r in recent)
+    assert any(r["song_title"] == "Night Shift" for r in recent)
+    assert set(recent[0]) == {"text", "song_title", "song_artist", "paid", "wait_s"}
 
 
 def _store_add_song(s):
@@ -265,20 +268,17 @@ def _store_add_song(s):
         return int(cur.lastrowid)
 
 
-def test_request_board_recent_shows_latest_three(cfg):
-    """COSMETIC_PATCHING §4: the 'recently played' history is the latest 3 by
-    the existing ID ordering, not a reduction of the live queue capacity."""
+def test_request_board_recent_shows_latest_five(cfg):
+    """PAYMENT.md §0.4: 'recently played' shows the latest 5 by id order."""
     s = _store()
-    ids = []
-    for i in range(5):
+    for i in range(7):
         rid = s.add_request(f"played {i}", cap=10)["id"]
         s.mark_request_aired(rid)
-        ids.append(rid)
     board = s.request_board(cap=10)
     recent = board["recent"]
-    assert len(recent) == 3
-    assert [r["id"] for r in recent] == [ids[4], ids[3], ids[2]]  # newest 3, desc id
-    # queue capacity and ordering are untouched
+    assert len(recent) == 5
+    assert [r["text"] for r in recent] == [f"played {i}" for i in (6, 5, 4, 3, 2)]
+    assert all(isinstance(r["wait_s"], int) for r in recent)
     assert board["queue"] == []
 
 
@@ -298,3 +298,102 @@ def test_cap_none_never_evicts(cfg):
         s.add_request(f"request {i}", cap=None)
     assert len(s.queued_requests()) == 25
     assert not [r for r in s.all_requests() if r["status"] == "evicted"]
+
+
+# ------------------------------------------------- paid priority (PAYMENT §3)
+def _make_paid(s, text, paid_at):
+    row = s.add_paid_request(text)
+    s.attach_checkout(row["id"], f"cs_{row['id']}")
+    assert s.mark_request_paid(
+        row["id"], session_id=f"cs_{row['id']}", payment_intent_id="pi_x",
+        amount_cents=350, currency="usd", livemode=False)
+    with s._lock:
+        s._conn.execute("UPDATE requests SET paid_at=? WHERE id=?",
+                        (paid_at, row["id"]))
+        s._conn.commit()
+    return row
+
+
+def test_paid_requests_are_fifo_by_payment_time(cfg):
+    """PAYMENT.md §3.2: paid first, FIFO by payment time, free FIFO by creation."""
+    s = _store()
+    a = s.add_request("free A", cap=None)
+    b = s.add_request("free B", cap=None)
+    c = _make_paid(s, "paid C", "2026-10-31T10:00:00+00:00")
+    d = _make_paid(s, "paid D", "2026-10-31T11:00:00+00:00")
+    order = [r["text"] for r in s.queued_requests()]
+    assert order == ["paid C", "paid D", "free A", "free B"]
+    assert s.next_request_to_produce()["text"] == "paid C"
+    assert [r["text"] for r in s.pending_requests()] == order
+    assert [r["text"] for r in s.ready_request_songs()] == []
+    assert [r["text"] for r in s.request_board(20)["queue"]] == order
+    assert max(a["id"], b["id"]) < min(c["id"], d["id"])
+
+
+def test_paid_created_before_but_paid_after_orders_by_payment(cfg):
+    s = _store()
+    first_created = _make_paid(s, "created first, paid second", "2026-10-31T11:00:00+00:00")
+    second_created = _make_paid(s, "created second, paid first", "2026-10-31T10:00:00+00:00")
+    assert first_created["id"] < second_created["id"]
+    assert [r["text"] for r in s.queued_requests()] == [
+        "created second, paid first", "created first, paid second"]
+
+
+def test_awaiting_and_abandoned_are_in_no_queue(cfg):
+    s = _store()
+    awaiting = s.add_paid_request("never paid")
+    abandoned = s.add_paid_request("expired checkout")
+    s.attach_checkout(abandoned["id"], "cs_abandoned")
+    s.mark_request_abandoned(abandoned["id"])
+    s.add_request("free one", cap=None)
+    assert [r["text"] for r in s.queued_requests()] == ["free one"]
+    assert [r["text"] for r in s.pending_requests()] == ["free one"]
+    assert [r["text"] for r in s.request_board(20)["queue"]] == ["free one"]
+    assert s.next_request_to_produce()["text"] == "free one"
+    assert s.get_request(awaiting["id"])["status"] == "awaiting_payment"
+    assert s.get_request(abandoned["id"])["status"] == "abandoned"
+
+
+def test_mark_request_paid_is_idempotent_and_only_from_awaiting(cfg):
+    s = _store()
+    row = s.add_paid_request("paid once")
+    s.attach_checkout(row["id"], "cs_1")
+    assert s.mark_request_paid(row["id"], session_id="cs_1", payment_intent_id="pi",
+                               amount_cents=350, currency="usd", livemode=False)
+    assert not s.mark_request_paid(row["id"], session_id="cs_1", payment_intent_id="pi",
+                                   amount_cents=350, currency="usd", livemode=False)
+    # abandoned -> paid wins
+    other = s.add_paid_request("abandoned then paid")
+    s.attach_checkout(other["id"], "cs_2")
+    s.mark_request_abandoned(other["id"])
+    assert s.mark_request_paid(other["id"], session_id="cs_2", payment_intent_id="pi",
+                               amount_cents=350, currency="usd", livemode=False)
+    # queued/aired/rejected -> never
+    free = s.add_request("free", cap=None)
+    for status in ("queued", "aired", "rejected"):
+        with s._lock:
+            s._conn.execute("UPDATE requests SET status=? WHERE id=?", (status, free["id"]))
+            s._conn.commit()
+        assert not s.mark_request_paid(free["id"], session_id="cs_x",
+                                       payment_intent_id=None, amount_cents=350,
+                                       currency="usd", livemode=False)
+
+
+def test_record_stripe_event_dedupes(cfg):
+    s = _store()
+    assert s.record_stripe_event("evt_1", "checkout.session.completed", "cs_1", "applied")
+    assert not s.record_stripe_event("evt_1", "checkout.session.completed", "cs_1", "applied")
+    s.update_stripe_event_outcome("evt_1", "mismatch")
+    assert s.mismatch_events()[0]["event_id"] == "evt_1"
+
+
+def test_board_paid_text_is_first_line_and_cut(cfg):
+    s = _store()
+    long_first = "x" * 200
+    row = _make_paid(s, long_first + "\nsecond line", "2026-10-31T10:00:00+00:00")
+    item = s.request_board(20, max_length=160)["queue"][0]
+    assert item["paid"] is True
+    assert "\n" not in item["text"]
+    assert item["text"].endswith("…")
+    assert len(item["text"]) == 160
+    assert row["id"]

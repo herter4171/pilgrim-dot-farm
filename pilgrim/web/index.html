@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PILGRIM DOT FARM — radio</title>
-<link rel="stylesheet" href="style.css?v=20261030b">
+<link rel="stylesheet" href="style.css?v=20261031a">
 </head>
 <body>
 <canvas id="rain"></canvas>
@@ -50,6 +50,22 @@
         <button id="req-send">Send</button>
       </div>
       <div id="req-err" class="req-err hidden"></div>
+      <div class="req-list-head pay-head">I need about tree fiddy.</div>
+      <button id="pay-open" class="pay-btn" type="button">PRIORIT¥ R€QU€$T</button>
+      <div id="pay-panel" class="pay-panel hidden">
+        <label for="pay-text" class="req-note">Describe your song in as much
+          detail as you like: style, tempo, mood, instruments, what it's about, a
+          line or two of lyrics. Paid requests jump the free line.
+          Pay what you like, $3.00–$67.69.</label>
+        <textarea id="pay-text" rows="6" maxlength="1200"
+                  placeholder="Slow-burn bossa nova about the Thistledown night bus…"></textarea>
+        <div class="pay-actions">
+          <button id="pay-go" type="button">Check it &amp; pay</button>
+          <button id="pay-cancel" type="button" class="pay-cancel">Cancel</button>
+        </div>
+        <div id="pay-msg" class="req-err hidden"></div>
+        <div id="pay-checkout" class="pay-checkout"></div>
+      </div>
       <div class="req-list-head">NOW QUEUED</div>
       <ol id="req-queue" class="req-queue"></ol>
       <div class="req-list-head">RECENTLY PLAYED FOR YOU</div>
@@ -59,7 +75,7 @@
 
   <section class="window credits" data-win="credits">
     <div class="win-bar">
-      <span class="win-title">MODEL CREDITS</span>
+      <span class="win-title">CREDITS</span>
     </div>
     <div class="win-body credits">
       <ul class="credits-list">
@@ -69,6 +85,7 @@
         <li><a class="cred-model" href="https://huggingface.co/OpenMOSS-Team/MOSS-SoundEffect-v2.0" target="_blank" rel="noopener noreferrer">MOSS-SoundEffect v2.0</a><span class="cred-role">Sound effects</span></li>
         <li><a class="cred-model" href="https://huggingface.co/hexgrad/Kokoro-82M" target="_blank" rel="noopener noreferrer">Kokoro-82M</a><span class="cred-role">Voices and speech</span></li>
         <li><a class="cred-model dev" href="https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731" target="_blank" rel="noopener noreferrer">DeepSeek-V4-Flash-0731</a><span class="cred-role">Development and coding assistance</span></li>
+        <li><span class="cred-attr">Cornucopia icon: <a href="https://commons.wikimedia.org/wiki/File:Cornucopia_LQ.svg" target="_blank" rel="noopener noreferrer">Cornucopia LQ</a> by OpenClipart, CC0</span></li>
       </ul>
     </div>
   </section>
@@ -105,8 +122,9 @@
   document.getElementById('year').textContent = new Date().getFullYear();
 </script>
 
-<script src="requests.js?v=20261030b"></script>
-<script src="visitors.js?v=20261030b"></script>
-<script src="player.js?v=20261030b"></script>
+<script src="requests.js?v=20261031a"></script>
+<script src="pay.js?v=20261031a"></script>
+<script src="visitors.js?v=20261031a"></script>
+<script src="player.js?v=20261031a"></script>
 </body>
 </html>

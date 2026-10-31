@@ -13,8 +13,11 @@ test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", as
   expect(await page.$('[data-win="credits"]')).toBeTruthy();
   expect(await page.$('[data-win="hit"]')).toBeTruthy();
   expect(await page.textContent('[data-win="soundcloud"] .win-title')).toBe("SOUNDCLOUD");
-  // five documented models + Kokoro-82M = six credit rows
-  expect(await page.$$eval(".credits-list li", els => els.length)).toBe(6);
+  // five documented models + Kokoro-82M = six credit rows, plus the asset credit
+  expect(await page.$$eval(".credits-list li", els => els.length)).toBe(7);
+  expect(await page.textContent('[data-win="credits"] .win-title')).toBe("CREDITS");
+  const attr = await page.$eval(".cred-attr a", a => [a.textContent, a.getAttribute("href")]);
+  expect(attr).toEqual(["Cornucopia LQ", "https://commons.wikimedia.org/wiki/File:Cornucopia_LQ.svg"]);
   // every model links to its HF model card in a new tab
   const links = await page.$$eval(".credits-list a.cred-model",
     els => els.map(a => [a.textContent, a.getAttribute("href"), a.getAttribute("target")]));
@@ -61,12 +64,14 @@ test("song label shows the audible track, not a buffered next one; STOP clears i
   expect(await page.textContent("#song-label")).toBe("");
 });
 
-test("recently-played shows at most three even when the server returns five", async ({ page }) => {
+test("recently-played shows up to five with an aired-in label", async ({ page }) => {
   await page.goto("/");
   await page.fill("#req-input", "play the synthesizer, Liam");
   await page.click("#req-send");
-  // POST response carries five recents; the client defensive-slices to three
-  await expect(page.locator(".req-recent-item")).toHaveCount(3, { timeout: 10_000 });
+  await expect(page.locator(".req-recent-item")).toHaveCount(5, { timeout: 10_000 });
+  const waits = await page.$$eval(".req-wait", els => els.map(e => e.textContent));
+  expect(waits.length).toBeGreaterThan(0);
+  expect(waits[0]).toMatch(/^aired in /);
 });
 
 test("a failed visitor counter never breaks PLAY or request submission", async ({ page }) => {
@@ -83,7 +88,7 @@ test("a failed visitor counter never breaks PLAY or request submission", async (
   // request submission still works
   await page.fill("#req-input", "another tune, please");
   await page.click("#req-send");
-  await expect(page.locator(".req-recent-item")).toHaveCount(3, { timeout: 10_000 });
+  await expect(page.locator(".req-recent-item")).toHaveCount(5, { timeout: 10_000 });
 });
 
 test("all panes stay reachable by scrolling on a small screen", async ({ page }) => {

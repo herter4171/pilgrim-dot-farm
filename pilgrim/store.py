@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+# Queue order everywhere (PAYMENT.md §3.2): paid first, FIFO within each class
+# (paid by payment time, free by creation time).
+QUEUE_ORDER = "ORDER BY priority DESC, COALESCE(paid_at, created_at) ASC, id ASC"
+
 
 
 def _now_iso() -> str:
@@ -20,6 +26,40 @@ def _parse_epoch(iso: str | None) -> float | None:
         return datetime.fromisoformat(iso).timestamp()
     except Exception:
         return None
+
+
+def _project_text(text: str, paid: bool, max_length: int) -> str:
+    """Public board text. Paid rows show the first line only, collapsed and
+    cut to the request-line limit (PAYMENT.md §3.4); free rows are unchanged."""
+    if not paid:
+        return text
+    first = " ".join(text.split("\n", 1)[0].split())
+    if len(first) > max_length:
+        first = first[: max_length - 1] + "…"
+    return first
+
+
+def _wait_s(created_at: str | None, aired_at: str | None) -> int | None:
+    start = _parse_epoch(created_at)
+    end = _parse_epoch(aired_at)
+    if start is None or end is None:
+        return None
+    return max(0, int(round(end - start)))
+
+
+def _project_queue_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
+    paid = bool(row.get("priority"))
+    return {"text": _project_text(row["text"], paid, max_length),
+            "status": row["status"], "paid": paid}
+
+
+def _project_recent_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
+    paid = bool(row.get("priority"))
+    return {"text": _project_text(row["text"], paid, max_length),
+            "song_title": row.get("song_title") or "",
+            "song_artist": row.get("song_artist") or "",
+            "paid": paid,
+            "wait_s": _wait_s(row.get("created_at"), row.get("aired_at"))}
 
 
 class Store:
@@ -101,6 +141,15 @@ class Store:
                     key TEXT PRIMARY KEY,
                     value TEXT
                 );
+                -- Stripe webhook idempotency (PAYMENT.md §3.1): one row per
+                -- event id; `outcome` is applied|ignored|mismatch|duplicate.
+                CREATE TABLE IF NOT EXISTS stripe_events (
+                    event_id    TEXT PRIMARY KEY,
+                    type        TEXT NOT NULL,
+                    session_id  TEXT,
+                    outcome     TEXT NOT NULL,
+                    received_at TEXT NOT NULL
+                );
                 DROP TABLE IF EXISTS visitor_signatures;
                 """
             )
@@ -118,14 +167,34 @@ class Store:
             if "play_count" not in cols:
                 self._conn.execute(
                     "ALTER TABLE items ADD COLUMN play_count INTEGER DEFAULT 0")
-            # idempotent migration (OVERHAUL 4.4): request lifecycle columns
+            # idempotent migration (OVERHAUL 4.4 + PAYMENT.md §3.1): request
+            # lifecycle + paid-priority columns. Additive only.
             req_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(requests)")}
             for col, ddl in (("attempts", "INTEGER DEFAULT 0"),
                              ("song_item_id", "INTEGER"),
                              ("intro_item_id", "INTEGER"),
-                             ("updated_at", "TEXT")):
+                             ("updated_at", "TEXT"),
+                             ("priority", "INTEGER DEFAULT 0"),
+                             ("public_token", "TEXT"),
+                             ("paid_at", "TEXT"),
+                             ("amount_cents", "INTEGER"),
+                             ("currency", "TEXT"),
+                             ("checkout_session_id", "TEXT"),
+                             ("payment_intent_id", "TEXT"),
+                             ("livemode", "INTEGER"),
+                             ("reconciled_at", "REAL"),
+                             ("aired_at", "TEXT")):
                 if col not in req_cols:
                     self._conn.execute(f"ALTER TABLE requests ADD COLUMN {col} {ddl}")
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_public_token "
+                "ON requests(public_token) WHERE public_token IS NOT NULL")
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_session "
+                "ON requests(checkout_session_id) WHERE checkout_session_id IS NOT NULL")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_requests_queue "
+                "ON requests(status, priority)")
             self._conn.commit()
 
     # ------------------------------------------------------------------ items
@@ -468,17 +537,17 @@ class Store:
 
     # -------------------------------------------------------------- requests
     def add_request(self, text: str, cap: int | None, status: str = "queued",
-                    reason: str | None = None) -> dict[str, Any]:
+                    reason: str | None = None, priority: int = 0) -> dict[str, Any]:
         """Insert a listener request, then apply FIFO eviction. If more than
-        `cap` are queued, the oldest QUEUED ones fall out (marked 'evicted').
-        producing/ready/failed rows are never evicted (OVERHAUL 4.4).
-        `cap=None` disables eviction (the public line: every accepted request
-        gets made). Returns the stored row."""
+        `cap` are queued, the oldest FREE ones fall out (marked 'evicted').
+        producing/ready/failed and paid rows are never evicted (OVERHAUL 4.4,
+        PAYMENT.md §3.2). `cap=None` disables eviction (the public line: every
+        accepted request gets made). Returns the stored row."""
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO requests (text, status, reason, created_at, updated_at) "
-                "VALUES (?,?,?,?,?)",
-                (text, status, reason, _now_iso(), _now_iso()))
+                "INSERT INTO requests (text, status, reason, created_at, updated_at, priority) "
+                "VALUES (?,?,?,?,?,?)",
+                (text, status, reason, _now_iso(), _now_iso(), priority))
             self._conn.commit()
             rid = int(cur.lastrowid or 0)
         if cap is not None:
@@ -494,12 +563,14 @@ class Store:
         return dict(r) if r else None
 
     def _evict_overflow(self, cap: int) -> None:
-        """FIFO: when QUEUED requests exceed the cap, the oldest fall out
+        """FIFO: when FREE queued requests exceed the cap, the oldest fall out
         ('ass end' drops) so the queue always holds the latest `cap`. Only
-        `queued` rows are evicted — never producing/ready/failed (OVERHAUL 4.4)."""
+        `queued`, `priority=0` rows are evicted — never producing/ready/failed
+        and never a paid request (OVERHAUL 4.4, PAYMENT.md §3.2)."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id FROM requests WHERE status='queued' ORDER BY id ASC").fetchall()
+                "SELECT id FROM requests WHERE status='queued' AND priority=0 "
+                "ORDER BY id ASC").fetchall()
             if len(rows) > cap:
                 drop = len(rows) - cap
                 ids = [r[0] for r in rows[:drop]]
@@ -510,11 +581,11 @@ class Store:
                 self._conn.commit()
 
     def queued_requests(self, cap: int | None = None) -> list[dict[str, Any]]:
-        """Live queue in FIFO order (oldest first). Rejected/evicted/airéd/...
-        requests are not part of the air-able queue."""
+        """Live queue in queue order (paid first, FIFO within each class).
+        Rejected/evicted/airéd/... requests are not part of the air-able queue."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM requests WHERE status='queued' ORDER BY id ASC").fetchall()
+                f"SELECT * FROM requests WHERE status='queued' {QUEUE_ORDER}").fetchall()
         out = [dict(r) for r in rows]
         return out[:cap] if cap else out
 
@@ -524,10 +595,10 @@ class Store:
 
     # --------------------------------------------------- request lifecycle (4.4)
     def next_request_to_produce(self) -> dict[str, Any] | None:
-        """Oldest `queued` request — the next one to become a song."""
+        """Next `queued` request in queue order (paid first, then FIFO)."""
         with self._lock:
             r = self._conn.execute(
-                "SELECT * FROM requests WHERE status='queued' ORDER BY id ASC LIMIT 1"
+                f"SELECT * FROM requests WHERE status='queued' {QUEUE_ORDER} LIMIT 1"
             ).fetchone()
         return dict(r) if r else None
 
@@ -550,8 +621,8 @@ class Store:
     def mark_request_aired(self, request_id: int) -> None:
         with self._lock:
             self._conn.execute(
-                "UPDATE requests SET status='aired', updated_at=? WHERE id=?",
-                (_now_iso(), request_id))
+                "UPDATE requests SET status='aired', aired_at=?, updated_at=? WHERE id=?",
+                (_now_iso(), _now_iso(), request_id))
             self._conn.commit()
 
     def request_failed_attempt(self, request_id: int, max_attempts: int = 3) -> int:
@@ -579,20 +650,20 @@ class Store:
             self._conn.commit()
 
     def pending_requests(self) -> list[dict[str, Any]]:
-        """Requests still awaiting air (queued, producing, or ready), oldest
-        first. The scheduler holds the committed window short while one of these
+        """Requests still awaiting air (queued, producing, or ready) in queue
+        order. The scheduler holds the committed window short while one of these
         is uncommitted so it can air as soon as its song + intro are ready."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM requests WHERE status IN "
-                "('queued','producing','ready') ORDER BY id ASC").fetchall()
+                f"('queued','producing','ready') {QUEUE_ORDER}").fetchall()
         return [dict(r) for r in rows]
 
     def ready_request_songs(self) -> list[dict[str, Any]]:
-        """`ready` requests, oldest first (their songs are ready to air)."""
+        """`ready` requests in queue order (their songs are ready to air)."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM requests WHERE status='ready' ORDER BY id ASC").fetchall()
+                f"SELECT * FROM requests WHERE status='ready' {QUEUE_ORDER}").fetchall()
         return [dict(r) for r in rows]
 
     def reset_producing_to_queued(self) -> None:
@@ -604,20 +675,24 @@ class Store:
                 "WHERE status='producing'", (_now_iso(),))
             self._conn.commit()
 
-    def request_board(self, cap: int) -> dict[str, Any]:
-        """Board for the UI: live queue (queued+producing+ready, oldest first,
-        <= cap) plus the most recent aired requests with their song titles."""
+    def request_board(self, cap: int, max_length: int = 160) -> dict[str, Any]:
+        """Board for the UI: live queue (queued+producing+ready, queue order,
+        <= cap) plus the 5 most recent aired requests with song titles and how
+        long they waited. Rows are projected — never raw (PAYMENT.md §3.4)."""
         with self._lock:
             queue = [dict(r) for r in self._conn.execute(
                 "SELECT * FROM requests WHERE status IN ('queued','producing','ready') "
-                "ORDER BY id ASC LIMIT ?", (cap,)).fetchall()]
+                f"{QUEUE_ORDER} LIMIT ?", (cap,)).fetchall()]
             recent = [dict(r) for r in self._conn.execute(
-                "SELECT r.id, r.text, r.created_at, i.title AS song_title, "
-                "i.artist AS song_artist FROM requests r "
+                "SELECT r.id, r.text, r.created_at, r.aired_at, r.priority, "
+                "i.title AS song_title, i.artist AS song_artist FROM requests r "
                 "LEFT JOIN items i ON i.id = r.song_item_id "
                 "WHERE r.status IN ('aired','serviced') "
-                "ORDER BY r.id DESC LIMIT 3").fetchall()]
-        return {"queue": queue, "recent": recent}
+                "ORDER BY r.id DESC LIMIT 5").fetchall()]
+        return {
+            "queue": [_project_queue_row(r, max_length) for r in queue],
+            "recent": [_project_recent_row(r, max_length) for r in recent],
+        }
 
     def mark_serviced(self, request_id: int) -> None:
         """Legacy alias: marks the request as read on air (recorded as `aired`
@@ -625,8 +700,129 @@ class Store:
         with self._lock:
             self._conn.execute(
                 "UPDATE requests SET status='aired', reason='serviced on air', "
-                "updated_at=? WHERE id=?", (_now_iso(), request_id))
+                "aired_at=?, updated_at=? WHERE id=?",
+                (_now_iso(), _now_iso(), request_id))
             self._conn.commit()
+
+    # ------------------------------------------------- paid priority (PAYMENT §3)
+    def add_paid_request(self, text: str) -> dict[str, Any]:
+        """Insert a moderated paid request: awaiting payment, priority 1,
+        unguessable public token. Not in any queue until Stripe confirms."""
+        token = secrets.token_urlsafe(24)
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO requests (text, status, created_at, updated_at, "
+                "priority, public_token) VALUES (?,?,?,?,?,?)",
+                (text, "awaiting_payment", _now_iso(), _now_iso(), 1, token))
+            self._conn.commit()
+            rid = int(cur.lastrowid or 0)
+        row = self.get_request(rid)
+        assert row is not None
+        return row
+
+    def attach_checkout(self, request_id: int, session_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET checkout_session_id=?, updated_at=? WHERE id=?",
+                (session_id, _now_iso(), request_id))
+            self._conn.commit()
+
+    def get_request_by_token(self, token: str) -> dict[str, Any] | None:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM requests WHERE public_token=?", (token,)).fetchone()
+        return dict(r) if r else None
+
+    def get_request_by_session(self, session_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM requests WHERE checkout_session_id=?", (session_id,)).fetchone()
+        return dict(r) if r else None
+
+    def mark_request_paid(self, request_id: int, *, session_id: str,
+                          payment_intent_id: str | None, amount_cents: int,
+                          currency: str, livemode: bool) -> bool:
+        """The single transition into the priority queue. Only from
+        awaiting_payment/abandoned, and only for the matching session. True
+        only when a row actually changed (idempotent)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET status='queued', paid_at=?, amount_cents=?, "
+                "currency=?, payment_intent_id=?, livemode=?, updated_at=? "
+                "WHERE id=? AND checkout_session_id=? "
+                "AND status IN ('awaiting_payment','abandoned')",
+                (_now_iso(), amount_cents, currency, payment_intent_id,
+                 1 if livemode else 0, _now_iso(), request_id, session_id))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def mark_request_abandoned(self, request_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET status='abandoned', updated_at=? "
+                "WHERE id=? AND status='awaiting_payment'", (_now_iso(), request_id))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def abandon_stale_checkouts(self, older_than_iso: str) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET status='abandoned', updated_at=? "
+                "WHERE status='awaiting_payment' AND created_at < ?",
+                (_now_iso(), older_than_iso))
+            self._conn.commit()
+            return cur.rowcount
+
+    def record_stripe_event(self, event_id: str, type_: str, session_id: str | None,
+                            outcome: str) -> bool:
+        """INSERT OR IGNORE; False means this event id was already seen."""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO stripe_events "
+                "(event_id, type, session_id, outcome, received_at) VALUES (?,?,?,?,?)",
+                (event_id, type_, session_id, outcome, _now_iso()))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def update_stripe_event_outcome(self, event_id: str, outcome: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE stripe_events SET outcome=? WHERE event_id=?", (outcome, event_id))
+            self._conn.commit()
+
+    def touch_reconciled(self, request_id: int, at: float) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET reconciled_at=? WHERE id=?", (at, request_id))
+            self._conn.commit()
+
+    def request_position(self, request_id: int) -> int | None:
+        """1-based place in the combined live queue, else None."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id FROM requests WHERE status IN ('queued','producing','ready') "
+                f"{QUEUE_ORDER}").fetchall()
+        for index, row in enumerate(rows, start=1):
+            if row[0] == request_id:
+                return index
+        return None
+
+    def paid_requests(self, statuses: list[str], limit: int = 50) -> list[dict[str, Any]]:
+        if not statuses:
+            return []
+        marks = ",".join("?" * len(statuses))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM requests WHERE priority=1 AND status IN ({marks}) "
+                "ORDER BY id DESC LIMIT ?", (*statuses, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def mismatch_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM stripe_events WHERE outcome='mismatch' "
+                "ORDER BY received_at DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
     def all_requests(self, limit: int = 500) -> list[dict[str, Any]]:
         """Full request ledger (all statuses), newest first — for audit/history."""

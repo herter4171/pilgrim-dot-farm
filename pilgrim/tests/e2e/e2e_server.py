@@ -175,19 +175,22 @@ def build_app() -> FastAPI:
         return JSONResponse({"unique_visitors": n},
                             headers={"Cache-Control": "no-store"})
 
+    _RECENT = [
+        {"text": f"played {i}", "song_title": f"Song {i}", "song_artist": "Artist",
+         "paid": i == 5, "wait_s": [150, 900, 11000, 200000, None][i - 1]}
+        for i in range(1, 6)
+    ]
+
     @app.get("/api/requests")
     async def list_requests():
-        return JSONResponse({"queue": [], "recent": [], "cap": 10},
+        return JSONResponse({"queue": [], "recent": _RECENT, "cap": 20,
+                             "paid_enabled": False},
                             headers={"Cache-Control": "public, max-age=2"})
 
     @app.post("/api/requests")
     async def submit_request(payload: dict):
-        # five recents let the client exercise its defensive .slice(0, 3)
-        recent = [{"id": i, "text": f"played {i}",
-                   "song_title": f"Song {i}", "song_artist": "Artist"}
-                  for i in range(1, 6)]
         return JSONResponse({"ok": True, "rejected": False, "queue": [],
-                "recent": recent, "cap": 10},
+                "recent": _RECENT, "cap": 20, "paid_enabled": False},
                 headers={"Cache-Control": "no-store"})
 
     @app.post("/api/test/splice")

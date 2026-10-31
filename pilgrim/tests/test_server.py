@@ -22,7 +22,8 @@ def test_site_served(tmp_env):
     # station name retained in the browser title + header; pane title is exact
     assert "PILGRIM" in r.text
     assert "RADIO BROADCAST" in r.text
-    assert "MODEL CREDITS" in r.text
+    assert "CREDITS" in r.text
+    assert "Cornucopia_LQ.svg" in r.text
     assert "HIT COUNTER" in r.text
     assert c.get("/style.css").status_code == 200
     # static client files must revalidate so a web edit needs no restart

@@ -36,7 +36,7 @@ body {
   display: flex; flex-direction: column; align-items: center;
   justify-content: flex-start; gap: 16px; padding: 16px; overflow-y: auto; }
 
-.window.requests { width: min(94vw, 440px); }
+.window.requests { width: min(94vw, 484px); }
 .win-body.requests { align-items: stretch; text-align: left; gap: 12px; }
 .req-note { font-size: 11px; color: var(--dim); line-height: 1.5; margin: 0; }
 .req-form { display: flex; gap: 8px; }
@@ -67,6 +67,49 @@ body {
 .req-recent-text { color: var(--dim); overflow-wrap: anywhere; }
 .req-recent-song { color: var(--cyan); overflow-wrap: anywhere; font-size: 11px; }
 .req-empty { font-size: 12px; color: var(--dim); }
+.req-paid-icon { height: 1em; width: auto; vertical-align: -0.12em; margin-right: 2px; }
+.req-wait { color: var(--dim); font-size: 10px; letter-spacing: 1px; margin-left: auto;
+  flex: none; }
+.cred-attr { font-size: 11px; color: var(--dim); }
+.cred-attr a { color: var(--dim); }
+
+/* PAID REQUE$T (PAYMENT.md §8.2). */
+.pay-head { margin-top: 4px; }
+.pay-btn {
+  width: 100%; height: 44px; font-family: inherit; font-weight: bold;
+  letter-spacing: 2px; cursor: pointer; border: none; border-radius: 6px;
+  color: #0a0118; background-color: #A6FF00;
+  background-image: linear-gradient(
+    90deg,
+    #a6ff00 0%,
+    #19f5ff 50%,
+    #a6ff00 100%
+  );
+}
+.pay-btn:hover, .pay-btn:focus-visible { filter: brightness(1.1); outline: 2px solid var(--cyan); }
+.pay-btn:disabled { opacity: .5; cursor: default; }
+.pay-panel { display: flex; flex-direction: column; gap: 8px; }
+.pay-panel textarea {
+  width: 100%; box-sizing: border-box; font-family: inherit; font-size: 12px;
+  padding: 10px; border-radius: 6px; resize: vertical; min-height: 120px;
+  border: 1px solid var(--violet); background: rgba(10,1,24,.6);
+  color: var(--text); outline: none;
+}
+.pay-panel textarea:focus { border-color: var(--cyan); }
+.pay-panel textarea::placeholder { color: var(--dim); }
+.pay-actions { display: flex; gap: 8px; }
+.pay-actions button {
+  font-family: inherit; font-weight: bold; letter-spacing: 1px; cursor: pointer;
+  color: #0a0118; background: linear-gradient(90deg, var(--cyan), var(--violet));
+  border: none; border-radius: 6px; padding: 10px 14px; flex: 1;
+}
+.pay-actions button:disabled { filter: grayscale(.7); cursor: not-allowed; }
+.pay-actions .pay-cancel {
+  flex: 0 0 auto; background: transparent; color: var(--dim);
+  border: 1px solid var(--violet);
+}
+.pay-checkout:empty { display: none; }
+.pay-checkout iframe { width: 100%; border: 0; }
 
 .window {
   width: min(94vw, 440px);

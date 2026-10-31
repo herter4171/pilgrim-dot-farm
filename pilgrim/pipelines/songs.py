@@ -150,7 +150,8 @@ class SongPipeline:
         await self._client.aclose()
 
     async def brief(self, previous_genres: list,
-                    request_text: str | None = None, short: bool = False) -> dict:
+                    request_text: str | None = None, short: bool = False,
+                    paid: bool = False) -> dict:
         """Write a song brief: one style-family genre + a full structured
         caption (prompting guide §3) + tagged lyrics.
 
@@ -214,6 +215,12 @@ class SongPipeline:
         else:
             user += (f"\nGenres to pick from: {', '.join(weights)}\n"
                      f"Avoid genres (recently aired): {avoid}\n")
+        if paid and request_text:
+            # Paid requests get the stronger adherence clause (PAYMENT.md §7.4):
+            # the brief LLM is told this was paid, so named details win harder.
+            template = self.prompts.get("paid_request")
+            if template:
+                user += "\n" + template.strip() + "\n"
         if short:
             # request backlog: shorter lyrics -> shorter song -> faster generation
             user += ("Keep it SHORT: one verse and one chorus (about 8-12 lyric "

@@ -88,6 +88,10 @@ def test_edge_template_renders_clean(tmp_path):
     assert "listen 127.0.0.1:18080;" in text
     assert "$remote_addr" in text
     assert "location = /edge-health" in text
+    assert "location = /api/paid-requests" in text
+    assert "location = /api/stripe/webhook" in text
+    assert "client_max_body_size 256k;" in text
+    assert "location /api/ { return 404; }" in text
 
 
 def test_gateway_template_renders_clean(tmp_path):
@@ -99,3 +103,7 @@ def test_gateway_template_renders_clean(tmp_path):
     assert "listen 127.0.0.1:18090;" in text
     assert "allow 127.0.0.1;" in text
     assert "$http_x_real_ip" in text
+    assert "location = /api/paid-requests" in text
+    assert "location = /api/stripe/webhook" in text
+    assert "zone=paid_req" in text and "zone=stripe_hook" in text
+    assert "location / { return 404; }" in text

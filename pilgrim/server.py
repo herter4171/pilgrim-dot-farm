@@ -14,10 +14,13 @@ import contextlib
 import ipaddress
 import json
 import logging
+import os
+import re
 import time
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterator
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -32,6 +35,13 @@ from pilgrim import dj_contracts as dj
 from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_api_key, load_config
 from pilgrim.dj_security import require_dj
 from pilgrim.logging_setup import setup_logging
+from pilgrim.payments import (
+    PaymentService,
+    StripeClient,
+    StripeError,
+    WebhookError,
+    verify_webhook,
+)
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.moderation import Moderation
 from pilgrim.pipelines.news import NewsPipeline
@@ -87,6 +97,26 @@ class Station:
             cfg, self.db, self.llm, self.kokoro, self.voice, self.songs,
             self.clock, prompts=_load_prompts(cfg), media_dir=self.media_dir,
             api_key=api_key, rng=self.rng, news_pipeline=self.news, sfx=self.sfx)
+        # Paid priority requests (PAYMENT.md). Off unless config + env agree.
+        self.payments_active = cfg.payments.active(os.environ)
+        self.payment_service: PaymentService | None = None
+        self.stripe_client: StripeClient | None = None
+        self.publishable_key = ""
+        self.webhook_secret = ""
+        if self.payments_active:
+            secret_key = os.environ["STRIPE_SECRET_KEY"]
+            self.publishable_key = os.environ["STRIPE_PUBLISHABLE_KEY"]
+            self.webhook_secret = os.environ["STRIPE_WEBHOOK_SECRET"]
+            self.stripe_client = StripeClient(cfg.payments, secret_key)
+            self.payment_service = PaymentService(
+                cfg.payments, self.db, self.stripe_client, secret_key,
+                self.publishable_key, self.webhook_secret, now=self.clock.wall)
+            log.info("payment.mode", extra={"mode": self.payment_service.mode})
+        cutoff = (datetime.now(UTC)
+                  - timedelta(seconds=cfg.payments.abandon_after_s)).isoformat()
+        abandoned = self.db.abandon_stale_checkouts(cutoff)
+        if abandoned:
+            log.info("payment.abandoned_stale", extra={"count": abandoned})
         self._tasks: list = []
         self._http = httpx.AsyncClient(timeout=4.0)
 
@@ -393,7 +423,7 @@ def _load_prompts(cfg: Config) -> dict:
     pdir = ROOT / cfg.library.prompts_dir
     out = {}
     for f in ("voice.md", "song_brief.md", "news.md", "moderation.md", "field.md",
-              "sfx_cues.md", "sfx_joke.md"):
+              "sfx_cues.md", "sfx_joke.md", "paid_request.md"):
         p = pdir / f
         if p.exists():
             out[f.replace(".md", "")] = p.read_text()
@@ -402,6 +432,20 @@ def _load_prompts(cfg: Config) -> dict:
 
 class RequestIn(BaseModel):
     text: str = Field(..., min_length=1)
+
+
+class PaidRequestIn(BaseModel):
+    text: str = Field(..., min_length=1)
+
+
+PAID_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+
+
+def _normalise_paid(text: str) -> str:
+    """PAYMENT.md Step 4.2: CRLF -> LF, rstrip lines, strip, 3+ blank -> 2."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = "\n".join(line.rstrip() for line in text.split("\n")).strip()
+    return re.sub(r"\n{3,}", "\n\n", text)
 
 
 def build_station(cfg: Config) -> Station:
@@ -414,7 +458,8 @@ def build_station(cfg: Config) -> Station:
     return Station(cfg, api_key)
 
 
-def _make_rate_limiter(station: Station) -> Callable[[Request], bool]:
+def _make_rate_limiter(station: Station,
+                       limit: int | None = None) -> Callable[[Request], bool]:
     """Per-app request-line rate limit: client IP -> timestamps (4.3).
 
     Keyed on the resolved client IP (`Station._client_ip`, the trusted-proxy
@@ -424,7 +469,7 @@ def _make_rate_limiter(station: Station) -> Callable[[Request], bool]:
     a browser reaches.
     """
     _rate: dict[str, deque[float]] = {}
-    limit = station.cfg.requests.per_client_per_10min
+    limit = limit or station.cfg.requests.per_client_per_10min
 
     def _rate_limited(request: Request) -> bool:
         host = (station._client_ip(request)
@@ -490,6 +535,7 @@ def _add_public_routes(app: FastAPI, station: Station,
     """
     cfg = station.cfg
     _rate_limited = _make_rate_limiter(station)
+    _paid_rate_limited = _make_rate_limiter(station, cfg.payments.per_client_per_10min)
 
     @app.get("/api/health")
     async def health_endpoint():
@@ -563,11 +609,13 @@ def _add_public_routes(app: FastAPI, station: Station,
             log.info("request.moderated", extra={
                 "request_id": req["id"], "allowed": False, "reason": pref,
                 "prefilter": True, "duration_ms": 0})
-            board = station.db.request_board(cfg.requests.queue_cap)
+            board = station.db.request_board(cfg.requests.queue_cap,
+                                             cfg.requests.max_length)
             return {
                 "ok": False, "rejected": True, "request": req, "reason": pref,
                 "queue": board["queue"], "recent": board["recent"],
                 "cap": cfg.requests.queue_cap,
+                "paid_enabled": station.payments_active,
             }
         allowed, reason = await station.moderator.moderate(text)
         status = "queued" if allowed else "rejected"
@@ -578,7 +626,8 @@ def _add_public_routes(app: FastAPI, station: Station,
             "request_id": req["id"], "allowed": allowed, "reason": reason,
             "prefilter": False,
             "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
-        board = station.db.request_board(cfg.requests.queue_cap)
+        board = station.db.request_board(cfg.requests.queue_cap,
+                                         cfg.requests.max_length)
         return {
             "ok": allowed,
             "rejected": not allowed,
@@ -587,13 +636,118 @@ def _add_public_routes(app: FastAPI, station: Station,
             "queue": board["queue"],
             "recent": board["recent"],
             "cap": cfg.requests.queue_cap,
+            "paid_enabled": station.payments_active,
         }
 
     @app.get("/api/requests")
     async def list_requests():
-        board = station.db.request_board(cfg.requests.queue_cap)
-        return JSONResponse({**board, "cap": cfg.requests.queue_cap},
+        board = station.db.request_board(cfg.requests.queue_cap,
+                                         cfg.requests.max_length)
+        return JSONResponse({**board, "cap": cfg.requests.queue_cap,
+                             "paid_enabled": station.payments_active},
                             headers={"Cache-Control": "public, max-age=2"})
+
+    # ------------------------------------------------- paid priority (PAYMENT §4)
+    @app.post("/api/paid-requests")
+    async def submit_paid_request(payload: PaidRequestIn, request: Request):
+        if not station.payments_active or station.payment_service is None:
+            return JSONResponse(status_code=503, content={
+                "detail": "Paid requests are closed right now.",
+                "paid_closed": True})
+        if _paid_rate_limited(request):
+            raise HTTPException(
+                429, "Easy there — a few paid requests every ten minutes, please.")
+        text = _normalise_paid(payload.text)
+        lines = text.count("\n") + 1
+        if (not text or len(text) > cfg.payments.paid_max_length
+                or lines > cfg.payments.paid_max_lines):
+            raise HTTPException(422, "paid request empty or too long")
+        log.info("payment.requested",
+                 extra={"len": len(text), "lines": lines})
+        t0 = time.monotonic()
+        pref = prefilter(text, phone_mode="runs")
+        if pref:
+            req = station.db.add_request(text, cap=None, status="rejected",
+                                         reason=pref, priority=1)
+            log.info("request.moderated", extra={
+                "request_id": req["id"], "allowed": False, "reason": pref,
+                "prefilter": True, "paid": True, "duration_ms": 0})
+            return {"ok": False, "rejected": True, "reason": pref}
+        allowed, reason = await station.moderator.moderate(text)
+        log.info("request.moderated", extra={
+            "request_id": None, "allowed": allowed, "reason": reason,
+            "prefilter": False, "paid": True,
+            "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
+        if not allowed:
+            req = station.db.add_request(text, cap=None, status="rejected",
+                                         reason=reason, priority=1)
+            log.info("payment.requested",
+                     extra={"request_id": req["id"], "len": len(text),
+                            "lines": lines})
+            return {"ok": False, "rejected": True, "reason": reason}
+        row = station.db.add_paid_request(text)
+        log.info("payment.requested",
+                 extra={"request_id": row["id"], "len": len(text), "lines": lines})
+        try:
+            session = await station.payment_service.start_checkout(row)
+        except StripeError as exc:
+            station.db.mark_request_abandoned(int(row["id"]))
+            log.warning("payment.checkout_failed",
+                        extra={"request_id": row["id"], "kind": exc.kind})
+            return JSONResponse(status_code=424, content={
+                "detail": "Payments are having a moment. You were not charged."})
+        if not session.client_secret:
+            station.db.mark_request_abandoned(int(row["id"]))
+            log.warning("payment.checkout_no_secret",
+                        extra={"request_id": row["id"], "session_id": session.id})
+            return JSONResponse(status_code=424, content={
+                "detail": "Payments are having a moment. You were not charged."})
+        return JSONResponse(content={
+            "ok": True,
+            "token": row["public_token"],
+            "client_secret": session.client_secret,
+            "publishable_key": station.publishable_key,
+            "expires_at": session.expires_at
+            or int(station.clock.wall() + cfg.payments.checkout_expiry_s),
+        })
+
+    # ------------------------------------------- paid status + reconcile (§6)
+    @app.get("/api/paid-requests/{token}")
+    async def paid_request_status(token: str):
+        if not PAID_TOKEN_RE.match(token):
+            raise HTTPException(404, "not found")
+        if station.payment_service is None:
+            raise HTTPException(404, "not found")
+        row = await station.payment_service.reconcile(token)
+        if row is None:
+            raise HTTPException(404, "not found")
+        status = str(row["status"])
+        position = (station.db.request_position(int(row["id"]))
+                    if status in ("queued", "producing", "ready") else None)
+        return JSONResponse({"status": status, "position": position},
+                            headers={"Cache-Control": "no-store"})
+
+    # ------------------------------------------------------- Stripe webhook (§5)
+    @app.post("/api/stripe/webhook")
+    async def stripe_webhook(request: Request):
+        if station.payment_service is None:
+            return JSONResponse(status_code=503, content={"detail": "payments disabled"})
+        payload = await request.body()
+        if len(payload) > 256 * 1024:
+            return JSONResponse(status_code=413, content={"detail": "payload too large"})
+        try:
+            event = verify_webhook(
+                payload,
+                request.headers.get("stripe-signature", ""),
+                station.webhook_secret,
+                station.clock.wall(),
+                cfg.payments.webhook_tolerance_s,
+            )
+        except WebhookError as exc:
+            log.warning("payment.webhook_rejected", extra={"reason": str(exc)})
+            return JSONResponse(status_code=400, content={"detail": "bad signature"})
+        outcome = station.payment_service.handle_event(event)
+        return JSONResponse({"received": True, "outcome": outcome})
 
     @app.post("/api/visitors")
     async def register_visitor(request: Request):
@@ -720,6 +874,23 @@ def _add_admin_routes(app: FastAPI, station: Station) -> None:
             raise HTTPException(404, detail={"code": "no_such_job",
                 "detail": "no phrase job with that id"})
         return job
+
+    @app.get("/api/admin/payments", dependencies=[Depends(require_dj)])
+    async def admin_payments(
+        status: str = Query(default="failed,awaiting_payment,abandoned,queued"),
+        limit: int = Query(default=50, ge=1, le=200),
+    ):
+        """Paid request audit + money-without-a-request events (PAYMENT.md §9)."""
+        statuses = [s for s in status.split(",") if s]
+        keys = ("id", "status", "priority", "created_at", "paid_at",
+                "amount_cents", "currency", "payment_intent_id",
+                "checkout_session_id", "attempts", "text")
+        return {
+            "requests": [{k: row.get(k) for k in keys}
+                         for row in station.db.paid_requests(statuses, limit)],
+            "mismatches": station.db.mismatch_events(50),
+        }
+
 
 
 def _new_app(title: str) -> FastAPI:

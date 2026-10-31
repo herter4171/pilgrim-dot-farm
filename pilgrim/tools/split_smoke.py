@@ -169,7 +169,8 @@ def run(edge_url: str, gateway_url: str, state: Path,
     def check_3():
         # admin routes, and (prod allowlist) the e2e-only /api/test/ routes
         codes = {f"{name}:{path}": client.get(path).status_code
-                 for path in ("/api/admin/dj/state", "/api/test/report")
+                 for path in ("/api/admin/dj/state", "/api/test/report",
+                              "/api/admin/payments")
                  for name, client in (("edge", edge), ("gateway", gateway))}
         return all(c == 404 for c in codes.values()), f"{codes}"
 
@@ -343,6 +344,37 @@ def run(edge_url: str, gateway_url: str, state: Path,
     if max_check >= 10:
         record("10 gateway rate limit: POST 429s from nginx, GET board unlimited", check_10)
 
+    if max_check >= 11:
+        def check_11():
+            r = edge.post("/api/stripe/webhook", content=b"{}",
+                          headers={"stripe-signature": "t=1,v1=deadbeef",
+                                   "content-type": "application/json"})
+            # Payments are disabled in the local stack, so the route answers
+            # 503 "payments disabled" (not 404): the path is open end-to-end.
+            return (r.status_code == 503 and "payments" in r.text.lower(),
+                    f"{r.status_code} {r.text[:60]!r}")
+
+        def check_12():
+            r = edge.get("/api/paid-requests/" + "A" * 24)
+            return r.status_code == 404, f"{r.status_code}"
+
+        def check_13():
+            r = edge.get("/api/paid-requests/x")
+            return r.status_code == 404, f"{r.status_code}"
+
+        def check_14():
+            r = edge.post("/api/paid-requests", json={"text": "a paid song"})
+            is_json = r.headers.get("content-type", "").startswith("application/json")
+            body = r.json() if is_json else {}
+            return (r.status_code == 503 and body.get("paid_closed") is True
+                    and "off_air" not in body,
+                    f"{r.status_code} {body}")
+
+        record("11 webhook path open, payments disabled -> 503", check_11)
+        record("12 paid status unknown token -> 404", check_12)
+        record("13 malformed paid token -> 404 at edge", check_13)
+        record("14 paid request closed -> 503 paid_closed", check_14)
+
     edge.close()
     gateway.close()
     failed = results.count(False)
@@ -356,8 +388,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gateway", default="http://127.0.0.1:18090")
     ap.add_argument("--state-dir", type=Path,
                     default=Path("/tmp/pilgrim-split-local"))
-    ap.add_argument("--max-check", type=int, default=10, choices=range(1, 11),
-                    metavar="1..10",
+    ap.add_argument("--max-check", type=int, default=10, choices=range(1, 15),
+                    metavar="1..14",
                     help="stop after this check (production cutover uses 7)")
     args = ap.parse_args(argv)
     return run(args.edge, args.gateway, args.state_dir, args.max_check)

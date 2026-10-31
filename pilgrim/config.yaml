@@ -235,7 +235,7 @@ sfx:
 # Paid priority requests (PAYMENT.md §2.1). Default off: also inactive when any
 # of STRIPE_SECRET_KEY / STRIPE_PUBLISHABLE_KEY / STRIPE_WEBHOOK_SECRET is unset.
 payments:
-  enabled: false
+  enabled: true            # live deployment (PAYMENT.md Step 12)
   api_base: https://api.stripe.com
   api_version: "2026-10-28.endive"
   price_id_live: price_1UWQHdKOiB5HDXLd4qNMoosI

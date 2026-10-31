@@ -170,7 +170,7 @@ class FakeSong:
         self.calls = []
         self.fail = fail
 
-    async def brief(self, genres, request_text=None, short=False):
+    async def brief(self, genres, request_text=None, short=False, paid=False):
         self.calls.append(("brief", request_text))
         self.short = short
         return valid_brief("country-americana", title="Mittens the Night",

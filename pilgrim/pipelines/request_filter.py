@@ -21,10 +21,18 @@ _EMAIL = re.compile(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", re.IGNORECASE)
 _HANDLE = re.compile(r"(?<!\w)@\w{2,}")
 
 _DIGITS_STRIP = re.compile(r"[\s.\-\[\]()]")
+# "runs": one run of 7+ digits joined by at most 2 separator chars. Lets a
+# detailed paid prompt say "120 BPM in 4/4, 1970s feel" (PAYMENT.md Step 4.2).
+_DIGIT_RUN = re.compile(r"\d(?:[\s.\-()\[\]]{0,2}\d){6,}")
 
 
-def prefilter(text: str) -> str | None:
-    """Return the listener-facing rejection reason, or None if the text is clean."""
+def prefilter(text: str, *, phone_mode: str = "total") -> str | None:
+    """Return the listener-facing rejection reason, or None if the text is clean.
+
+    `phone_mode="total"` (free line, unchanged) counts every digit in the text;
+    `"runs"` (paid line) rejects only one 7+ digit run, so tempo/key/time
+    numbers in a detailed brief are fine.
+    """
     low = text.lower()
     if _HTTP.search(low) or "www." in low:
         return REASON
@@ -34,10 +42,14 @@ def prefilter(text: str) -> str | None:
         return REASON
     if _EMAIL.search(low):
         return REASON
-    # phone numbers: 7+ digits after removing separators and brackets
-    digits = re.sub(r"\D", "", _DIGITS_STRIP.sub("", text))
-    if len(digits) >= 7:
-        return REASON
+    if phone_mode == "runs":
+        if _DIGIT_RUN.search(text):
+            return REASON
+    else:
+        # phone numbers: 7+ digits after removing separators and brackets
+        digits = re.sub(r"\D", "", _DIGITS_STRIP.sub("", text))
+        if len(digits) >= 7:
+            return REASON
     if _HANDLE.search(text):
         return REASON
     return None

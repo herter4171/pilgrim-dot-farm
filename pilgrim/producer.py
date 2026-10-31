@@ -539,14 +539,14 @@ class Producer:
         loop backs off; a failing intro never blocks the request (4.5/4.6)."""
         log.info("request.producing", extra={"request_id": req["id"]})
         self.store.mark_request_producing(req["id"])
+        paid = bool(req.get("priority"))
         try:
             prev_genres = self._recent_genres()
             backlog = len(self.store.queued_requests())
-            if backlog >= 3:
-                brief = await self.songs.brief(prev_genres, request_text=req["text"],
-                                               short=True)
-            else:
-                brief = await self.songs.brief(prev_genres, request_text=req["text"])
+            # Paid requests are never shortened by the backlog rule (§0.5).
+            short = backlog >= 3 and not paid
+            brief = await self.songs.brief(prev_genres, request_text=req["text"],
+                                           short=short, paid=paid)
             brief["request_id"] = req["id"]
             item = await self.songs.produce_song(brief)
             # Everything awaited is done before the song is stored: song, intro
@@ -572,9 +572,14 @@ class Producer:
                 "request_id": req["id"], "error": err_text(e)})
             raise
         except Exception as e:
-            n = self.store.request_failed_attempt(req["id"])
+            max_attempts = self.cfg.payments.max_attempts if paid else 3
+            n = self.store.request_failed_attempt(req["id"], max_attempts=max_attempts)
             log.warning("request.failed", extra={
                 "request_id": req["id"], "attempt": n, "error": err_text(e)})
+            if paid and n >= max_attempts:
+                log.warning("payment.refund_due", extra={
+                    "request_id": req["id"],
+                    "payment_intent_id": req.get("payment_intent_id")})
             raise
 
     async def _render_intro(self, item: dict, req: dict | None) -> dict | None:
@@ -587,11 +592,19 @@ class Producer:
         genre = genres.display(item.get("genre") or "")
         context = f'Next song: "{title}" by {artist} ({genre}).\n'
         if req is not None:
+            paid = bool(req.get("priority"))
             context += f"Listener request: {json.dumps(req['text'])}\n"
-            context += ("This song was made for a listener's request. OPEN with an "
-                        "excited shout-out that it's a listener request (e.g. "
-                        "'Request line! You asked, we made it!'), then name the "
-                        "song. ")
+            if paid:
+                context += ("This song was made for a PAID priority request. OPEN "
+                            "with an excited shout-out that it's a priority request "
+                            "(e.g. 'Priority request line! You paid, we played!'), "
+                            "then name the song. Never mention the amount or any "
+                            "name from the request text. ")
+            else:
+                context += ("This song was made for a listener's request. OPEN with an "
+                            "excited shout-out that it's a listener request (e.g. "
+                            "'Request line! You asked, we made it!'), then name the "
+                            "song. ")
         context += "Do not mention the clock time."
         for _ in range(2 if req is not None else 1):
             try:
@@ -602,7 +615,10 @@ class Producer:
                     "request_id": req["id"] if req is not None else None})
         if req is None:
             return None
-        text = f"Request line! You asked, we made it! Here's {title}"
+        if req.get("priority"):
+            text = f"Priority request line! You paid, we played! Here's {title}"
+        else:
+            text = f"Request line! You asked, we made it! Here's {title}"
         text += f", by {artist}!" if artist else "!"
         try:
             r = await self.voice.render({"text": text}, "intro", 6.0)

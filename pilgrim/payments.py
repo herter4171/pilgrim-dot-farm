@@ -15,12 +15,15 @@ import hmac
 import json
 import logging
 import time
-from typing import Any
+from collections.abc import Callable
+from datetime import datetime
+from typing import Any, Protocol
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from pilgrim.config import Payments
+from pilgrim.store import Store
 
 log = logging.getLogger("pilgrim.payments")
 
@@ -34,6 +37,16 @@ class StripeError(RuntimeError):
         super().__init__(message)
         self.kind = kind
         self.message = message
+
+
+class CheckoutClient(Protocol):
+    """Structural type shared by StripeClient and the test fake."""
+
+    async def create_checkout_session(
+        self, *, request_id: int, token: str, now: float
+    ) -> CheckoutSession: ...
+
+    async def retrieve_checkout_session(self, session_id: str) -> CheckoutSession: ...
 
 
 class WebhookError(RuntimeError):
@@ -249,3 +262,168 @@ def verify_webhook(
     if not isinstance(data, dict) or not isinstance(data.get("object"), dict):
         raise WebhookError("event.data.object missing")
     return event
+
+
+# --------------------------------------------------------------------------- #
+# PaymentService — the only code that changes payment columns (PAYMENT.md §2.2c)
+# --------------------------------------------------------------------------- #
+def _epoch(iso: str | None) -> float | None:
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except ValueError:
+        return None
+
+
+class PaymentService:
+    """State transitions for paid priority requests.
+
+    `apply_paid_session` is the single place a request becomes paid; both the
+    webhook and the reconcile path call it. It never trusts the browser.
+    """
+
+    def __init__(
+        self,
+        cfg: Payments,
+        store: Store,
+        client: CheckoutClient,
+        secret_key: str,
+        publishable_key: str,
+        webhook_secret: str,
+        now: Callable[[], float],
+    ) -> None:
+        self.cfg = cfg
+        self.store = store
+        self.client = client
+        self.secret_key = secret_key
+        self.publishable_key = publishable_key
+        self.webhook_secret = webhook_secret
+        self.now = now
+        self.mode = cfg.mode(secret_key)
+        self.livemode = self.mode == "live"
+
+    # ------------------------------------------------------------------ checkout
+    async def start_checkout(self, row: dict[str, Any]) -> CheckoutSession:
+        session = await self.client.create_checkout_session(
+            request_id=int(row["id"]), token=str(row["public_token"]), now=self.now()
+        )
+        self.store.attach_checkout(int(row["id"]), session.id)
+        log.info("payment.checkout_created",
+                 extra={"request_id": row["id"], "session_id": session.id})
+        return session
+
+    # --------------------------------------------------------------------- paid
+    def apply_paid_session(self, session: CheckoutSession) -> bool:
+        cfg = self.cfg
+
+        def mismatch(check: str) -> bool:
+            log.warning("payment.mismatch",
+                        extra={"session_id": session.id, "check": check})
+            return False
+
+        if session.payment_status != "paid":
+            return False
+        if session.livemode != self.livemode:
+            return mismatch("livemode")
+        if (session.currency or "").lower() != cfg.currency:
+            return mismatch("currency")
+        amount = session.amount_total
+        if amount is None or not (cfg.min_cents <= amount <= cfg.max_cents):
+            return mismatch("amount")
+        row = self.store.get_request_by_session(session.id)
+        if row is None:
+            return mismatch("unknown_session")
+        raw_id = session.metadata.get("request_id")
+        if not raw_id or not str(raw_id).isdigit():
+            return mismatch("metadata_request_id")
+        if int(raw_id) != int(row["id"]):
+            return mismatch("request_id")
+        if session.client_reference_id != row["public_token"]:
+            return mismatch("client_reference_id")
+        applied = self.store.mark_request_paid(
+            int(row["id"]),
+            session_id=session.id,
+            payment_intent_id=session.payment_intent,
+            amount_cents=amount,
+            currency=session.currency or cfg.currency,
+            livemode=session.livemode,
+        )
+        if applied:
+            log.info("payment.applied",
+                     extra={"request_id": row["id"], "session_id": session.id,
+                            "amount_cents": amount})
+        else:
+            log.info("payment.already_paid",
+                     extra={"request_id": row["id"], "session_id": session.id})
+        return applied
+
+    # ------------------------------------------------------------------ webhook
+    def handle_event(self, event: dict[str, Any]) -> str:
+        event_id = str(event["id"])
+        type_ = str(event["type"])
+        obj = event["data"]["object"]
+        session_id = obj.get("id") if isinstance(obj.get("id"), str) else None
+
+        if event["livemode"] != self.livemode:
+            self.store.record_stripe_event(event_id, type_, session_id, "ignored")
+            log.warning("payment.webhook_livemode_mismatch",
+                        extra={"event_id": event_id, "type": type_})
+            return "ignored"
+
+        if not self.store.record_stripe_event(event_id, type_, session_id, "processing"):
+            log.info("payment.webhook_duplicate", extra={"event_id": event_id})
+            return "duplicate"
+
+        outcome = "ignored"
+        try:
+            if type_ in ("checkout.session.completed",
+                         "checkout.session.async_payment_succeeded"):
+                session = CheckoutSession.model_validate(obj)
+                if session.payment_status == "paid":
+                    outcome = "applied" if self.apply_paid_session(session) else "mismatch"
+                else:
+                    log.info("payment.webhook_unpaid",
+                             extra={"session_id": session_id, "type": type_})
+            elif type_ in ("checkout.session.async_payment_failed",
+                           "checkout.session.expired"):
+                row = self.store.get_request_by_session(session_id) if session_id else None
+                if row is not None and self.store.mark_request_abandoned(int(row["id"])):
+                    outcome = "applied"
+            elif type_ == "charge.refunded":
+                log.info("payment.refunded",
+                         extra={"payment_intent": obj.get("payment_intent")})
+            elif type_ == "charge.dispute.created":
+                log.info("payment.disputed",
+                         extra={"payment_intent": obj.get("payment_intent")})
+        except (ValueError, TypeError) as exc:
+            outcome = "mismatch"
+            log.warning("payment.webhook_bad_object",
+                        extra={"event_id": event_id, "error": str(exc)})
+        self.store.update_stripe_event_outcome(event_id, outcome)
+        return outcome
+
+    # ------------------------------------------------------------------ reconcile
+    async def reconcile(self, token: str) -> dict[str, Any] | None:
+        row = self.store.get_request_by_token(token)
+        if row is None:
+            return None
+        if row["status"] != "awaiting_payment" or not row.get("checkout_session_id"):
+            return row
+        now = self.now()
+        created = _epoch(row.get("created_at"))
+        if created is None or now - created < self.cfg.reconcile_after_s:
+            return row
+        last = float(row.get("reconciled_at") or 0.0)
+        if now - last < self.cfg.reconcile_min_interval_s:
+            return row
+        self.store.touch_reconciled(int(row["id"]), now)
+        try:
+            session = await self.client.retrieve_checkout_session(
+                str(row["checkout_session_id"]))
+        except StripeError as exc:
+            log.warning("payment.reconcile_failed",
+                        extra={"request_id": row["id"], "kind": exc.kind})
+            return self.store.get_request_by_token(token)
+        self.apply_paid_session(session)
+        return self.store.get_request_by_token(token)

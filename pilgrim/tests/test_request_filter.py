@@ -99,9 +99,11 @@ def test_request_board_in_api(tmp_env):
     store.mark_request_ready(req["id"], song_id, None)
     c = TestClient(app)
     d = c.get("/api/requests").json()
-    assert any(q["id"] == req["id"] and q["status"] == "ready" for q in d["queue"])
+    assert any(q["text"] == "play for mittens" and q["status"] == "ready"
+               for q in d["queue"])
 
     store.mark_request_aired(req["id"])
     d = c.get("/api/requests").json()
-    rec = next((r for r in d["recent"] if r["id"] == req["id"]), None)
+    rec = next((r for r in d["recent"]
+                if r["song_title"] == "Mittens at the Barn"), None)
     assert rec is not None and rec["song_title"] == "Mittens at the Barn"
