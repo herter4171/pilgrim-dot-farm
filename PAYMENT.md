@@ -107,7 +107,7 @@ Key facts:
 | Decision | Value |
 |----------|-------|
 | Button label | `PAID REQUE$T` |
-| Button colour | `linear-gradient(90deg, #a6ff00 0%, #19f5ff 50%, #a6ff00 100%)` over a `#A6FF00` fallback (`background-color`), dark text `#0a0118` for contrast |
+| Button colour | `linear-gradient(90deg, #00ff66 0%, #19f5ff 50%, #00ff66 100%)` over a `#00FF66` fallback (`background-color`), dark text `#0a0118` for contrast |
 | Heading above the button | `I need about tree fiddy.`, styled like the `NOW QUEUED` heading (`.req-list-head`) |
 | Placement | Inside the existing REQUEST LINE pane, same page, no redirect |
 | Queues | Two FIFO queues: priority (paid) and free. Priority always first. |
@@ -859,12 +859,12 @@ it).
 .pay-btn {
   width: 100%; height: 44px; font-family: inherit; font-weight: bold;
   letter-spacing: 2px; cursor: pointer; border: none; border-radius: 6px;
-  color: #0a0118; background-color: #A6FF00;
+  color: #0a0118; background-color: #00FF66;
   background-image: linear-gradient(
     90deg,
-    #a6ff00 0%,
+    #00ff66 0%,
     #19f5ff 50%,
-    #a6ff00 100%
+    #00ff66 100%
   );
 }
 .pay-btn:hover, .pay-btn:focus-visible { filter: brightness(1.1); outline: 2px solid var(--cyan); }
@@ -951,9 +951,9 @@ webhook, then calls `onComplete()`.
 Tests:
 1. Heading text is exactly `I need about tree fiddy.`; button text is
    exactly `PAID REQUE$T`; the button's computed `background-image` is the
-   green→cyan→green `linear-gradient(90deg, rgb(166, 255, 0) 0%,
-   rgb(25, 245, 255) 50%, rgb(166, 255, 0) 100%)` with `background-color`
-   `rgb(166, 255, 0)` as the fallback;
+   green→cyan→green `linear-gradient(90deg, rgb(0, 255, 102) 0%,
+   rgb(25, 245, 255) 50%, rgb(0, 255, 102) 100%)` with `background-color`
+   `rgb(0, 255, 102)` as the fallback;
    `CREDITS` pane title is exactly `CREDITS` and links to
    `https://commons.wikimedia.org/wiki/File:Cornucopia_LQ.svg`.
 2. Full happy path: type 3 lines → Check it & pay → FAKE PAY → `done`
