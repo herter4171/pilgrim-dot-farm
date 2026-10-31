@@ -58,8 +58,11 @@ Key facts:
 
 - **Checkout Session** = a one-time payment page Stripe hosts. *Embedded*
   mode renders it as an iframe inside our page instead of redirecting to
-  stripe.com. With `redirect_on_completion=never` the page stays put and
-  Stripe.js calls our `onComplete` callback.
+  stripe.com. On API `2026-10-28.endive` that mode is `ui_mode=embedded_page`
+  (**not** `embedded`; verified 2026-10-31 against the API reference). With
+  `redirect_on_completion=never` the page stays put and Stripe.js calls our
+  `onComplete` callback. `return_url` is still required for `embedded_page`
+  (redirect-based payment methods return through it).
 - **The price already exists** (live mode): product "Priority Song Request"
   `prod_VXVIBdZhOh1eD8`, price `price_1UWQHdKOiB5HDXLd4qNMoosI`, a
   "customer chooses" price (`custom_unit_amount`: min 300, preset 350, max
@@ -104,25 +107,30 @@ Key facts:
 | Decision | Value |
 |----------|-------|
 | Button label | `PAID REQUE$T` |
-| Button colour | `#A6FF00` (dark text `#0a0118` for contrast) |
+| Button colour | `linear-gradient(90deg, #a6ff00 0%, #19f5ff 50%, #a6ff00 100%)` over a `#A6FF00` fallback (`background-color`), dark text `#0a0118` for contrast |
 | Heading above the button | `I need about tree fiddy.`, styled like the `NOW QUEUED` heading (`.req-list-head`) |
 | Placement | Inside the existing REQUEST LINE pane, same page, no redirect |
 | Queues | Two FIFO queues: priority (paid) and free. Priority always first. |
 | Paid input | Multi-line prompt for the music (free stays single-line) |
 | Price | Existing Stripe price: preset $3.50, min $3.00, max $67.69, USD |
+| Paid marker on the board | Cornucopia icon (`pilgrim/web/img/cornucopia.png`), one line high, as the leading character before the request text. No `$` badge, no amount. |
+| Service promise | The song is **guaranteed to air, never guaranteed when**. Paid requests jump the free line and are FIFO by payment time. Refund on request if production fails after 5 attempts, or if the station stops airing for good. |
+| Request line display | Up to **20** queue rows and up to **5** "recently played" rows. Each recent row shows how long the request waited (submit → air). Both queues stay FIFO. Request pane **10% wider**. |
+| Credits pane | Heading `CREDITS` (renamed from `MODEL CREDITS`) plus an attribution row: *Cornucopia icon: Cornucopia LQ by OpenClipart, CC0* |
 
 ### 0.5 Defaults chosen by this plan (operator may override; see §14)
 
 | Topic | Default |
 |-------|---------|
-| Stripe integration | Embedded Checkout (`ui_mode=embedded`), not Payment Element, not Payment Links |
+| Stripe integration | Embedded Checkout (`ui_mode=embedded_page`, `redirect_on_completion=never`, no `return_url`), API version `2026-10-28.endive`; not Payment Element, not Payment Links |
+| Managed Payments | **Off** per session (`managed_payments[enabled]=false`): the product tax code is ineligible and Pilgrim Dot Farm LLC stays merchant of record. Turning it on is an operator decision (needs an eligible tax code). Recommended: also switch the account default off in Dashboard → Settings → Managed Payments, so no future product silently becomes merchant-of-record. |
 | HTTP to Stripe | `httpx.AsyncClient` (form-encoded), webhook check with stdlib `hmac`. **No `stripe` Python package.** This matches AGENTS §3 (httpx, explicit timeouts) and keeps the fake simple. |
 | Paid prompt limit | 1200 characters, 24 lines |
 | Paid text path | Goes through the song **brief** LLM like a free request (style lock, validation, QC all apply), with a stronger "honour the listener's details" instruction. It is **not** sent raw to MiniMax. |
 | Paid song length | Never shortened by the "≥ 3 queued → short song" backlog rule |
 | Production attempts | Paid: 5, free: 3 (unchanged) |
 | Failed paid request | Marked `failed`, logged as `payment.refund_due`, listed on an admin route. **No automatic refund.** The operator refunds in the Stripe Dashboard. |
-| Amount shown publicly | Never. The board shows a `$` badge only. |
+| Amount shown publicly | Never. The board shows the cornucopia icon only. |
 | Checkout expiry | 30 minutes (Stripe's minimum) |
 | Stripe.js loading | Lazy: loaded on the first PAID REQUE$T click, not on page load |
 
@@ -139,6 +147,9 @@ Key facts:
 | New env vars | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` |
 | New Make target | `make pay-smoke` |
 | Webhook URL (live) | `https://pilgrim.farm/api/stripe/webhook` |
+| Live webhook endpoint | `we_1UWU1pKOiB5HDXLdhsCpnggq` (created 2026-10-31, `enabled`, `api_version: null` = account default) |
+| New asset | `pilgrim/web/img/cornucopia.png` — **Cornucopia LQ** by OpenClipart, **CC0 1.0**, via Wikimedia Commons; cropped to its alpha box and downscaled to 160×125 PNG-8 (7.6 KB, transparent). The original `thanksgiving-png-44560.png` is *personal use only* and is not used. |
+| Asset attribution | "Cornucopia LQ" by OpenClipart, CC0 1.0, <https://commons.wikimedia.org/wiki/File:Cornucopia_LQ.svg> — credited in the CREDITS pane, RADIO §9.1 and `MODELS.md` (CC0 does not require it; we credit anyway) |
 
 ### 0.7 Working agreement
 
@@ -180,6 +191,14 @@ missing.
      `charge.refunded`, `charge.dispute.created`
    - Copy each signing secret (`whsec_…`) into `STRIPE_WEBHOOK_SECRET` on
      the M5 for the matching mode.
+   **Live: done 2026-10-31** — endpoint `we_1UWU1pKOiB5HDXLdhsCpnggq`, enabled,
+   the six events above. `api_version` is `null`, so payloads follow the
+   account default at delivery time; confirm it is `2026-10-28.endive` in
+   Dashboard → Developers → API version, otherwise recreate the endpoint
+   pinned (update cannot set `api_version`). Stripe's API masks `secret` in
+   MCP output, so reveal it once in Dashboard → Developers → Webhooks →
+   `we_1UWU1pKOiB5HDXLdhsCpnggq` → Signing secret → Reveal. Test mode still
+   needs its own endpoint (`stripe listen` or the Dashboard test-mode tab).
 5. **Cloudflare.** Add a WAF skip rule for `POST /api/stripe/webhook` (Bot
    Fight Mode and challenges must not run on it). Stripe cannot solve a
    challenge, and a challenged webhook looks like an outage to Stripe.
@@ -200,27 +219,55 @@ missing.
 
 1. Use the Stripe docs (the `stripe-mcp` skill's documentation search, or
    docs.stripe.com) to confirm, for the account's current API version:
-   - the `ui_mode` value for Embedded Checkout (expected `embedded`);
-   - that `redirect_on_completion=never` is valid with it;
-   - that a `custom_unit_amount` price works in **embedded** Checkout;
+   - the `ui_mode` value for Embedded Checkout (**verified 2026-10-31:
+     `embedded_page` on API `2026-10-28.endive`; the old `embedded` value is
+     gone**);
+   - that `redirect_on_completion=never` is valid with it (enum
+     `always|if_required|never`, default `always` for `embedded_page`);
+   - that `return_url` is **forbidden** (not required) with
+     `redirect_on_completion=never` — verified live: passing it is a 400;
+   - that a `custom_unit_amount` price works in embedded Checkout
+     (verified: session reports `amount_total` = the 350 preset, and the
+     payer can change it inside the iframe);
+   - which payment methods the session offers — **verified: dynamic, `card`
+     + `link`; `payment_method_types` is rejected on this API version,
+     `allowed_payment_method_types` conflicts with Managed Payments, and
+     `automatic_payment_methods` is unknown**. Link is a non-redirect
+     wallet, so `redirect_on_completion=never` is satisfied without pinning
+     methods;
+   - Managed Payments: **on by default for the account, but the product tax
+     code `txcd_20030000` is ineligible**, so every session must send
+     `managed_payments[enabled]=false` (Pilgrim stays merchant of record);
    - the Stripe.js URL to load and the init call (expected
      `stripe.initEmbeddedCheckout({ fetchClientSecret, onComplete })`, but
      newer versions may differ);
    - the `Stripe-Signature` header format and signing scheme.
-2. With a **test-mode** key only, run one `curl` that creates a session:
+2. With the account key (live mode is what this deployment uses; the probe
+   creates a session but charges nobody), run one `curl` that creates a
+   session:
 
    ```
    curl https://api.stripe.com/v1/checkout/sessions \
      -u "$STRIPE_SECRET_KEY:" \
-     -H "Stripe-Version: <account version>" \
-     -d ui_mode=embedded -d mode=payment \
-     -d "line_items[0][price]=<test price id>" -d "line_items[0][quantity]=1" \
+     -H "Stripe-Version: 2026-10-28.endive" \
+     -H "Idempotency-Key: pilgrim-checkout-probe-$(date +%s)" \
+     -d ui_mode=embedded_page -d mode=payment \
+     -d "line_items[0][price]=price_1UWQHdKOiB5HDXLd4qNMoosI" \
+     -d "line_items[0][quantity]=1" \
+     -d "managed_payments[enabled]=false" \
      -d redirect_on_completion=never \
-     -d client_reference_id=probe -d "metadata[request_id]=0"
+     -d client_reference_id=probe -d "metadata[request_id]=0" \
+     -d "expires_at=$(($(date +%s)+1800))"
    ```
 
+   **No `return_url`** (400 with `redirect_on_completion=never`), **no
+   `payment_method_types`** (removed on this API version). Verified output
+   and every parameter trap are recorded in `docs/backends.md` §8.
+
    and one `GET /v1/checkout/sessions/{id}` to read it back.
-3. Add a **Stripe** section to `docs/backends.md` with: API version pinned,
+3. Add a **Stripe** section to `docs/backends.md` with: API version pinned
+   (`2026-10-28.endive`; the live price and account were verified
+   2026-10-31 — see §0.2), 
    the request above, the response fields we use (`id`, `client_secret`,
    `status`, `payment_status`, `amount_total`, `currency`, `livemode`,
    `payment_intent`, `client_reference_id`, `metadata`, `expires_at`), one
@@ -229,7 +276,10 @@ missing.
    `client_secret` (keep the first 8 characters).
 
 **Stop and ask** if: embedded mode rejects the custom-amount price; the
-`ui_mode` value differs; or the key cannot create sessions.
+`ui_mode` value differs from `embedded_page`; or the key cannot create
+sessions. (Already confirmed 2026-10-31: `embedded_page`, and the live price
+`price_1UWQHdKOiB5HDXLd4qNMoosI` has `custom_unit_amount` 300/350/6769 USD,
+`tax_behavior=exclusive`, product `prod_VXVIBdZhOh1eD8`.)
 
 **Checks:** `make lint`, `make test` (no code changed yet; must stay green).
 
@@ -246,7 +296,7 @@ payments **off**, so every existing test and deployment behaves as before.
 payments:
   enabled: false                 # master switch; also off when any env key is missing
   api_base: https://api.stripe.com
-  api_version: "<from Step 1>"   # sent as Stripe-Version on every call
+  api_version: "2026-10-28.endive"   # Stripe-Version on every call (Step 1)
   price_id_live: price_1UWQHdKOiB5HDXLd4qNMoosI
   price_id_test: "<from Step 0.3>"
   currency: usd
@@ -295,9 +345,11 @@ class StripeClient:
   explicit timeout, bounded retries on transport errors and 5xx only
   (never on 4xx).
 - `create_checkout_session` sends exactly:
-  `ui_mode` (Step 1 value), `mode=payment`,
+  `ui_mode=embedded_page`, `mode=payment`,
   `line_items[0][price]=<mode price>`, `line_items[0][quantity]=1`,
-  `redirect_on_completion=never`, `client_reference_id=<token>`,
+  `managed_payments[enabled]=false`,
+  `redirect_on_completion=never`,
+  `client_reference_id=<token>`,
   `metadata[request_id]`, `metadata[token]`,
   `payment_intent_data[metadata][request_id]`,
   `payment_intent_data[description]=Pilgrim Dot Farm priority song request`,
@@ -411,6 +463,7 @@ Add to `requests` if missing:
 | `payment_intent_id` | `TEXT` | `pi_…` (for refunds in the Dashboard) |
 | `livemode` | `INTEGER` | 0/1 from Stripe |
 | `reconciled_at` | `REAL` | last reconcile attempt (rate-limits Stripe retrieves) |
+| `aired_at` | `TEXT` | ISO time the request actually aired; drives the "aired in …" wait time on the board (set by `mark_request_aired`, `mark_serviced`) |
 
 Indexes: `UNIQUE` on `public_token` and on `checkout_session_id` (partial:
 `WHERE ... IS NOT NULL`), plus `idx_requests_queue(status, priority)`.
@@ -485,10 +538,18 @@ Stripe IDs and amounts, so the public board must **project fields
 explicitly**:
 
 - queue item: `{text, status, paid}`; recent item:
-  `{text, song_title, song_artist, paid}`;
+  `{text, song_title, song_artist, paid, wait_s}`;
+- `wait_s` = whole seconds from `created_at` to `aired_at` (integer, `null`
+  when either timestamp is missing or unparsable). Computed in Python from
+  `datetime.fromisoformat`, never rendered by the server;
 - `text` for a paid row: first line only, whitespace collapsed, cut to
   `requests.max_length` (160) with `…` added if cut;
 - `paid` is a bool. No amounts, tokens, session IDs or reasons.
+
+Display limits come from config: `requests.queue_cap` rises **10 → 20**
+(`config.yaml` + the `Requests` model default), and `request_board`'s recent
+query goes **`LIMIT 3` → `LIMIT 5`**. Both queues remain FIFO: priority by
+`paid_at`, free by `created_at`, exactly as §3.2.
 
 `POST /api/requests` responses use the same projection for `queue`/`recent`.
 Its `request` field stays as it is today for free requests (it has no
@@ -506,6 +567,10 @@ payment data).
   True; on `queued`/`aired`/`rejected` → False.
 - `record_stripe_event` duplicate → False.
 - Board rows contain exactly the projected keys (assert the key set).
+- `request_board(20)` returns at most 20 queue rows and at most 5 recent
+  rows; a recent row carries an integer `wait_s` (e.g. 150) and `null` when
+  `aired_at` is missing; `mark_request_aired` sets `aired_at`; the legacy
+  `mark_serviced` alias does too.
 
 ### 3.6 Docs
 
@@ -794,19 +859,33 @@ it).
 .pay-btn {
   width: 100%; height: 44px; font-family: inherit; font-weight: bold;
   letter-spacing: 2px; cursor: pointer; border: none; border-radius: 6px;
-  color: #0a0118; background: #A6FF00;
+  color: #0a0118; background-color: #A6FF00;
+  background-image: linear-gradient(
+    90deg,
+    #a6ff00 0%,
+    #19f5ff 50%,
+    #a6ff00 100%
+  );
 }
 .pay-btn:hover, .pay-btn:focus-visible { filter: brightness(1.1); outline: 2px solid var(--cyan); }
 .pay-btn:disabled { opacity: .5; cursor: default; }
 .pay-panel { display: flex; flex-direction: column; gap: 8px; }
 .pay-panel textarea { /* same look as .req-form input */ resize: vertical; min-height: 120px; }
 .pay-checkout:empty { display: none; }
-.req-paid-badge { color: #0a0118; background: #A6FF00; border-radius: 4px; padding: 0 5px; font-weight: bold; }
+.req-paid-icon { height: 1em; width: auto; vertical-align: -0.12em; margin-right: 2px; }
+/* 1em tall ≈ 14 px wide at the 12 px queue font — an emoji-sized leading
+   character. The PNG is pre-cropped; no extra box, border or background. */
 ```
 
 Copy the input's existing border/background/focus rules for the textarea.
-Check it at 360 px wide: no horizontal scroll, and the Stripe iframe fits the
-pane.
+Widen the request pane by 10% (440 → 484 px):
+
+```css
+.window.requests { width: min(94vw, 484px); }
+```
+
+Check it at 360 px wide: no horizontal scroll, the 20-row queue and 5-row
+recent list scroll inside `#desktop`, and the Stripe iframe fits the pane.
 
 ### 8.3 Behaviour (`pilgrim/web/pay.js`)
 
@@ -839,9 +918,22 @@ Details:
 - Off air: a `503` with `off_air: true` shows the free line's message, "The
   station is off the air. Requests are closed.", and disables the button
   until a later board fetch succeeds.
-- The board (`requests.js`): when a queue/recent item has `paid: true`, put
-  a `$` badge (`.req-paid-badge`) before its text. Priority rows come
-  first because the server orders them; the client does not re-sort.
+- **RECENTLY PLAYED FOR YOU** (`requests.js`): render up to **5** rows
+  (`.slice(0, 5)`, the server sends 5), text-only. When `wait_s` is a number,
+  append a dim `aired in …` label (`< 60 min` → `42 min`; hours → `3 h 10 m`;
+  `≥ 48 h` → `2 d 4 h`); omit the label when `wait_s` is `null`. Built with
+  `createElement` + `textContent`.
+- The board (`requests.js`): when a queue item has `paid: true`, prepend an
+  `<img class="req-paid-icon" src="img/cornucopia.png" alt="Paid priority
+  request" width="48" height="40">` before its text (built with
+  `createElement`, never `innerHTML`). Priority rows come first because the
+  server orders them; the client does not re-sort. Recent items stay
+  text-only.
+- **CREDITS pane** (`index.html`): rename the `win-title` from
+  `MODEL CREDITS` to `CREDITS` and append one `.credits-list` row:
+  `Cornucopia icon: <a href="https://commons.wikimedia.org/wiki/File:Cornucopia_LQ.svg" …>Cornucopia LQ</a> by OpenClipart, CC0`.
+  `pilgrim/tests/test_server.py:25` asserts the old heading — update it to
+  `CREDITS` and assert the attribution link.
 - If `GET /api/requests` returns `paid_enabled: false` (Step 4.2), disable the
   button and change its label to `PAID REQUE$T (closed)`.
 - **Never** touch the audio engine (`player.js`). Paying must not pause,
@@ -858,21 +950,37 @@ webhook, then calls `onComplete()`.
 
 Tests:
 1. Heading text is exactly `I need about tree fiddy.`; button text is
-   exactly `PAID REQUE$T`; computed background is `rgb(166, 255, 0)`.
+   exactly `PAID REQUE$T`; the button's computed `background-image` is the
+   green→cyan→green `linear-gradient(90deg, rgb(166, 255, 0) 0%,
+   rgb(25, 245, 255) 50%, rgb(166, 255, 0) 100%)` with `background-color`
+   `rgb(166, 255, 0)` as the fallback;
+   `CREDITS` pane title is exactly `CREDITS` and links to
+   `https://commons.wikimedia.org/wiki/File:Cornucopia_LQ.svg`.
 2. Full happy path: type 3 lines → Check it & pay → FAKE PAY → `done`
-   message → board shows the request first with a `$` badge, above an
-   earlier free request.
+   message → board shows the request first with a cornucopia `img`
+   (`alt="Paid priority request"`, rendered height ≈ 1em) above an earlier
+   free request.
 3. Moderation rejection: no checkout mounts; the fake saw zero sessions.
 4. Cancel during `paying` → checkout destroyed, back to `idle`, no row queued.
 5. **Gap test still passes while paying**: start playback, run the happy
    path, and assert the existing no-gap checks (AGENTS hard rule 9, M9).
 6. Reload during `confirming` → resumes and reaches `done`.
+7. Long-board layout: seed 20 queue rows (paid first) and 5 recent rows with
+   `wait_s` values (150, 900, 11_000, 200_000, null); assert 20 and 5 rendered
+   rows, the wait labels, the wider pane (no horizontal scroll at 360 px), and
+   that the cornucopia icon appears only on the paid queue rows.
 
 ### 8.5 Docs
 
-`RADIO.md` §9.1 REQUEST LINE bullet: the heading, button, colour, panel,
-states, and the "UI is PLAY/STOP + indicator only" note now says the
-request pane also hosts the paid flow.
+`RADIO.md` §9.1: the REQUEST LINE bullet gains the heading, button, colour,
+panel, states and the cornucopia marker; **20 queue rows / 5 recent rows /
+"aired in …" wait label / 484 px pane**; the MODEL CREDITS bullet is renamed
+**CREDITS** and gains the asset attribution; the "UI is PLAY/STOP + indicator
+only" note now says the request pane also hosts the paid flow.
+`RADIO.md` §11: board item shapes gain `paid` and `wait_s`, recent limit 5.
+`RADIO.md` §12: `requests.queue_cap: 20`.
+`RADIO.md` §14: `aired_at`, wait-time derivation, display limits.
+`MODELS.md` gains a one-line asset credit under the credits section.
 
 **Checks:** `make lint`, `make test`, `make sim`, `make e2e`.
 
@@ -1017,6 +1125,8 @@ rollback is needed.
 - [ ] No Stripe call or import in scheduler/selector/producer.
 - [ ] Board and status routes leak no amounts, IDs or secrets (tests assert
       key sets).
+- [ ] Priority queue rows carry the cornucopia icon (1 em, leading, alt
+      text); `CREDITS` pane and `MODELS.md` carry the asset attribution.
 - [ ] `make lint`, `make test`, `make sim`, `make e2e`, `make deploy-check`,
       `make split-smoke`, `make e2e-split` pass; `make pay-smoke` output
       attached.
@@ -1030,18 +1140,35 @@ Defaults are in §0.5. The agent builds the default unless told otherwise.
 
 1. **Refund policy / terms text** for the site (Stripe requirement). Who
    writes it, and where does it go (footer link? a line in the paid panel)?
+   **Answered 2026-10-31:** the service promise is *guaranteed to air, no
+   guarantee when* (product description already says timing depends on queue
+   length). Proposed copy for the paid panel: *"Your request will air — we
+   don't promise when. It jumps the free line. If we can't make your song,
+   you get your money back."* Proposed refund line: *"Paid requests are
+   produced and aired ahead of free requests, first-come first-served. We
+   guarantee the song will air, not a time. If we fail to produce it after 5
+   attempts, or the station goes off the air for good, we refund on
+   request."* Placement still needs the operator's call (footer link vs. a
+   line in the paid panel).
 2. **Refunds for failed paid requests**: manual in the Dashboard (default),
    or should the station call the Refunds API itself after the 5th failed
    attempt? Automatic refunds need Refunds: Write on the station key.
+   **Answered 2026-10-31: manual in the Dashboard. No automatic refund.**
 3. **Refunded or disputed before airing**: keep the request in the queue
    (default) or cancel it?
+   **Answered 2026-10-31: keep it queued — we expect the station to air it.**
 4. **Paid prompt freedom**: through the brief LLM (default, safer), or pass
    the listener's lyric lines verbatim to MiniMax?
+   **Answered 2026-10-31: through the brief LLM. The prompt tells the brief
+   LLM explicitly that this request was paid (versus a free one-line wish)
+   and requires stronger adherence to the listener's named details.**
 5. **Free-line phone filter**: the "count all digits" rule also rejects
    harmless free requests such as "a 1970s song at 120 bpm". Switch the free
    line to `"runs"` too? (Default: no; it is a separate change.)
 6. **Showing the paid text on the board**: first line only, cut to 160
    characters (default), or a fixed label such as "Priority request"?
+   **Answered 2026-10-31: first line, cut to 160, with the cornucopia icon
+   as the leading character (§0.4).**
 7. **Stripe Tax**: the price is tax exclusive and no automatic tax is
    configured. Leave it off (default) or enable Stripe Tax?
 8. **Receipts**: Stripe can email receipts (Checkout collects the email).
