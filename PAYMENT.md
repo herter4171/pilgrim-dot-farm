@@ -109,14 +109,14 @@ Key facts:
 | Button label | `PAID REQUE$T` |
 | Button colour | `linear-gradient(90deg, #00ff66 0%, #19f5ff 50%, #00ff66 100%)` over a `#00FF66` fallback (`background-color`), dark text `#0a0118` for contrast |
 | Heading above the button | `I NEED ABOUT TREE FIDDY.` (all caps), styled like the `NOW QUEUED` heading (`.req-list-head`) |
-| Disclaimer under the heading | `Help me pay AWS and DTE.` in cyan (`.pay-note`) |
+| Disclaimer under the heading | `Help us pay Amazon Web Services and Detroit Edison.` in cyan (`.pay-note`) |
 | Placement | Inside the existing REQUEST LINE pane, same page, no redirect |
 | Queues | Two FIFO queues: priority (paid) and free. Priority always first. |
 | Paid input | Multi-line prompt for the music (free stays single-line) |
 | Price | Existing Stripe price: preset $3.50, min $3.00, max $67.69, USD |
 | Paid marker on the board | Queue number `#N` first, then the cornucopia icon (`pilgrim/web/img/cornucopia.png`) at one line high, then the request text. No `$` badge, no amount. |
 | Service promise | The song is **guaranteed to air, never guaranteed when**. Paid requests jump the free line and are FIFO by payment time. Refund on request if production fails after 5 attempts, or if the station stops airing for good. |
-| Request line display | Up to **20** queue rows and up to **5** "recently played" rows. Each recent row shows how long the request waited (submit → air). Both queues stay FIFO. Request pane **10% wider**. |
+| Request line display | Up to **20** queue rows and up to **5** "recently played" rows. Each recent row shows how long the request waited (submit → air). Both queues stay FIFO. All panes **10% wider** (440 → 484 px), not just the request line. |
 | Credits pane | Heading `CREDITS` (renamed from `MODEL CREDITS`) plus an attribution row: *Cornucopia icon: Cornucopia LQ by OpenClipart, CC0* |
 
 ### 0.5 Defaults chosen by this plan (operator may override; see §14)
@@ -880,10 +880,10 @@ it).
 ```
 
 Copy the input's existing border/background/focus rules for the textarea.
-Widen the request pane by 10% (440 → 484 px):
+Widen every pane by 10% (440 → 484 px) — the base `.window` rule:
 
 ```css
-.window.requests { width: min(94vw, 484px); }
+.window { width: min(94vw, 484px); }
 ```
 
 Check it at 360 px wide: no horizontal scroll, the 20-row queue and 5-row
@@ -951,7 +951,7 @@ server's test endpoint to `fake_stripe.pay(...)` and deliver the signed
 webhook, then calls `onComplete()`.
 
 Tests:
-1. Heading text is exactly `I NEED ABOUT TREE FIDDY.`; the cyan disclaimer reads `Help me pay AWS and DTE.`; button text is
+1. Heading text is exactly `I NEED ABOUT TREE FIDDY.`; the cyan disclaimer reads `Help us pay Amazon Web Services and Detroit Edison.`; button text is
    exactly `PAID REQUE$T`; the button's computed `background-image` is the
    green→cyan→green `linear-gradient(90deg, rgb(0, 255, 102) 0%,
    rgb(25, 245, 255) 50%, rgb(0, 255, 102) 100%)` with `background-color`

@@ -113,7 +113,7 @@ body {
 .pay-checkout iframe { width: 100%; border: 0; }
 
 .window {
-  width: min(94vw, 440px);
+  width: min(94vw, 484px);
   /* Keep each pane at its natural height: #desktop scrolls instead of
      squishing panels to fit the tab height (§9.1). */
   flex: 0 0 auto;
@@ -190,7 +190,7 @@ body {
 }
 
 /* Model credits pane (COSMETIC_PATCHING §5). */
-.window.credits { width: min(94vw, 440px); }
+.window.credits { width: min(94vw, 484px); }
 .win-body.credits { align-items: stretch; text-align: left; gap: 12px; }
 .credits-list { list-style: none; margin: 0; padding: 0; display: flex;
   flex-direction: column; gap: 8px; }
@@ -203,7 +203,7 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
 .cred-role { color: var(--text); overflow-wrap: anywhere; }
 
 /* Hit counter pane (COSMETIC_PATCHING §6). */
-.window.hit { width: min(94vw, 440px); }
+.window.hit { width: min(94vw, 484px); }
 .win-body.hit { gap: 8px; }
 .visitors, .listeners { font-size: 14px; letter-spacing: 2px; color: var(--ok);
   text-align: center; min-height: 1.2em; }
@@ -212,7 +212,7 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
 .hit-link:hover { color: var(--cyan); }
 
 /* SoundCloud pane (COSMETIC_PATCHING §7). */
-.window.soundcloud { width: min(94vw, 440px); }
+.window.soundcloud { width: min(94vw, 484px); }
 .win-body.soundcloud { align-items: stretch; text-align: left; gap: 12px; }
 .sc-list { list-style: none; margin: 0; padding: 0; display: flex;
   flex-direction: column; gap: 8px; }
@@ -223,7 +223,7 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
 /* Footer copyright (COSMETIC_PATCHING): same centered column as the panes,
    plain cyan type, no glow so it reads as a footer rather than a label. */
 #footer { position: relative; z-index: 5; flex: none;
-  width: min(94vw, 440px); margin: 8px auto 0;
+  width: min(94vw, 484px); margin: 8px auto 0;
   padding: 10px 0 14px; text-align: center;
   border-top: 1px solid var(--violet); }
 .copyright { color: var(--cyan); font-size: 12px; font-weight: bold;
