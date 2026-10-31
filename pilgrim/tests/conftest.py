@@ -79,3 +79,62 @@ def seed_aged_songs(cfg, store, n, epoch, age_h_start, age_h_end=0.0, fresh=Fals
             duration_s=120.0, genre=genres[i % len(genres)],
             fresh=fresh, evergreen=True, created_at=created))
     return ids
+
+
+# A valid MiniMax Music 3 structured caption (prompting guide §3): three
+# headings in order, Genre / Subgenre + tempo, explicit vocal, arrangement
+# timeline. 427 words, inside the 250-450 target. Shared by brief-validation
+# tests so every fake LLM returns a brief the pipeline would accept.
+VALID_CAPTION = """\
+Global Metadata
+Basic Attributes: bpm is 118. key is C, and scale is minor. Jazz Pop / Cabaret Swing.
+Global Emotional Progression: The piece opens with a mysterious, slightly
+melancholy night-shift atmosphere and holds a wry, conspiratorial tone through
+the verses. The pre-chorus tightens into mock-serious tension, the chorus
+releases into theatrical indignation and a swaggering brass celebration, and the
+bridge drops to a lone piano confession before the final chorus resolves with a
+knowing wink.
+Application Scenarios & Imagery: A neon arcade at closing time, a small-town
+sheriff's office lit by one flickering fluorescent tube, and a slow drive past a
+county fairground after the lights go out.
+Sonics & Production Profile: A warm, wide live-room soundstage with the rhythm
+section centered and the horn section spread across the stereo field. The
+frequency balance favors a rich mid-range for the brass and piano, with a round
+upright bass anchoring the low end. Dynamics stay natural and breathable, with
+only gentle bus compression so the swing breathes rather than pumps.
+
+Vocal Details
+Vocal Gender & Timbre: Singer A (Male). A wry, slightly raspy baritone with a
+conversational mid-range and a bright, nasal edge when he pushes.
+Vocal Style: Spoken-sung and behind the beat in the verses, leaning into the
+punchlines; a belted, theatrical delivery in the choruses with clipped
+consonants; a soft, almost whispered confession in the bridge.
+Harmony/Backing Vocals: Tight three-part backing harmonies in the choruses, plus
+call-and-response shouts from the horn players on the post-chorus.
+Vocal FX: A short plate reverb for club intimacy, a slap delay on the punchline
+lines, and no pitch correction, keeping the performance human and a little rough.
+
+Arrangement
+Instrument Lifecycle (Primary/Secondary): Primary: A walking upright bass
+carries the harmony from the first bar to the last, locking with the ride cymbal
+to define the swing. Secondary: Piano comps with rhythmic stabs in the verses;
+the muted trumpet enters on the pre-chorus with a sly counter-line; the full
+brass section lands on the first chorus and returns bigger each time; brushes
+give way to sticks in the final chorus.
+Groove & Foundation Progression: A classic swing feel at 118 bpm, ride cymbal
+pattern throughout, brushes and light kick in the verses, a harder backbeat and
+walking bass pushes in the choruses, and the bridge strips to piano and bass
+before the last chorus rebuilds.
+Embellishments, Textures & Spatial FX: Brass swells and cymbal chokes mark the
+section changes, a piano glissando leads into the final chorus, and the outro
+lets the bass walk out alone under a long reverb tail."""
+
+
+def valid_brief(genre="jazz-swing-big-band", **over):
+    """A brief the pipeline accepts; override any field for negative tests."""
+    brief = {"title": "The Cheese Got Cuffed",
+             "artist": "Sergeant Biscuit & the County Jive Department",
+             "genre": genre, "style_prompt": VALID_CAPTION,
+             "lyrics": "[verse]\nMoon over the co-op\n[chorus]\nOh the cheese got cuffed"}
+    brief.update(over)
+    return brief

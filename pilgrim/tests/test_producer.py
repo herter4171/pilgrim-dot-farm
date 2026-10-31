@@ -3,7 +3,7 @@ low-water target and NOT over-produced merely because items have aired. Fakes
 only — no real backends."""
 from __future__ import annotations
 
-from conftest import make_item
+from conftest import make_item, valid_brief
 from pilgrim.config import RNG, SimClock
 from pilgrim.producer import Producer
 
@@ -173,8 +173,8 @@ class FakeSong:
     async def brief(self, genres, request_text=None, short=False):
         self.calls.append(("brief", request_text))
         self.short = short
-        return {"title": "Mittens the Night", "artist": "The Barn Cats",
-                "genre": "polka", "style_prompt": "a jaunty polka", "lyrics": "[verse] meow"}
+        return valid_brief("country-americana", title="Mittens the Night",
+                           artist="The Barn Cats", lyrics="[verse]\nmeow")
 
     async def produce_song(self, brief):
         if self.fail:

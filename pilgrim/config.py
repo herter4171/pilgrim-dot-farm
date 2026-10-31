@@ -166,6 +166,8 @@ class Inventory(BaseModel):
 
 class Songs(BaseModel):
     # max_duration_s is sent to mlx-serve as duration_seconds (the model's ceiling).
+    # Keys are style-family ids from pilgrim/genres.py (the MiniMax Music 3
+    # prompting guide §5 vocabulary); values are selection weights.
     genres: dict[str, float] = Field(default_factory=dict)
     min_duration_s: float = 20.0  # sanity floor (OVERHAUL 3.2)
     max_duration_s: float = 360.0  # sent as duration_seconds; also the song QC ceiling
@@ -177,6 +179,16 @@ class Songs(BaseModel):
     # usable (non-retired) songs, stock generation pauses entirely and only
     # listener requests produce. 0 disables the cap (§6.1)
     stock_max_library: int = 100
+
+    @model_validator(mode="after")
+    def _known_families(self) -> Songs:
+        from pilgrim.genres import FAMILIES
+        unknown = sorted(set(self.genres) - set(FAMILIES))
+        if unknown:
+            raise ValueError(
+                f"songs.genres has unknown style families {unknown}; "
+                f"use ids from pilgrim/genres.py")
+        return self
 
 
 class News(BaseModel):

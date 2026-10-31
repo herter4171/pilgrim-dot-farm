@@ -57,19 +57,20 @@ class Station:
         self.media_dir = ROOT / cfg.library.dir
         self.db = Store(ROOT / cfg.library.db)
         self.db.reset_producing_to_queued()  # crash mid-generation mustn't strand (4.4)
+        self.rng = RNG(cfg.station.rng_seed)
         self.llm = LLM(cfg, api_key)
         self.kokoro = KokoroClient(cfg)
         self.moderator = Moderation(cfg, self.llm, prompts=_load_prompts(cfg))
         self.voice = VoicePipeline(cfg, self.llm, self.kokoro, self.db, self.media_dir,
                                    prompts=_load_prompts(cfg))
-        self.songs = SongPipeline(cfg, self.llm, self.media_dir, prompts=_load_prompts(cfg))
+        self.songs = SongPipeline(cfg, self.llm, self.media_dir,
+                                  prompts=_load_prompts(cfg), rng=self.rng)
         self.news = NewsPipeline(cfg, self.llm, api_key=api_key,
                                 prompts=_load_prompts(cfg))
         self.sfx_client = SfxClient(cfg)
         self.sfx = SfxPipeline(cfg, self.sfx_client, self.media_dir)
         self.clock = Clock()
         self._listeners: dict[str, float] = {}  # player_id -> last heartbeat (clock.now)
-        self.rng = RNG(cfg.station.rng_seed)
         self.selector = RandomSelector(self.rng, cfg)
         self.epoch = uuid.uuid4().hex[:12]  # changes on restart (TUI.md §5)
         self.scheduler = Scheduler(cfg, self.db, self.selector, self.clock, self.rng,

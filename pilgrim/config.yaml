@@ -79,14 +79,27 @@ songs:
   stock_gap_s: 600      # wait between stock song generations; listener requests skip it (§6.1)
   stock_max_library: 100  # pause stock generation once the library has this many songs; requests still produce
   genres:
-    synthwave: 1
-    bluegrass: 1
-    doom metal: 1
-    bossa nova: 1
-    polka: 1
-    yacht rock: 1
-    dungeon synth: 1
-    chiptune: 1
+    # MiniMax Music 3 style families (prompting guide §5). Ids must exist in
+    # pilgrim/genres.py; values are selection weights. Genre is family-level:
+    # the caption names the specific style/subgenre inside the family.
+    country-americana: 3
+    jazz-swing-big-band: 3
+    contemporary-folk-acoustic: 2
+    roots-traditional-global: 2
+    soul-blues-gospel: 2
+    dance-pop-disco-funk: 2
+    general-pop-ballad: 2
+    pop-alternative-rock: 2
+    traditional-vocal-stage: 2
+    electronic-synth-ambient-pop: 1
+    hip-hop-rap: 1
+    modern-rnb-neo-soul: 1
+    club-edm-house-trance: 1
+    metal-heavy-rock: 1
+    cinematic-pop-ballad: 1
+    cinematic-orchestral-epic: 1
+    east-asian-modern: 1
+    east-asian-ballad-heritage: 1
 
 news:
   enabled: true

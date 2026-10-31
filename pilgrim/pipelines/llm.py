@@ -48,8 +48,12 @@ class LLM:
     def __init__(self, cfg: Config, api_key: str, client: httpx.AsyncClient | None = None) -> None:
         self.cfg = cfg
         self.api_key = api_key
+        # A song brief is a 250-450-word structured caption plus a lyric sheet
+        # from a reasoning model: 120 s is not enough headroom (§6.2). Voice and
+        # news calls are fast; a longer read timeout only matters when the
+        # backend stalls.
         self._client = client or httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0, connect=10.0))
+            timeout=httpx.Timeout(300.0, connect=10.0))
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -96,6 +100,14 @@ class LLM:
 
     async def _complete(self, model: str, system: str, user: str,
                         max_tokens: int) -> str:
+        """One completion, read as an SSE stream.
+
+        Streaming is deliberate: qwen38 is a reasoning model, and a full
+        structured song caption (250-450 words) plus a lyric sheet can run past
+        a non-streaming read timeout. With a stream the timeout measures
+        inactivity between chunks, not total generation time (docs/backends.md
+        §1). Reasoning deltas are ignored; only `delta.content` is accumulated.
+        """
         url = self.cfg.hosts.litellm.rstrip("/") + "/chat/completions"
         payload = {
             "model": model,
@@ -105,29 +117,60 @@ class LLM:
             ],
             "max_tokens": max_tokens,
             "temperature": 0.8,
+            "stream": True,
         }
         if not self.api_key:
             raise LLMError("no LiteLLM token (set LITELLM_TOKEN or add it to .env)")
         t0 = time.monotonic()
-        resp = await self._client.post(
-            url, headers={"Authorization": f"Bearer {self.api_key}"}, json=payload)
-        duration_ms = round((time.monotonic() - t0) * 1000, 1)
-        if resp.status_code != 200:
-            log.warning("llm.call", extra={
-                "model": model, "duration_ms": duration_ms,
-                "status": f"http_{resp.status_code}", "empty": False,
-                "max_tokens": max_tokens, "error": resp.text[:200]})
-            raise LLMError(f"llm http {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()
+        content = ""
+        raw: list[str] = []
+        status = "ok"
         try:
-            msg = data["choices"][0]["message"]
-        except (KeyError, IndexError) as e:
+            async with self._client.stream(
+                    "POST", url, headers={"Authorization": f"Bearer {self.api_key}"},
+                    json=payload) as resp:
+                if resp.status_code != 200:
+                    body = (await resp.aread()).decode(errors="replace")
+                    duration_ms = round((time.monotonic() - t0) * 1000, 1)
+                    log.warning("llm.call", extra={
+                        "model": model, "duration_ms": duration_ms,
+                        "status": f"http_{resp.status_code}", "empty": False,
+                        "max_tokens": max_tokens, "error": body[:200]})
+                    raise LLMError(f"llm http {resp.status_code}: {body[:300]}")
+                async for line in resp.aiter_lines():
+                    raw.append(line)
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        if delta.get("content"):
+                            content += str(delta["content"])
+                if not content.strip():
+                    # proxy ignored `stream`: fall back to a plain JSON body
+                    body = "\n".join(raw).strip()
+                    if body:
+                        try:
+                            obj = json.loads(body)
+                            msg = (obj.get("choices") or [{}])[0].get("message") or {}
+                            content = self._message_text(msg)
+                        except (json.JSONDecodeError, AttributeError):
+                            pass  # no content: chat_json reports the empty budget
+        except httpx.HTTPError as e:
+            duration_ms = round((time.monotonic() - t0) * 1000, 1)
             log.warning("llm.call", extra={
-                "model": model, "duration_ms": duration_ms, "status": "bad_shape",
-                "empty": False, "max_tokens": max_tokens, "error": str(e)})
-            raise LLMError(f"llm bad response shape: {e}") from e
-        content = self._message_text(msg)
+                "model": model, "duration_ms": duration_ms, "status": "transport",
+                "empty": True, "max_tokens": max_tokens,
+                "error": f"{type(e).__name__}: {e}"})
+            raise LLMError(f"llm transport: {type(e).__name__}: {e}") from None
+        duration_ms = round((time.monotonic() - t0) * 1000, 1)
         log.info("llm.call", extra={
-            "model": model, "duration_ms": duration_ms, "status": "ok",
+            "model": model, "duration_ms": duration_ms, "status": status,
             "empty": not bool(content.strip()), "max_tokens": max_tokens})
         return content

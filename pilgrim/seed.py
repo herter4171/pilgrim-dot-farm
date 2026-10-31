@@ -41,13 +41,14 @@ async def seed(cfg: Config, api_key: str) -> int:
     media_dir = ROOT / cfg.library.dir
     db = Store(ROOT / cfg.library.db)
     llm = LLM(cfg, api_key)
+    rng = RNG(cfg.station.rng_seed)
     kokoro = KokoroClient(cfg)
     voice = VoicePipeline(cfg, llm, kokoro, db, media_dir, prompts=_prompts(cfg))
-    songs = SongPipeline(cfg, llm, media_dir, prompts=_prompts(cfg))
+    songs = SongPipeline(cfg, llm, media_dir, prompts=_prompts(cfg), rng=rng)
     news = NewsPipeline(cfg, llm, api_key=api_key, prompts=_prompts(cfg))
     sfx_client = SfxClient(cfg)
     prod = Producer(cfg, db, llm, kokoro, voice, songs, Clock(), prompts=_prompts(cfg),
-                    media_dir=media_dir, api_key=api_key, rng=RNG(cfg.station.rng_seed),
+                    media_dir=media_dir, api_key=api_key, rng=rng,
                     news_pipeline=news, sfx=SfxPipeline(cfg, sfx_client, media_dir))
     made = 0
     # words between songs from the first minute (RADIO §5.2, §8.3)

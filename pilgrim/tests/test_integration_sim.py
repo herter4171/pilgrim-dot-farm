@@ -12,6 +12,8 @@ import asyncio
 import json as _json
 from datetime import datetime  # noqa: F401  (used by the time stub below)
 
+from conftest import valid_brief
+
 
 class FakeVoice:
     def __init__(self) -> None:
@@ -33,9 +35,9 @@ class FakeSong:
 
     async def brief(self, genres, request_text=None, short=False):
         self.calls.append(request_text)
-        return {"title": "Tune for " + (request_text or "the night")[:18],
-                "artist": "The Barn Cats", "genre": "polka",
-                "style_prompt": "a jaunty polka", "lyrics": "[verse] yip"}
+        return valid_brief("country-americana",
+                           title="Tune for " + (request_text or "the night")[:18],
+                           artist="The Barn Cats", lyrics="[verse]\nyip")
 
     async def produce_song(self, brief):
         return {"type": "song", "media_path": "/tmp/s.flac", "duration_s": 45.0,

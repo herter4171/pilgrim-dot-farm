@@ -63,6 +63,13 @@ Implications for the pipelines (AGENTS §5, PLAN §6):
   was empty (`finish_reason: length`) — all budget went to reasoning.
 - Set `max_tokens` generously (≥512 for JSON briefs) so reasoning + final
   JSON fit. Parse only `choices[0].message.content`, never `reasoning_content`.
+- A full structured song brief (250–450-word caption + lyrics) needs
+  `max_tokens: 16384`: at 4096 the reasoning trace consumes the whole budget and
+  `content` comes back empty (verified 2026-10-31; ~125 s wall with streaming).
+- Calls are read as an **SSE stream** (`stream: true`), accumulating
+  `delta.content` and ignoring `delta.reasoning_content`. A non-streaming read
+  timed out at 120 s / 300 s on long briefs; streaming makes the timeout
+  measure inactivity between chunks, not total generation time.
 - qwen38 `content` returned exact JSON when budgeted (`{"ok":true,"word":"radio"}`).
 - Validate JSON strictly and discard on failure (as planned — still required).
 
@@ -115,7 +122,41 @@ are **silently ignored** (both returned 60 s). The producer sends
   Longer lyric-conditioned requests may also not honor duration. Must measure
   with real prompts; do not assume linear scaling (AGENTS/PLAN warning stands).
 
+### Prompt budget (probed 2026-10-30)
+
+`GET /v1/models` for `MiniMax-Music3-MLX-Serve-8bit` reports
+`context_length: 4096`, `max_model_len: 4096`, `model_max_tokens: 4096`. The
+model card's 5,000-token prompt limit applies to the reference SGLang build;
+our MLX deployment is tighter. A 250–450-word structured caption (~350–650
+tokens) plus ~40 lines of lyrics (~400 tokens) fits comfortably; the 631-word
+reference templates plus a long lyric sheet are near the edge.
+
+### Prompt adherence probe (2026-10-31, 10 s clips)
+
+Probed because a listener request for reggae produced a track that sounded
+country while its stored caption correctly read `Reggae / Roots Reggae`:
+
+- **Deterministic under seed.** The same `prompt` + `lyrics` + `seed` +
+  `duration_seconds` returned byte-identical WAVs (same SHA-1), so a stored
+  `seed` in `items.meta` really does replay a song.
+- **`prompt` is not ignored when lyrics are present.** Same lyrics and seed,
+  a death-metal caption vs the reggae caption produced different audio, so the
+  caption reaches the model and conditions it.
+- **No hard truncation at ~70 words.** Truncating a 404-word caption to its
+  first 70 words changed the output, so the tail (Arrangement) is read.
+- **The caption is not the only input that decides the feel.** Reusing one
+  caption with different lyrics changed the output as much as changing the
+  caption did, consistent with the model being lyric-conditioned: country-coded
+  lyric vocabulary pulls the track toward country regardless of caption.
+  Hence the style lock in `pilgrim/pipelines/songs.py::_validate_brief`
+  (RADIO.md §6.2) rejects conflicting signature instruments in lyrics and
+  captions. Metadata alone cannot prove a song's audible style; listening is
+  still required.
+
 ### Notes for producer:
+- `prompt` carries the full **structured caption** (Global Metadata / Vocal
+  Details / Arrangement), not a one-line style description. See `pilgrim/genres.py`
+  for the 18 style families and `pilgrim/prompts/song_brief.md` for the contract.
 - This is compute-expensive. Only smoke-test ≤10 s audio (AGENTS §1.6).
 - Record wall-clock generation time per request for the rate metric.
 - Unknown: whether request is truly synchronous-blocking for long songs or

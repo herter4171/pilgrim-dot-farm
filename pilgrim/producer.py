@@ -14,6 +14,7 @@ from pathlib import Path
 
 import httpx
 
+from pilgrim import genres
 from pilgrim.config import RNG, Clock, Config
 from pilgrim.logging_setup import err_text
 from pilgrim.pipelines.clocktime import current_local_time, spoken_time
@@ -187,7 +188,7 @@ class Producer:
         context_parts: list[str] = []
         if recent:
             context_parts.append("Songs that played recently: " + "; ".join(
-                f'"{t}" by {a} ({g})' for t, a, g in recent))
+                f'"{t}" by {a} ({genres.display(g)})' for t, a, g in recent))
         try:
             now_dt = await self._clock_time(self.cfg, self.api_key)
             context_parts.append(f"Time of day right now: {spoken_time(now_dt)}")
@@ -583,7 +584,7 @@ class Producer:
         LLM-written tries, then a scripted shout-out rendered directly."""
         title = item.get("title") or "this next one"
         artist = item.get("artist") or ""
-        genre = item.get("genre") or ""
+        genre = genres.display(item.get("genre") or "")
         context = f'Next song: "{title}" by {artist} ({genre}).\n'
         if req is not None:
             context += f"Listener request: {json.dumps(req['text'])}\n"
@@ -630,8 +631,16 @@ class Producer:
             fresh=True, meta=meta)
 
     def _recent_genres(self) -> list[str]:
-        out = []
-        for it in self.store.list_items("song"):
-            if it.get("genre"):
-                out.append(it["genre"])
-        return out[-5:]
+        """Style families of the last N songs in COMMITTED (aired) order, padded
+        with the most recently created songs when the program is short. The
+        scheduler's §5.2 rule is about what listeners just heard, not what the
+        producer just generated."""
+        n = self.cfg.playout.genre_no_repeat
+        heard = [g for _, _, g in self._recent_committed_songs(n) if g]
+        created = [it["genre"] for it in self.store.list_items("song")
+                   if it.get("genre")]
+        out: list[str] = []
+        for g in created[-n:] + heard:
+            if g not in out:
+                out.append(g)
+        return out[-n:]
