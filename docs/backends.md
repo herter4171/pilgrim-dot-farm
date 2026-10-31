@@ -266,6 +266,105 @@ internet egress OK, window visible on the VNC display. Systemd unit
 
 ---
 
+## 8. Stripe — Checkout Sessions + webhooks (verified 2026-10-31, LIVE)
+
+Account `acct_1UWPQTKOiB5HDXLd` (Pilgrim Dot Farm LLC, US, USD, charges +
+payouts enabled, MCC 5815, statement descriptor `PILGRIM DOT FARM`).
+API version pinned by this project: **`2026-10-28.endive`** (current Stripe
+release train at the time of writing).
+
+Product `prod_VXVIBdZhOh1eD8` "Priority Song Request", price
+`price_1UWQHdKOiB5HDXLd4qNMoosI`: `custom_unit_amount` min 300 / preset 350 /
+max 6769, `usd`, `one_time`, `tax_behavior=exclusive`, `tax_code=txcd_20030000`,
+default price of the product. Product description (the only "policy" text
+Stripe holds) reads: *"Priority song requests are queued ahead of free
+requests and include expanded, multiline input for detailed musical
+direction. Requests are processed first-come, first-served within each queue.
+Timing of playback depends on queue length. Paying above the minimum does not
+increase priority."*
+
+### Create — observed request (works)
+
+```
+POST https://api.stripe.com/v1/checkout/sessions
+Stripe-Version: 2026-10-28.endive
+Idempotency-Key: pilgrim-checkout-probe-1793422041
+Authorization: Bearer <sk_live_…>
+
+ui_mode=embedded_page
+mode=payment
+line_items[0][price]=price_1UWQHdKOiB5HDXLd4qNMoosI
+line_items[0][quantity]=1
+managed_payments[enabled]=false
+redirect_on_completion=never
+client_reference_id=probe-1793422041
+metadata[request_id]=0
+metadata[token]=probe-1793422041
+payment_intent_data[metadata][request_id]=0
+payment_intent_data[description]=Pilgrim Dot Farm priority song request
+expires_at=<now+1800>
+```
+
+### Observed response fields we use
+
+```
+id                  cs_live_a1RSet3eYtdLsNHqKZPi3RcShSCMUTX2zcXB0jGD0ct2fiTpdyD3Wc1tcp
+ui_mode             embedded_page
+mode                payment
+status              open
+payment_status      unpaid
+amount_total        350            # preset; the payer can change it (300..6769)
+currency            usd
+livemode            true
+expires_at          1793423841     # now+1800 honoured
+payment_method_types ["card","link"]   # dynamic; not settable per session
+client_reference_id probe-1793422041
+metadata            {"request_id":"0","token":"probe-1793422041"}
+return_url          null
+payment_intent      null
+managed_payments    {"enabled": false}
+automatic_tax       {"enabled": false, ...}
+client_secret       cs_live_… (first 8 only; never logged or stored)
+```
+
+`GET /v1/checkout/sessions/{id}` returns the same shape (verified: `open`,
+`unpaid`, `embedded_page`, `livemode: true`). The probe session is left to
+expire on its own; no charge, no customer data.
+
+### Parameter traps found (all verified live, 2026-10-31)
+
+| Attempt | Error | Resolution |
+|---|---|---|
+| `payment_method_types[0]=card` | *"The `payment_method_types` parameter is no longer supported… Payment methods are now managed from your Dashboard settings"* | Do not send it. Methods are dynamic. |
+| `allowed_payment_method_types[0]=card` | *"cannot be used with Managed Payments, which is enabled by default on your account"* | Either drop it or disable Managed Payments for the session. |
+| `automatic_payment_methods[enabled]=true` | *"Received unknown parameter"* | Not accepted on this API version. |
+| default (Managed Payments on) | *"this product tax code is ineligible for Managed Payments"* (`txcd_20030000`) | Send `managed_payments[enabled]=false` (Pilgrim stays merchant of record). |
+| `return_url` + `redirect_on_completion=never` | *"You cannot pass a `return_url` when `ui_mode: embedded_page` and `redirect_on_completion: never`"* | Omit `return_url` entirely for these sessions. |
+
+**Decision needed:** Managed Payments is ON by default for the account. With
+the current product tax code it is ineligible anyway, so every session passes
+`managed_payments[enabled]=false`. If the operator wants Stripe as merchant of
+record (Stripe handles sales tax), the product needs an eligible tax code and
+the per-session flag has to go.
+
+### Webhook endpoint (live)
+
+`we_1UWU1pKOiB5HDXLdhsCpnggq` → `https://pilgrim.farm/api/stripe/webhook`,
+events `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+`checkout.session.async_payment_failed`, `checkout.session.expired`,
+`charge.refunded`, `charge.dispute.created`, `api_version: null` (account
+default), status `enabled`. Signature header: `Stripe-Signature:
+t=<unix>,v1=<hex hmac-sha256 of "<t>.<raw body>">` (possibly several `v1`).
+
+### Stripe.js (to confirm in Step 8 with Playwright)
+
+Expected `https://js.stripe.com/v3/` then
+`stripe.initEmbeddedCheckout({ fetchClientSecret, onComplete })` →
+`checkout.mount("#pay-checkout")`. The probe above proves the server side; the
+client side is verified against the real page in Step 8.
+
+---
+
 ## Open gaps (to verify before depending on these in code)
 
 1. **Song duration control** — `duration_s` ignored on a 5 s instrumental (got
