@@ -437,6 +437,22 @@ Workers:
      the lyrics it is given and takes much of its feel from them, so a reggae
      brief carrying country-coded lyrics comes back sounding country. Rejected
      briefs are repaired once, then abandoned.
+   - **Idiom lock:** under the same exemptions, Americana lyric phrasing
+     (`genres._AMERICANA_IDIOM`: county line, dirt road, pickup truck, tin
+     roof, front porch, holler, y'all, …) is rejected in the caption and
+     lyrics, and the caption must *negate* at least one of the excluded
+     instruments (the explicit exclusion is enforced, not just requested).
+   - **Sound sheets** (`genres.sheet_text`): the pinned family's (or the
+     requested style's, e.g. reggae, bossa nova) groove, core instruments,
+     native scene, exclusion and lyric idiom are sent with the brief prompt.
+   - **Inferred style:** when a request names no style the router knows
+     (misspelling such as "jass", or an indirect description), the brief
+     JSON adds `requested_style` (1–4 plain words, or `""`). A non-empty
+     value is validated like a routed style: it must be named in
+     `Genre / Subgenre`, must match its routed family when it has one, and
+     turns on the style and idiom locks.
+   - The station name (PILGRIM DOT FARM) may appear in any style's title or
+     lyrics; farm humour otherwise lives in the title and artist name.
    - Artist may be drawn from the station bible's recurring fictional artists
      (§7), or invented.
    - Lyrics of arbitrary length. The request sends `duration_seconds` =

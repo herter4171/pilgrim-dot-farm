@@ -7,7 +7,7 @@ from urllib.parse import parse_qs
 
 import httpx
 import pytest
-from pilgrim.config import Payments
+from pilgrim.config import Payments, stripe_env
 from pilgrim.payments import (
     CheckoutSession,
     StripeClient,
@@ -15,6 +15,7 @@ from pilgrim.payments import (
     WebhookError,
     verify_webhook,
 )
+from pilgrim.server import create_app
 from pilgrim.tests.fakes.fake_stripe import sign_event
 from pydantic import ValidationError
 
@@ -296,6 +297,67 @@ def test_mode_and_price_follow_key_prefix():
     assert cfg.mode("pk_live_x") == ""
     assert cfg.price_id("sk_live_x") == "price_live_1"
     assert cfg.price_id("sk_test_x") == "price_test_1"
+
+
+# ------------------------------------------------------- .env key fallback
+def test_stripe_env_prefers_environment(tmp_path, monkeypatch):
+    env = tmp_path / ".env"
+    env.write_text("STRIPE_SECRET_KEY=sk_live_file\n"
+                   "STRIPE_PUBLISHABLE_KEY=pk_live_file\n"
+                   "STRIPE_WEBHOOK_SECRET=whsec_file\n")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_env")
+    got = stripe_env(env_file=env)
+    assert got["STRIPE_SECRET_KEY"] == "sk_live_env"
+    assert got["STRIPE_PUBLISHABLE_KEY"] == "pk_live_file"
+    assert got["STRIPE_WEBHOOK_SECRET"] == "whsec_file"
+
+
+def test_stripe_env_fills_from_dotenv(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text('# comment\nexport STRIPE_SECRET_KEY="sk_test_a=b"\n'
+                   "STRIPE_PUBLISHABLE_KEY=pk_test_x\n"
+                   "STRIPE_WEBHOOK_SECRET=whsec_x\n")
+    got = stripe_env(env={}, env_file=env)
+    assert got == {"STRIPE_SECRET_KEY": "sk_test_a=b",
+                   "STRIPE_PUBLISHABLE_KEY": "pk_test_x",
+                   "STRIPE_WEBHOOK_SECRET": "whsec_x"}
+    assert Payments(enabled=True).active(got) is True
+
+
+def test_stripe_env_partial_dotenv_stays_closed(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("STRIPE_SECRET_KEY=sk_test_x\n")
+    got = stripe_env(env={}, env_file=env)
+    assert Payments(enabled=True).active(got) is False
+
+
+def test_stripe_env_missing_file(tmp_path):
+    assert stripe_env(env={}, env_file=tmp_path / "nope.env") == {}
+
+
+def test_stripe_env_disabled_by_empty_env_file_override(tmp_path, monkeypatch):
+    """PILGRIM_ENV_FILE="" (what conftest sets) keeps the real .env out."""
+    env = tmp_path / ".env"
+    env.write_text("STRIPE_SECRET_KEY=sk_test_x\n")
+    monkeypatch.setenv("PILGRIM_ENV_FILE", "")
+    assert stripe_env(env={}) == {}
+
+
+def test_create_app_activates_payments_from_dotenv(tmp_env, monkeypatch, tmp_path):
+    """Regression: a restart without exported keys must still go live (Step 12)."""
+    cfg, _, _ = tmp_env
+    cfg.payments.enabled = True
+    cfg.payments.price_id_test = "price_test_1"
+    env = tmp_path / ".env"
+    env.write_text("STRIPE_SECRET_KEY=sk_test_dotenv\n"
+                   "STRIPE_PUBLISHABLE_KEY=pk_test_dotenv\n"
+                   "STRIPE_WEBHOOK_SECRET=whsec_dotenv\n")
+    monkeypatch.setenv("PILGRIM_ENV_FILE", str(env))
+    station = create_app(cfg).state.station
+    assert station.payments_active is True
+    assert station.publishable_key == "pk_test_dotenv"
+    assert station.payment_service is not None
+    assert station.payment_service.mode == "test"
 
 
 @pytest.mark.parametrize("kwargs", [

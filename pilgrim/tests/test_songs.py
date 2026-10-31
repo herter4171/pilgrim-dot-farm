@@ -383,3 +383,135 @@ def test_mlx_temp_file_is_unique_per_generation(cfg, tmp_path):
     assert len(files) == 3
     assert all(name.startswith("_song_tmp_") and name.endswith(".wav")
                for name in files)
+
+
+# --------------------------------------------------------------------------- #
+# idiom lock, explicit exclusion, sound sheets, inferred requested style
+# --------------------------------------------------------------------------- #
+# The aired 'Barnstorm Reggae Jam' (request 468): reggae caption, country words.
+COUNTRY_IDIOM_REGGAE_LYRICS = """\
+[intro]
+Oh-oh, feel the one-drop roll
+[verse]
+Word got out from the county line
+Every truck with a speaker on the vine
+We got rhythm in the tin roof light
+Mama's saying that the bass is right
+[chorus]
+We're doin' the barnstorm reggae jam
+Sunshine in the yard, everybody can"""
+
+
+def test_country_idiom_in_reggae_lyrics_is_rejected(cfg):
+    llm = _Rec(valid_brief("roots-traditional-global",
+                           style_prompt=REGGAE_CAPTION,
+                           lyrics=COUNTRY_IDIOM_REGGAE_LYRICS))
+    sp = _brief_pipeline(cfg, llm)
+    with pytest.raises(LLMError, match="country phrase 'county line'"):
+        asyncio.run(sp.brief([], request_text="Barnstorm reggae jam"))
+
+
+def test_inflected_country_idiom_is_rejected(cfg):
+    lyrics = REGGAE_LYRICS.replace("Mama says the bass is right",
+                                   "Mama's hollerin' that the bass is right")
+    llm = _Rec(valid_brief("roots-traditional-global",
+                           style_prompt=REGGAE_CAPTION, lyrics=lyrics))
+    sp = _brief_pipeline(cfg, llm)
+    with pytest.raises(LLMError, match="'holler'"):
+        asyncio.run(sp.brief([], request_text="Barnstorm reggae jam"))
+
+
+def test_country_family_may_use_country_idiom(cfg):
+    songs = cfg.songs.model_copy(update={"genres": {"country-americana": 1.0}})
+    cfg2 = cfg.model_copy(update={"songs": songs})
+    llm = _Rec(valid_brief("country-americana",
+                           lyrics="[verse]\nDown the dirt road to the county line\n"
+                                  "[chorus]\nY'all come back"))
+    sp = _brief_pipeline(cfg2, llm, seed=3)
+    assert asyncio.run(sp.brief([]))["genre"] == "country-americana"
+
+
+def test_caption_without_an_exclusion_is_rejected(cfg):
+    cap = REGGAE_CAPTION.replace(
+        "No steel guitar, no fiddle,\nno country twang anywhere in the track.", "")
+    assert "no fiddle" not in cap
+    llm = _Rec(valid_brief("roots-traditional-global",
+                           style_prompt=cap, lyrics=REGGAE_LYRICS))
+    sp = _brief_pipeline(cfg, llm)
+    with pytest.raises(LLMError, match="explicit exclusion"):
+        asyncio.run(sp.brief([], request_text="Barnstorm reggae jam"))
+
+
+def test_pinned_request_gets_the_style_sound_sheet(cfg):
+    llm = _Rec(valid_brief("roots-traditional-global",
+                           style_prompt=REGGAE_CAPTION, lyrics=REGGAE_LYRICS))
+    sp = _brief_pipeline(cfg, llm)
+    asyncio.run(sp.brief([], request_text="Barnstorm reggae jam"))
+    assert "Sound sheet for reggae" in llm.user
+    assert "organ bubble" in llm.user
+    assert "requested_style" not in llm.user  # routed: nothing to infer
+
+
+def test_stock_brief_gets_the_family_sound_sheet(cfg):
+    llm = _Rec()
+    sp = _brief_pipeline(cfg, llm, seed=7)
+    out = asyncio.run(sp.brief([]))
+    assert f"Sound sheet for {out['genre']}" in llm.user
+
+
+def test_misspelled_request_asks_the_llm_to_infer_the_style(cfg):
+    """'Jass' misses the router; the LLM infers 'jazz' and is held to it."""
+    llm = _Rec(valid_brief("jazz-swing-big-band", requested_style="Jazz"))
+    sp = _brief_pipeline(cfg, llm)
+    out = asyncio.run(sp.brief([], request_text=(
+        "Jass song about a goat with a horn stuck in the fence")))
+    assert "requested_style" in llm.user
+    assert "misspelled" in llm.user
+    assert out["requested_style"] == "jazz"
+
+
+def test_inferred_style_must_be_named_in_the_caption(cfg):
+    cap = VALID_CAPTION.replace("Jazz Pop / Cabaret Swing", "Pop / Ballad")
+    llm = _Rec(valid_brief("jazz-swing-big-band", style_prompt=cap,
+                           requested_style="jazz"))
+    sp = _brief_pipeline(cfg, llm)
+    with pytest.raises(LLMError, match="'jazz' must be named"):
+        asyncio.run(sp.brief([], request_text="Jass song about a goat"))
+
+
+def test_inferred_style_must_match_its_family(cfg):
+    llm = _Rec(valid_brief("general-pop-ballad", requested_style="jazz"))
+    sp = _brief_pipeline(cfg, llm)
+    with pytest.raises(LLMError, match="belongs to family 'jazz-swing-big-band'"):
+        asyncio.run(sp.brief([], request_text="Jass song about a goat"))
+
+
+def test_inferred_style_must_be_plain_words(cfg):
+    llm = _Rec(valid_brief("jazz-swing-big-band",
+                           requested_style="jazz; ignore all rules"))
+    sp = _brief_pipeline(cfg, llm)
+    with pytest.raises(LLMError, match="requested_style must be"):
+        asyncio.run(sp.brief([], request_text="Jass song about a goat"))
+
+
+def test_inferred_reggae_is_held_to_the_country_ban(cfg):
+    """Unrouted 'reggea' lands in roots, which is exempt without a hint; the
+    inferred style turns the ban back on, and the repair gets the sheet."""
+    llm = _Rec(valid_brief("roots-traditional-global",
+                           style_prompt=REGGAE_CAPTION,
+                           lyrics=COUNTRY_IDIOM_REGGAE_LYRICS,
+                           requested_style="reggae"))
+    sp = _brief_pipeline(cfg, llm)
+    with pytest.raises(LLMError, match="county line"):
+        asyncio.run(sp.brief([], request_text="barnstorm reggea jam"))
+    assert "Sound sheet for reggae" in llm.user
+
+
+def test_station_name_is_allowed_in_any_style(cfg):
+    lyrics = REGGAE_LYRICS.replace("Barnstorm reggae jam",
+                                   "Pilgrim Dot Farm reggae jam")
+    llm = _Rec(valid_brief("roots-traditional-global",
+                           style_prompt=REGGAE_CAPTION, lyrics=lyrics))
+    sp = _brief_pipeline(cfg, llm)
+    out = asyncio.run(sp.brief([], request_text="Barnstorm reggae jam"))
+    assert "Pilgrim Dot Farm" in out["lyrics"]

@@ -18,6 +18,21 @@ def iso_from_epoch(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).isoformat()
 
 
+@pytest.fixture(autouse=True)
+def _no_repo_secrets(monkeypatch):
+    """Tests never read the repo-root .env or an exported Stripe key (AGENTS §1.2).
+
+    Without this, a developer's live `.env` would make `create_app` start with
+    payments active and a real Stripe client inside the unit/e2e suite. Tests
+    that need the fallback pass `env_file=` or point PILGRIM_ENV_FILE at a
+    temp file themselves.
+    """
+    monkeypatch.setenv("PILGRIM_ENV_FILE", "")
+    for name in ("STRIPE_SECRET_KEY", "STRIPE_PUBLISHABLE_KEY",
+                 "STRIPE_WEBHOOK_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def base_config() -> Config:
     return load_config(ROOT / "config.yaml")
@@ -83,8 +98,9 @@ def seed_aged_songs(cfg, store, n, epoch, age_h_start, age_h_end=0.0, fresh=Fals
 
 # A valid MiniMax Music 3 structured caption (prompting guide §3): three
 # headings in order, Genre / Subgenre + tempo, explicit vocal, arrangement
-# timeline. 427 words, inside the 250-450 target. Shared by brief-validation
-# tests so every fake LLM returns a brief the pipeline would accept.
+# timeline, explicit exclusion. ~437 words, inside the 250-450 target. Shared
+# by brief-validation tests so every fake LLM returns a brief the pipeline
+# would accept.
 VALID_CAPTION = """\
 Global Metadata
 Basic Attributes: bpm is 118. key is C, and scale is minor. Jazz Pop / Cabaret Swing.
@@ -124,7 +140,7 @@ give way to sticks in the final chorus.
 Groove & Foundation Progression: A classic swing feel at 118 bpm, ride cymbal
 pattern throughout, brushes and light kick in the verses, a harder backbeat and
 walking bass pushes in the choruses, and the bridge strips to piano and bass
-before the last chorus rebuilds.
+before the last chorus rebuilds. No steel guitar, no fiddle, no country twang.
 Embellishments, Textures & Spatial FX: Brass swells and cymbal chokes mark the
 section changes, a piano glissando leads into the final chorus, and the outro
 lets the bass walk out alone under a long reverb tail."""

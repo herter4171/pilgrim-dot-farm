@@ -19,16 +19,15 @@ that family (for example `jazz-swing-big-band` → `Jazz Pop / Cabaret Swing`).
 - Never invent a genre label. `genre` must be one of the family ids given.
 - Name the specific style in the caption's Basic Attributes as
   `<Genre> / <Subgenre>`.
-- **The caption is what the model hears.** Name the style's defining rhythm
-  concretely in `Groove & Foundation Progression` (reggae: kick and snare
-  together on beat 3, guitar skank on the offbeats, organ bubble on the "and"
-  of 2 and 4; country shuffle: boom-chick bass with snare on 2 and 4; trap:
-  rolling hi-hats and 808 glides). A vague groove line lets the model fall
-  back on its house style.
-- State one **explicit exclusion** that blocks the nearest wrong style and let
-  it survive the whole caption (e.g. for reggae: "no steel guitar, no fiddle,
-  no country twang"; for trap: "no live drum kit"; for synth-pop: "no
-  acoustic instruments").
+- **The caption is what the model hears.** When a sound sheet is given below,
+  build the caption from it: its groove goes concretely into `Groove &
+  Foundation Progression`, its core instruments into the Instrument
+  Lifecycle, its native scene into `Application Scenarios & Imagery`. A vague
+  groove line lets the model fall back on its house style, which leans
+  country.
+- State the sheet's **explicit exclusion** in the caption and let it survive
+  the whole caption. Without a sheet, write one exclusion that blocks the
+  nearest wrong style (for trap: "no live drum kit").
 - Modifiers such as emotional, epic, dark, modern, cinematic, cheeky, or
   barnyard are NOT genres. Always name an actual style too.
 - Do not contradict the family anywhere in the caption. An explicit vocal
@@ -72,18 +71,21 @@ Rules for the caption:
   say so explicitly and name the lead instrument.
 - The Arrangement is a timeline, not an equipment list: for every section say
   what enters, exits, changes, or intensifies.
-- Keep the station's tongue-in-cheek rural character in the TITLE, ARTIST and
-  LYRICS, but write it in the chosen style's own idiom. Do not put farm
+- The station's tongue-in-cheek farm humour belongs in the TITLE and ARTIST
+  name. The station's name, PILGRIM DOT FARM, may appear in the title or
+  lyrics of a song in any style; that is a station tradition. Do not put farm
   imagery, AM-radio static, crackle, or novelty sound effects into the caption:
   they pull the model away from the requested style. Vary production texture
   and vocal treatment by genre instead.
 - **The music model sings exactly these words and takes its phrasing from
-  them**, so the lyric vocabulary decides much of how the track feels. Keep the
-  request's subject, but never name another style's signature instruments or
-  genre words. For reggae, hip-hop, R&B, electronic, jazz, cinematic and pop:
-  no fiddle, banjo, pedal steel, steel guitar, dobro, twang, yodel, bluegrass,
-  honky-tonk. A truck, a barn or a porch is fine as a subject; the words that
-  make the band are not.
+  them**, so the lyric vocabulary decides much of how the track feels. Write
+  the lyrics in the chosen style's own idiom (the sheet's lyric idiom): a
+  reggae song talks like reggae, a jazz song like a jazz club, a trap song
+  like trap. Keep the request's subject, but translate it into that idiom,
+  with at most one farm image unless the request is about the farm. Outside
+  the country and folk families, rural Americana phrasing (dirt roads, front
+  porches, the county line, pickup trucks, y'all) and the instruments of
+  another style are rejected.
 - If a listener request names a style, the finished track must be audibly that
   style, not a country song wearing its name. A listener judges by ear.
 - Never quote lyric lines inside the caption.

@@ -51,6 +51,13 @@ def _parse_iso(iso: str | None) -> float | None:
 
 
 class Scheduler:
+    # Cadence of the refill loop below. Coverage is only guaranteed at the
+    # moment of a commit, so between cycles it dips by up to this much: the
+    # `committed_lookahead_s` target is a floor for the scheduler, not an
+    # invariant for an arbitrary instant (§5.3). Exposed so the e2e report can
+    # assert against the real cadence instead of a hard-coded tolerance.
+    REFILL_INTERVAL_S = 2.0
+
     def __init__(self, cfg: Config, store: Store, selector: Selector,
                  clock: Clock, rng: RNG, epoch: str | None = None,
                  on_phrase_aired: Callable[[int], None] | None = None) -> None:
@@ -900,7 +907,7 @@ class Scheduler:
                 self._drain_phrases()
             except Exception as e:
                 log.exception("scheduler cycle failed: %s", e)
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(self.REFILL_INTERVAL_S)
 
 
 _CAT_TO_TYPE = {

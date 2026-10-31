@@ -39,18 +39,29 @@ _NEGATION = re.compile(
     r"[^.;]{0,48}$", re.I)
 
 
-def _mentions(text: str, term: str) -> bool:
-    """True when `term` is named and not negated in the same phrase."""
+def _hits(text: str, term: str, inflect: bool = False):
+    """(negated, match) for every whole-word occurrence of `term`. With
+    `inflect`, simple endings also match ("holler" -> "hollers", "hollerin'")."""
     low = text.lower()
-    for m in re.finditer(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])",
-                         low):
-        if not _NEGATION.search(low[max(0, m.start() - 60):m.start()]):
-            return True
-    return False
+    tail = r"(?:s|es|ed|ing|in')?" if inflect else ""
+    for m in re.finditer(r"(?<![a-z0-9])" + re.escape(term) + tail
+                         + r"(?![a-z0-9])", low):
+        yield bool(_NEGATION.search(low[max(0, m.start() - 60):m.start()])), m
+
+
+def _mentions(text: str, term: str, inflect: bool = False) -> bool:
+    """True when `term` is named and not negated in the same phrase."""
+    return any(not neg for neg, _ in _hits(text, term, inflect))
+
+
+def _negates(text: str, term: str) -> bool:
+    """True when `term` appears inside an exclusion ("no fiddle")."""
+    return any(neg for neg, _ in _hits(text, term))
 
 
 def _validate_brief(obj: dict, expected_family: str | None = None,
-                    style_hint: str | None = None) -> dict:
+                    style_hint: str | None = None,
+                    infer_style: bool = False) -> dict:
     """Validate an LLM brief before the expensive M5 call (RADIO.md §6.2).
 
     Rejects anything that is not a family-level genre plus a full three-heading
@@ -62,6 +73,11 @@ def _validate_brief(obj: dict, expected_family: str | None = None,
     nor the lyrics may name a conflicting style's signature instruments: the
     audio model sings these words and pulls much of its feel from them, which is
     how a reggae brief came back sounding country.
+
+    `infer_style` is set for a listener request the router could not place
+    (misspelled, indirect, or no style at all): the LLM reports the style it
+    understood as `requested_style`, and a non-empty one is then held to the
+    same checks as a routed `style_hint`.
     """
     out = {k: str(obj.get(k, "")).strip()
            for k in ("title", "artist", "genre", "style_prompt", "lyrics")}
@@ -76,6 +92,15 @@ def _validate_brief(obj: dict, expected_family: str | None = None,
         raise ValueError(
             f"genre {out['genre']!r} does not match the required family "
             f"{expected_family!r}")
+    if infer_style and not style_hint:
+        style_hint = genres.clean_style(str(obj.get("requested_style") or ""))
+        if style_hint:
+            fam = genres.route(style_hint)
+            if fam and out["genre"] != fam:
+                raise ValueError(
+                    f"requested_style {style_hint!r} belongs to family "
+                    f"{fam!r}, but genre is {out['genre']!r}")
+            out["requested_style"] = style_hint
 
     cap = out["style_prompt"]
     pos = [cap.find(h) for h in _HEADINGS]
@@ -109,13 +134,24 @@ def _validate_brief(obj: dict, expected_family: str | None = None,
             "or declare the track instrumental")
 
     lyrics = out["lyrics"]
-    for term in genres.style_excludes(out["genre"], style_hint):
+    excluded = genres.style_excludes(out["genre"], style_hint)
+    this = out["genre"] + (f" ({style_hint})" if style_hint else "")
+    for term in excluded:
         for where, text in (("caption", cap), ("lyrics", lyrics)):
             if _mentions(text, term):
                 raise ValueError(
                     f"the {where} names {term!r}, which belongs to a different "
-                    f"style; this brief is {out['genre']}"
-                    + (f" ({style_hint})" if style_hint else ""))
+                    f"style; this brief is {this}")
+    for term in genres.idiom_excludes(out["genre"], style_hint):
+        for where, text in (("caption", cap), ("lyrics", lyrics)):
+            if _mentions(text, term, inflect=True):
+                raise ValueError(
+                    f"country phrase {term!r} in the {where}; this brief is "
+                    f"{this}, so write the words in that style's own idiom")
+    if excluded and not any(_negates(cap, t) for t in excluded):
+        raise ValueError(
+            "the caption must state an explicit exclusion of the nearest wrong "
+            "style, e.g. 'no fiddle, no pedal steel, no country twang'")
 
     if lyrics:
         for line in lyrics.splitlines():
@@ -184,6 +220,7 @@ class SongPipeline:
             user += (f"\nRequired family: {pinned} ({', '.join(fam.cues)}).\n"
                      f"Return genre={pinned} and name a specific style from that "
                      f"family as the caption's Genre / Subgenre.\n")
+            user += "\n" + genres.sheet_text(pinned, style_hint)
             if style_hint:
                 user += (f"The listener asked for {style_hint!r}: the caption's "
                          f"Genre / Subgenre MUST name it (e.g. 'Reggae / Roots "
@@ -191,9 +228,8 @@ class SongPipeline:
                          f"defining rhythm, and the caption must state one "
                          f"explicit exclusion of the nearest wrong style. "
                          f"Neither the caption nor the lyrics may name another "
-                         f"style's signature instruments (no fiddle, banjo, "
-                         f"pedal steel, steel guitar, twang or yodel for this "
-                         f"one). Write the lyrics in that style's idiom: a "
+                         f"style's signature instruments or phrasing. Write the "
+                         f"lyrics in that style's idiom: a "
                          f"listener judges the song by ear, so it must be "
                          f"audibly {style_hint}, not a country song wearing "
                          f"its name.\n")
@@ -201,7 +237,14 @@ class SongPipeline:
             user += ("\nThe request names a style that may not be in the table: "
                      "choose the ONE family that best covers it (the closest "
                      "family when none covers it exactly) and use the requested "
-                     "style as the caption's subgenre.\n")
+                     "style as the caption's subgenre.\n"
+                     "Listener requests are typed by the public and are often "
+                     "misspelled ('jass', 'reggea', 'hiphop') or describe a "
+                     "style indirectly ('like Bob Marley', 'elevator music'). "
+                     "Infer the style they meant and return it, correctly "
+                     "spelled in plain words, as requested_style; the caption's "
+                     "Genre / Subgenre must then name it. Return an empty "
+                     "requested_style if the request names no style.\n")
 
         if request_text:
             # the listener's style wins; the station list is only a fallback
@@ -225,9 +268,12 @@ class SongPipeline:
             # request backlog: shorter lyrics -> shorter song -> faster generation
             user += ("Keep it SHORT: one verse and one chorus (about 8-12 lyric "
                      "lines), roughly a 60-90 second song.\n")
+        infer = bool(request_text) and not pinned
+        extra = (', "requested_style": str (the style the listener meant, or '
+                 '"")') if infer else ""
         user += ('Return JSON only: {"title": str, "artist": str, "genre": str '
                  '(one style-family id), "style_prompt": str (the full structured '
-                 'caption), "lyrics": str}')
+                 f'caption), "lyrics": str{extra}}}')
 
         last_error = None
         for attempt in range(2):
@@ -237,7 +283,7 @@ class SongPipeline:
                                            max_tokens=16384)
             try:
                 return _validate_brief(obj, expected_family=pinned,
-                                       style_hint=style_hint)
+                                       style_hint=style_hint, infer_style=infer)
             except ValueError as e:
                 last_error = e
                 log.warning("song.brief_rejected", extra={
@@ -245,6 +291,15 @@ class SongPipeline:
                     "error": str(e)})
                 user += (f"\n\nYour previous answer was rejected: {e}. "
                          f"Return corrected JSON only.")
+                if infer and str(obj.get("genre")) in genres.FAMILIES:
+                    # the inferred style's sound sheet, so the repair has the
+                    # same guidance a routed request gets up front
+                    try:
+                        hint = genres.clean_style(
+                            str(obj.get("requested_style") or ""))
+                    except ValueError:
+                        hint = None
+                    user += "\n" + genres.sheet_text(str(obj["genre"]), hint)
         raise LLMError(f"song brief invalid after retries: {last_error}")
 
     async def generate(self, brief: dict) -> dict:

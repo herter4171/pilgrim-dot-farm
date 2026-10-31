@@ -14,6 +14,11 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 ROOT = Path(__file__).resolve().parent
 
+# Stripe secrets (PAYMENT.md Step 0.8). All three must be present or paid
+# requests stay closed (Payments.active).
+STRIPE_ENV_VARS = ("STRIPE_SECRET_KEY", "STRIPE_PUBLISHABLE_KEY",
+                   "STRIPE_WEBHOOK_SECRET")
+
 
 # --------------------------------------------------------------------------- #
 # Clock + RNG — the injected sources of time/randomness (AGENTS §1.3)
@@ -513,25 +518,63 @@ def load_config(path: Path | None = None) -> Config:
     return Config(**raw)
 
 
-def load_api_key(env_file: Path | None = None) -> str:
-    """LiteLLM bearer token: $LITELLM_TOKEN, else LITELLM_TOKEN= in the repo-root .env.
+def _secret_env_file(env_file: Path | None = None) -> Path | None:
+    """Which .env to fall back to: explicit path, $PILGRIM_ENV_FILE (an empty
+    value disables the fallback, which tests rely on), else the repo-root .env."""
+    if env_file is not None:
+        return env_file
+    override = os.environ.get("PILGRIM_ENV_FILE")
+    if override is not None:
+        return Path(override) if override.strip() else None
+    return ROOT.parent / ".env"
 
-    `make run` injects the variable, but `python -m pilgrim.server` does not, so
-    read .env as a fallback rather than sending an empty `Bearer ` header.
-    """
-    token = os.environ.get("LITELLM_TOKEN", "").strip()
-    if token:
-        return token
-    env_file = env_file or (ROOT.parent / ".env")
+
+def _dotenv_value(name: str, env_file: Path | None = None) -> str:
+    """A NAME= line from the .env file (or none when the file is missing)."""
+    path = _secret_env_file(env_file)
+    if path is None:
+        return ""
     try:
-        lines = env_file.read_text().splitlines()
+        lines = path.read_text().splitlines()
     except OSError:
         return ""
     for line in lines:
-        key, sep, value = line.strip().removeprefix("export ").partition("=")
-        if sep and key.strip() == "LITELLM_TOKEN":
-            return value.strip().strip("'\"")
+        key, sep, val = line.strip().removeprefix("export ").partition("=")
+        if sep and key.strip() == name:
+            return val.strip().strip("'\"")
     return ""
+
+
+def load_secret(name: str, env_file: Path | None = None) -> str:
+    """$NAME from the environment, else a NAME= line in the .env file.
+
+    `make run` injects only some variables, but `python -m pilgrim.server` does
+    not, so read .env as a fallback rather than running half-configured.
+    """
+    return os.environ.get(name, "").strip() or _dotenv_value(name, env_file)
+
+
+def load_api_key(env_file: Path | None = None) -> str:
+    """LiteLLM bearer token: $LITELLM_TOKEN, else LITELLM_TOKEN= in the .env."""
+    return load_secret("LITELLM_TOKEN", env_file)
+
+
+def stripe_env(env: Mapping[str, str] | None = None,
+               env_file: Path | None = None) -> dict[str, str]:
+    """The three Stripe keys, filling gaps from the .env fallback.
+
+    `Payments.active()` and the Stripe clients read the result, so the station
+    starts with payments live whether the keys came from the shell or .env.
+    Keys that are nowhere to be found stay missing: a partially configured
+    Stripe keeps paid requests closed rather than half-enabling them.
+    """
+    resolved = dict(os.environ if env is None else env)
+    for name in STRIPE_ENV_VARS:
+        if not resolved.get(name, "").strip():
+            value = _dotenv_value(name, env_file)
+            if value:
+                resolved[name] = value
+    return resolved
 
 
 def ensure_dirs(cfg: Config) -> None:

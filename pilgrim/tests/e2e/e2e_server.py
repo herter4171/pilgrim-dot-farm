@@ -230,7 +230,10 @@ def build_app() -> FastAPI:
         ips = [r[0] for r in store._conn.execute(
             "SELECT ip FROM visitor_ips ORDER BY ip").fetchall()]
         return {"seqs": seqs, "underrun": underrun,
-                "coverage_s": sched.coverage(), "visitor_ips": ips}
+                "coverage_s": sched.coverage(),
+                "committed_lookahead_s": sched.cfg.playout.committed_lookahead_s,
+                "refill_interval_s": sched.REFILL_INTERVAL_S,
+                "visitor_ips": ips}
 
     web_dir = Path(__file__).resolve().parents[2] / "web"
     app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")

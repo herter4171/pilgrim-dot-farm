@@ -14,7 +14,6 @@ import contextlib
 import ipaddress
 import json
 import logging
-import os
 import re
 import time
 import uuid
@@ -32,7 +31,16 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 from pilgrim import dj_contracts as dj
-from pilgrim.config import RNG, ROOT, Clock, Config, ensure_dirs, load_api_key, load_config
+from pilgrim.config import (
+    RNG,
+    ROOT,
+    Clock,
+    Config,
+    ensure_dirs,
+    load_api_key,
+    load_config,
+    stripe_env,
+)
 from pilgrim.dj_security import require_dj
 from pilgrim.logging_setup import setup_logging
 from pilgrim.payments import (
@@ -98,16 +106,20 @@ class Station:
             cfg, self.db, self.llm, self.kokoro, self.voice, self.songs,
             self.clock, prompts=_load_prompts(cfg), media_dir=self.media_dir,
             api_key=api_key, rng=self.rng, news_pipeline=self.news, sfx=self.sfx)
-        # Paid priority requests (PAYMENT.md). Off unless config + env agree.
-        self.payments_active = cfg.payments.active(os.environ)
+        # Paid priority requests (PAYMENT.md). Off unless config + keys agree.
+        # The keys come from the environment or the repo-root .env fallback
+        # (config.stripe_env), so a plain `python -m pilgrim.server` restart
+        # does not silently close payments (Step 12 regression, Oct 31).
+        stripe_keys = stripe_env()
+        self.payments_active = cfg.payments.active(stripe_keys)
         self.payment_service: PaymentService | None = None
         self.stripe_client: StripeClient | None = None
         self.publishable_key = ""
         self.webhook_secret = ""
         if self.payments_active:
-            secret_key = os.environ["STRIPE_SECRET_KEY"]
-            self.publishable_key = os.environ["STRIPE_PUBLISHABLE_KEY"]
-            self.webhook_secret = os.environ["STRIPE_WEBHOOK_SECRET"]
+            secret_key = stripe_keys["STRIPE_SECRET_KEY"]
+            self.publishable_key = stripe_keys["STRIPE_PUBLISHABLE_KEY"]
+            self.webhook_secret = stripe_keys["STRIPE_WEBHOOK_SECRET"]
             self.stripe_client = StripeClient(cfg.payments, secret_key)
             self.payment_service = PaymentService(
                 cfg.payments, self.db, self.stripe_client, secret_key,

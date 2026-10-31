@@ -91,7 +91,11 @@ Keep credentials in environment variables or the git-ignored `.env` file.
 controls. Service URLs belong in `pilgrim/config.yaml`.
 
 Stripe (PAYMENT.md Step 0.8) — all three must be set, and `payments.enabled`
-must be true, or paid requests are closed:
+must be true, or paid requests are closed. Each is read from the environment
+first, then from the repo-root `.env` (`config.stripe_env`), so restarting the
+origin with `python -m pilgrim.server` does not silently close payments.
+`PILGRIM_ENV_FILE=/path/to/env` points the fallback elsewhere; an empty value
+disables it (the test suite does this so a live `.env` can never leak in).
 
 - `STRIPE_SECRET_KEY` — `sk_live_…` / `rk_live_…` (or the `_test_` pair).
   Server only. Mode comes from the prefix; the matching price is picked from
