@@ -28,11 +28,15 @@ def _parse_epoch(iso: str | None) -> float | None:
         return None
 
 
-def _project_text(text: str, paid: bool, max_length: int) -> str:
-    """Public board text. Paid rows show the first line only, collapsed and
-    cut to the request-line limit (PAYMENT.md §3.4); free rows are unchanged."""
+def _project_text(text: str, paid: bool, max_length: int,
+                  summary: str | None = None) -> str:
+    """Public board text. Paid rows show the generated summary when present,
+    else the first line, collapsed and cut to the request-line limit
+    (PAYMENT.md §3.4); free rows are unchanged."""
     if not paid:
         return text
+    if summary:
+        return summary[:max_length]
     first = " ".join(text.split("\n", 1)[0].split())
     if len(first) > max_length:
         first = first[: max_length - 1] + "…"
@@ -49,13 +53,15 @@ def _wait_s(created_at: str | None, aired_at: str | None) -> int | None:
 
 def _project_queue_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
     paid = bool(row.get("priority"))
-    return {"text": _project_text(row["text"], paid, max_length),
+    return {"text": _project_text(row["text"], paid, max_length,
+                                  row.get("summary")),
             "status": row["status"], "paid": paid}
 
 
 def _project_recent_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
     paid = bool(row.get("priority"))
-    return {"text": _project_text(row["text"], paid, max_length),
+    return {"text": _project_text(row["text"], paid, max_length,
+                                  row.get("summary")),
             "song_title": row.get("song_title") or "",
             "song_artist": row.get("song_artist") or "",
             "paid": paid,
@@ -183,7 +189,8 @@ class Store:
                              ("payment_intent_id", "TEXT"),
                              ("livemode", "INTEGER"),
                              ("reconciled_at", "REAL"),
-                             ("aired_at", "TEXT")):
+                             ("aired_at", "TEXT"),
+                             ("summary", "TEXT")):
                 if col not in req_cols:
                     self._conn.execute(f"ALTER TABLE requests ADD COLUMN {col} {ddl}")
             self._conn.execute(
@@ -684,7 +691,7 @@ class Store:
                 "SELECT * FROM requests WHERE status IN ('queued','producing','ready') "
                 f"{QUEUE_ORDER} LIMIT ?", (cap,)).fetchall()]
             recent = [dict(r) for r in self._conn.execute(
-                "SELECT r.id, r.text, r.created_at, r.aired_at, r.priority, "
+                "SELECT r.id, r.text, r.summary, r.created_at, r.aired_at, r.priority, "
                 "i.title AS song_title, i.artist AS song_artist FROM requests r "
                 "LEFT JOIN items i ON i.id = r.song_item_id "
                 "WHERE r.status IN ('aired','serviced') "
@@ -705,15 +712,17 @@ class Store:
             self._conn.commit()
 
     # ------------------------------------------------- paid priority (PAYMENT §3)
-    def add_paid_request(self, text: str) -> dict[str, Any]:
+    def add_paid_request(self, text: str, summary: str | None = None) -> dict[str, Any]:
         """Insert a moderated paid request: awaiting payment, priority 1,
-        unguessable public token. Not in any queue until Stripe confirms."""
+        unguessable public token, plus the board summary. Not in any queue
+        until Stripe confirms."""
         token = secrets.token_urlsafe(24)
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO requests (text, status, created_at, updated_at, "
-                "priority, public_token) VALUES (?,?,?,?,?,?)",
-                (text, "awaiting_payment", _now_iso(), _now_iso(), 1, token))
+                "priority, public_token, summary) VALUES (?,?,?,?,?,?,?)",
+                (text, "awaiting_payment", _now_iso(), _now_iso(), 1, token,
+                 summary))
             self._conn.commit()
             rid = int(cur.lastrowid or 0)
         row = self.get_request(rid)

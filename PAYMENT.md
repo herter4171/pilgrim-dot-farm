@@ -114,6 +114,7 @@ Key facts:
 | Queues | Two FIFO queues: priority (paid) and free. Priority always first. |
 | Paid input | Multi-line prompt for the music (free stays single-line) |
 | Price | Existing Stripe price: preset $3.50, min $3.00, max $67.69, USD |
+| Paid board label | Generated one-line summary of the full prompt (LLM, ≤160 chars), stored in `requests.summary`. Fallback: first non-tag line (never `[intro]`/`[verse]`). |
 | Paid marker on the board | Queue number `#N` first, then the cornucopia icon (`pilgrim/web/img/cornucopia.png`) at one line high, then the request text. No `$` badge, no amount. |
 | Service promise | The song is **guaranteed to air, never guaranteed when**. Paid requests jump the free line and are FIFO by payment time. Refund on request if production fails after 5 attempts, or if the station stops airing for good. |
 | Request line display | Up to **20** queue rows and up to **5** "recently played" rows. Each recent row shows how long the request waited (submit → air). Both queues stay FIFO. All panes **10% wider** (440 → 484 px), not just the request line. |
@@ -142,7 +143,7 @@ Key facts:
 | New module | `pilgrim/payments.py` |
 | New fake | `pilgrim/tests/fakes/fake_stripe.py` |
 | New client script | `pilgrim/web/pay.js` |
-| New prompt | `pilgrim/prompts/paid_request.md` |
+| New prompts | `pilgrim/prompts/paid_request.md`, `pilgrim/prompts/paid_summary.md` |
 | New public routes | `POST /api/paid-requests`, `GET /api/paid-requests/{token}`, `POST /api/stripe/webhook` |
 | New admin route | `GET /api/admin/payments` |
 | New env vars | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` |
@@ -465,6 +466,7 @@ Add to `requests` if missing:
 | `livemode` | `INTEGER` | 0/1 from Stripe |
 | `reconciled_at` | `REAL` | last reconcile attempt (rate-limits Stripe retrieves) |
 | `aired_at` | `TEXT` | ISO time the request actually aired; drives the "aired in …" wait time on the board (set by `mark_request_aired`, `mark_serviced`) |
+| `summary` | `TEXT` | generated one-line board label for a paid request (full prompt summarised; never a section tag) |
 
 Indexes: `UNIQUE` on `public_token` and on `checkout_session_id` (partial:
 `WHERE ... IS NOT NULL`), plus `idx_requests_queue(status, priority)`.
@@ -543,8 +545,9 @@ explicitly**:
 - `wait_s` = whole seconds from `created_at` to `aired_at` (integer, `null`
   when either timestamp is missing or unparsable). Computed in Python from
   `datetime.fromisoformat`, never rendered by the server;
-- `text` for a paid row: first line only, whitespace collapsed, cut to
-  `requests.max_length` (160) with `…` added if cut;
+- `text` for a paid row: the generated `summary` when present, else the
+  first non-tag line, whitespace collapsed, cut to `requests.max_length`
+  (160) with `…` added if cut;
 - `paid` is a bool. No amounts, tokens, session IDs or reasons.
 
 Display limits come from config: `requests.queue_cap` rises **10 → 20**
@@ -618,7 +621,10 @@ class PaidRequestIn(BaseModel):
    → store a `rejected` row with `priority=1` (audit trail, no token, no
    session) and return `200 {"ok": false, "rejected": true, "reason": …}`.
    **No Checkout Session is created.**
-6. **Create** the row: `add_paid_request(text)` → `awaiting_payment`.
+6. **Summarise** the full prompt into a one-line board label
+   (`paid_summary.md`, ≤160 chars; LLM failure falls back to the first
+   non-tag line — never `[intro]`/`[verse]`). Log `payment.summarised`.
+7. **Create** the row: `add_paid_request(text, summary)` → `awaiting_payment`.
 7. **Checkout**: `payments.start_checkout(row)` → `create_checkout_session`,
    then `attach_checkout(row.id, session.id)`.
    - `StripeError` → mark the row `abandoned`, log `payment.checkout_failed`,

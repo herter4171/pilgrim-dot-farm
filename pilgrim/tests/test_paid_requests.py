@@ -40,7 +40,11 @@ def _build(tmp_env, monkeypatch, *, active: bool = True, moderate: bool = True):
     async def _moderate(text: str):
         return (True, None) if moderate else (False, "nope, not that")
 
+    async def _summary(model, system, user, max_tokens=4096):
+        return "dreamy bossa nova about the night bus"
+
     monkeypatch.setattr(station.moderator, "moderate", _moderate)
+    monkeypatch.setattr(station.llm, "chat_text", _summary)
     monkeypatch.setattr(station.clock, "wall", lambda: FAKE_NOW)
     return cfg, app, station, fake
 
@@ -166,8 +170,10 @@ def test_webhook_happy_path(tmp_env, monkeypatch):
     assert row["payment_intent_id"].startswith("pi_fake_")
     assert row["paid_at"]
     board = c.get("/api/requests").json()
-    assert board["queue"][0]["text"] == "a song"
+    assert board["queue"][0]["text"] == "dreamy bossa nova about the night bus"
     assert board["queue"][0]["paid"] is True
+    assert station.db.get_request_by_token(token)["summary"] == \
+        "dreamy bossa nova about the night bus"
 
 
 def test_webhook_duplicate(tmp_env, monkeypatch):
@@ -337,3 +343,22 @@ def test_webhook_raw_bytes_not_reserialised(tmp_env, monkeypatch):
     payload, header = fake.pay(list(fake.sessions)[0])
     pretty = json.dumps(json.loads(payload), indent=2).encode()
     assert _post_hook(c, pretty, header).status_code == 400
+
+
+async def test_summary_falls_back_when_llm_fails(tmp_env, monkeypatch):
+    _, app, station, fake = _build(tmp_env, monkeypatch)
+    c = TestClient(app)
+
+    async def _boom(model, system, user, max_tokens=4096):
+        raise RuntimeError("llm down")
+
+    monkeypatch.setattr(station.llm, "chat_text", _boom)
+    token = _post_paid(c, "[intro]\nreal prompt about a tractor").json()["token"]
+    session_id = list(fake.sessions)[0]
+    payload, header = fake.pay(session_id, 350)
+    _post_hook(c, payload, header)
+    row = station.db.get_request_by_token(token)
+    assert row["status"] == "queued"
+    assert row["summary"] == "real prompt about a tractor"
+    assert c.get("/api/requests").json()["queue"][0]["text"] == \
+        "real prompt about a tractor"

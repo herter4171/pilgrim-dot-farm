@@ -70,13 +70,14 @@ class Station:
         self.rng = RNG(cfg.station.rng_seed)
         self.llm = LLM(cfg, api_key)
         self.kokoro = KokoroClient(cfg)
-        self.moderator = Moderation(cfg, self.llm, prompts=_load_prompts(cfg))
+        self.prompts = _load_prompts(cfg)
+        self.moderator = Moderation(cfg, self.llm, prompts=self.prompts)
         self.voice = VoicePipeline(cfg, self.llm, self.kokoro, self.db, self.media_dir,
-                                   prompts=_load_prompts(cfg))
+                                   prompts=self.prompts)
         self.songs = SongPipeline(cfg, self.llm, self.media_dir,
-                                  prompts=_load_prompts(cfg), rng=self.rng)
+                                  prompts=self.prompts, rng=self.rng)
         self.news = NewsPipeline(cfg, self.llm, api_key=api_key,
-                                prompts=_load_prompts(cfg))
+                                prompts=self.prompts)
         self.sfx_client = SfxClient(cfg)
         self.sfx = SfxPipeline(cfg, self.sfx_client, self.media_dir)
         self.clock = Clock()
@@ -423,7 +424,8 @@ def _load_prompts(cfg: Config) -> dict:
     pdir = ROOT / cfg.library.prompts_dir
     out = {}
     for f in ("voice.md", "song_brief.md", "news.md", "moderation.md", "field.md",
-              "sfx_cues.md", "sfx_joke.md", "paid_request.md"):
+              "sfx_cues.md", "sfx_joke.md", "paid_request.md",
+              "paid_summary.md"):
         p = pdir / f
         if p.exists():
             out[f.replace(".md", "")] = p.read_text()
@@ -439,6 +441,48 @@ class PaidRequestIn(BaseModel):
 
 
 PAID_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+
+_SECTION_TAG = re.compile(r"^\[[^\]]{1,40}\]$")
+
+
+def _fallback_summary(text: str, max_length: int) -> str:
+    """First non-tag line, collapsed; never a bare [verse]/[intro] marker."""
+    for line in text.split("\n"):
+        clean = " ".join(line.split())
+        if not clean or _SECTION_TAG.match(clean):
+            continue
+        if len(clean) > max_length:
+            clean = clean[: max_length - 1] + "…"
+        return clean
+    clean = " ".join(text.split())
+    return clean[: max_length - 1] + "…" if len(clean) > max_length else clean
+
+
+async def _summarise_paid(station: Station, text: str, max_length: int) -> str:
+    """One-line board label for a paid request (PAYMENT.md §3.4). LLM first,
+    deterministic fallback when the model fails; never blocks the request."""
+    fallback = _fallback_summary(text, max_length)
+    template = station.prompts.get("paid_summary")
+    if not template:
+        return fallback
+    started = time.monotonic()
+    try:
+        raw = await station.llm.chat_text(
+            station.cfg.models.briefs, template, json.dumps(text), max_tokens=512)
+    except Exception as exc:  # noqa: BLE001 - a label must never fail the request
+        log.warning("payment.summary_failed",
+                    extra={"error": type(exc).__name__})
+        return fallback
+    summary = " ".join(raw.split()).strip().strip('"').strip("'")
+    summary = summary.lstrip("*").strip()
+    if not summary:
+        return fallback
+    if len(summary) > max_length:
+        summary = summary[: max_length - 1] + "…"
+    log.info("payment.summarised",
+             extra={"len": len(summary),
+                    "duration_ms": round((time.monotonic() - started) * 1000, 1)})
+    return summary
 
 
 def _normalise_paid(text: str) -> str:
@@ -685,7 +729,8 @@ def _add_public_routes(app: FastAPI, station: Station,
                      extra={"request_id": req["id"], "len": len(text),
                             "lines": lines})
             return {"ok": False, "rejected": True, "reason": reason}
-        row = station.db.add_paid_request(text)
+        summary = await _summarise_paid(station, text, cfg.requests.max_length)
+        row = station.db.add_paid_request(text, summary=summary)
         log.info("payment.requested",
                  extra={"request_id": row["id"], "len": len(text), "lines": lines})
         try:

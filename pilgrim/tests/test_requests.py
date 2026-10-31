@@ -397,3 +397,13 @@ def test_board_paid_text_is_first_line_and_cut(cfg):
     assert item["text"].endswith("…")
     assert len(item["text"]) == 160
     assert row["id"]
+
+
+def test_board_prefers_paid_summary(cfg):
+    s = _store()
+    row = s.add_paid_request("line one\nline two", summary="a tidy label")
+    s.attach_checkout(row["id"], f"cs_{row['id']}")
+    assert s.mark_request_paid(row["id"], session_id=f"cs_{row['id']}",
+                               payment_intent_id="pi", amount_cents=350,
+                               currency="usd", livemode=False)
+    assert s.request_board(20)["queue"][0]["text"] == "a tidy label"
