@@ -901,8 +901,8 @@ payments:
   reconcile_after_s: 10
   reconcile_min_interval_s: 5
   abandon_after_s: 86400
-  paid_max_length: 1200
-  paid_max_lines: 24
+  paid_max_length: 3600
+  paid_max_lines: 72
   per_client_per_10min: 6
   max_attempts: 5
   managed_payments: false      # managed_payments[enabled]=false (tax code ineligible)

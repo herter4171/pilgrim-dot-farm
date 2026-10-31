@@ -276,7 +276,7 @@ class Payments(BaseModel):
     reconcile_after_s: int = 10
     reconcile_min_interval_s: int = 5
     abandon_after_s: int = 86400
-    paid_max_length: int = 1200
+    paid_max_length: int = 3600
     paid_max_lines: int = 24
     per_client_per_10min: int = 6
     max_attempts: int = 5

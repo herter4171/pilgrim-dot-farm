@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PILGRIM DOT FARM — radio</title>
-<link rel="stylesheet" href="style.css?v=20261031b">
+<link rel="stylesheet" href="style.css?v=20261031c">
 </head>
 <body>
 <canvas id="rain"></canvas>
@@ -50,14 +50,15 @@
         <button id="req-send">Send</button>
       </div>
       <div id="req-err" class="req-err hidden"></div>
-      <div class="req-list-head pay-head">I need about tree fiddy.</div>
+      <div class="req-list-head pay-head">I NEED ABOUT TREE FIDDY.</div>
+      <div class="pay-note">Help me pay AWS and DTE.</div>
       <button id="pay-open" class="pay-btn" type="button">PRIORIT¥ R€QU€$T</button>
       <div id="pay-panel" class="pay-panel hidden">
         <label for="pay-text" class="req-note">Describe your song in as much
           detail as you like: style, tempo, mood, instruments, what it's about, a
           line or two of lyrics. Paid requests jump the free line.
           Pay what you like, $3.00–$67.69.</label>
-        <textarea id="pay-text" rows="6" maxlength="1200"
+        <textarea id="pay-text" rows="6" maxlength="3600"
                   placeholder="Slow-burn bossa nova about the Thistledown night bus…"></textarea>
         <div class="pay-actions">
           <button id="pay-go" type="button">Check it &amp; pay</button>
@@ -122,8 +123,8 @@
   document.getElementById('year').textContent = new Date().getFullYear();
 </script>
 
-<script src="requests.js?v=20261031a"></script>
-<script src="pay.js?v=20261031a"></script>
+<script src="requests.js?v=20261031c"></script>
+<script src="pay.js?v=20261031c"></script>
 <script src="visitors.js?v=20261031a"></script>
 <script src="player.js?v=20261031a"></script>
 </body>

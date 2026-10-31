@@ -36,6 +36,7 @@
         li.className = "req-item";
         const n = document.createElement("span");
         n.className = "req-num"; n.textContent = "#" + (i + 1);
+        li.appendChild(n);
         if (r.paid) {
           const icon = document.createElement("img");
           icon.className = "req-paid-icon";
@@ -54,7 +55,7 @@
           readySeen = true;
         }
         s.textContent = label;
-        li.appendChild(n); li.appendChild(t); li.appendChild(s);
+        li.appendChild(t); li.appendChild(s);
         queueEl.appendChild(li);
       });
     }

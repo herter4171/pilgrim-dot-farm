@@ -75,6 +75,7 @@ body {
 
 /* PAID REQUE$T (PAYMENT.md §8.2). */
 .pay-head { margin-top: 4px; }
+.pay-note { color: var(--cyan); font-size: 11px; letter-spacing: 1px; }
 .pay-btn {
   width: 100%; height: 44px; font-family: inherit; font-weight: bold;
   letter-spacing: 2px; cursor: pointer; border: none; border-radius: 6px;

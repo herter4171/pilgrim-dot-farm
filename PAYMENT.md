@@ -108,12 +108,13 @@ Key facts:
 |----------|-------|
 | Button label | `PAID REQUE$T` |
 | Button colour | `linear-gradient(90deg, #00ff66 0%, #19f5ff 50%, #00ff66 100%)` over a `#00FF66` fallback (`background-color`), dark text `#0a0118` for contrast |
-| Heading above the button | `I need about tree fiddy.`, styled like the `NOW QUEUED` heading (`.req-list-head`) |
+| Heading above the button | `I NEED ABOUT TREE FIDDY.` (all caps), styled like the `NOW QUEUED` heading (`.req-list-head`) |
+| Disclaimer under the heading | `Help me pay AWS and DTE.` in cyan (`.pay-note`) |
 | Placement | Inside the existing REQUEST LINE pane, same page, no redirect |
 | Queues | Two FIFO queues: priority (paid) and free. Priority always first. |
 | Paid input | Multi-line prompt for the music (free stays single-line) |
 | Price | Existing Stripe price: preset $3.50, min $3.00, max $67.69, USD |
-| Paid marker on the board | Cornucopia icon (`pilgrim/web/img/cornucopia.png`), one line high, as the leading character before the request text. No `$` badge, no amount. |
+| Paid marker on the board | Queue number `#N` first, then the cornucopia icon (`pilgrim/web/img/cornucopia.png`) at one line high, then the request text. No `$` badge, no amount. |
 | Service promise | The song is **guaranteed to air, never guaranteed when**. Paid requests jump the free line and are FIFO by payment time. Refund on request if production fails after 5 attempts, or if the station stops airing for good. |
 | Request line display | Up to **20** queue rows and up to **5** "recently played" rows. Each recent row shows how long the request waited (submit → air). Both queues stay FIFO. Request pane **10% wider**. |
 | Credits pane | Heading `CREDITS` (renamed from `MODEL CREDITS`) plus an attribution row: *Cornucopia icon: Cornucopia LQ by OpenClipart, CC0* |
@@ -125,7 +126,7 @@ Key facts:
 | Stripe integration | Embedded Checkout (`ui_mode=embedded_page`, `redirect_on_completion=never`, no `return_url`), API version `2026-10-28.endive`; not Payment Element, not Payment Links |
 | Managed Payments | **Off** per session (`managed_payments[enabled]=false`): the product tax code is ineligible and Pilgrim Dot Farm LLC stays merchant of record. Turning it on is an operator decision (needs an eligible tax code). Recommended: also switch the account default off in Dashboard → Settings → Managed Payments, so no future product silently becomes merchant-of-record. |
 | HTTP to Stripe | `httpx.AsyncClient` (form-encoded), webhook check with stdlib `hmac`. **No `stripe` Python package.** This matches AGENTS §3 (httpx, explicit timeouts) and keeps the fake simple. |
-| Paid prompt limit | 1200 characters, 24 lines |
+| Paid prompt limit | 3600 characters, 72 lines |
 | Paid text path | Goes through the song **brief** LLM like a free request (style lock, validation, QC all apply), with a stronger "honour the listener's details" instruction. It is **not** sent raw to MiniMax. |
 | Paid song length | Never shortened by the "≥ 3 queued → short song" backlog rule |
 | Production attempts | Paid: 5, free: 3 (unchanged) |
@@ -309,8 +310,8 @@ payments:
   reconcile_after_s: 10          # status poll may ask Stripe after this long
   reconcile_min_interval_s: 5    # at most one retrieve per row per interval
   abandon_after_s: 86400         # awaiting_payment rows older than this -> abandoned
-  paid_max_length: 1200
-  paid_max_lines: 24
+  paid_max_length: 3600
+  paid_max_lines: 72
   per_client_per_10min: 6        # rate limit on POST /api/paid-requests
   max_attempts: 5                # production attempts before `failed`
 ```
@@ -830,14 +831,15 @@ DOM with `textContent`.
 Insert the paid block **between** `#req-err` and the `NOW QUEUED` heading:
 
 ```html
-<div class="req-list-head pay-head">I need about tree fiddy.</div>
+<div class="req-list-head pay-head">I NEED ABOUT TREE FIDDY.</div>
+<div class="pay-note">Help me pay AWS and DTE.</div>
 <button id="pay-open" class="pay-btn" type="button">PAID REQUE$T</button>
 <div id="pay-panel" class="pay-panel hidden">
   <label for="pay-text" class="req-note">Describe your song in as much
     detail as you like: style, tempo, mood, instruments, what it's about, a
     line or two of lyrics. Paid requests jump the free line.
     Pay what you like, $3.00–$67.69.</label>
-  <textarea id="pay-text" rows="6" maxlength="1200"
+  <textarea id="pay-text" rows="6" maxlength="3600"
             placeholder="Slow-burn bossa nova about the Thistledown night bus…"></textarea>
   <div class="pay-actions">
     <button id="pay-go" type="button">Check it &amp; pay</button>
@@ -923,9 +925,9 @@ Details:
   append a dim `aired in …` label (`< 60 min` → `42 min`; hours → `3 h 10 m`;
   `≥ 48 h` → `2 d 4 h`); omit the label when `wait_s` is `null`. Built with
   `createElement` + `textContent`.
-- The board (`requests.js`): when a queue item has `paid: true`, prepend an
-  `<img class="req-paid-icon" src="img/cornucopia.png" alt="Paid priority
-  request" width="48" height="40">` before its text (built with
+- The board (`requests.js`): render `#N`, then — when a queue item has
+  `paid: true` — an `<img class="req-paid-icon" src="img/cornucopia.png"
+  alt="Paid priority request" width="48" height="40">`, then the text (built with
   `createElement`, never `innerHTML`). Priority rows come first because the
   server orders them; the client does not re-sort. Recent items stay
   text-only.
@@ -949,7 +951,7 @@ server's test endpoint to `fake_stripe.pay(...)` and deliver the signed
 webhook, then calls `onComplete()`.
 
 Tests:
-1. Heading text is exactly `I need about tree fiddy.`; button text is
+1. Heading text is exactly `I NEED ABOUT TREE FIDDY.`; the cyan disclaimer reads `Help me pay AWS and DTE.`; button text is
    exactly `PAID REQUE$T`; the button's computed `background-image` is the
    green→cyan→green `linear-gradient(90deg, rgb(0, 255, 102) 0%,
    rgb(25, 245, 255) 50%, rgb(0, 255, 102) 100%)` with `background-color`
