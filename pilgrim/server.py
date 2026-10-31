@@ -653,8 +653,13 @@ def _add_admin_routes(app: FastAPI, station: Station) -> None:
         The voice list is the one live probe here; failure is surfaced as an
         explicit error, never a silent empty pick."""
         ch = cfg.dj.character
+        # The exclusion set is every role voice *plus the character's own
+        # reservation*: an assigned voice is not an "available unused" one
+        # (RADIO.md §10). Empty strings never match a real voice id.
         used = {cfg.voices.dj, cfg.voices.news, cfg.voices.commercials,
                 cfg.voices.liners, cfg.voices.field_reporter}
+        if ch.voice:
+            used.add(ch.voice)
         available: list = []
         error: str | None = None
         try:

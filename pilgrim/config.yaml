@@ -154,7 +154,7 @@ dj:                          # DJ console (TUI.md §7, RADIO §12)
   character:
     id: dj_operator          # stable ID; name + voice chosen by the operator by ear (§10)
     name: Jimmany            # operator-named DJ character
-    voice: am_adam           # reserved unused Kokoro voice (American male)
+    voice: am_justin         # reserved unused Kokoro voice (operator pick, by ear)
     speed: 1.0
 
 talk:

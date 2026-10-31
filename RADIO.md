@@ -676,9 +676,12 @@ voice, measured at setup.
 stable ID, display name and a reserved **unused** voice — present in Kokoro's
 catalogue and absent from every existing configured role and other character
 reservation (the exclusion set is computed from config, never hardcoded). The
-operator picks the name and **listens before choosing the voice** (a human
-decision, AGENTS §9; assigned by the operator, not this plan). The character
-has no random-selector weight and no inventory refill target.
+operator picked the name **`Jimmany`** and, by ear, the voice **`am_justin`**
+(a human decision, AGENTS §9). Config load rejects a `dj.character.voice`
+that collides with a role voice, and `/api/admin/dj/character` reports the
+assigned voice plus the remaining unused ids (never the character's own
+reservation). The character has no random-selector weight and no inventory
+refill target.
 
 ---
 
@@ -704,7 +707,7 @@ has no random-selector weight and no inventory refill target.
 | POST | `/api/admin/dj/skip` | `{command_id, expected_epoch, expected_revision, expected_seq}` → 202 + command receipt |
 | POST | `/api/admin/dj/queue` | `{command_id, expected_epoch, expected_revision, media_id}` → placement or a policy conflict |
 | GET | `/api/admin/dj/commands/{command_id}` | Durable command result: `accepted\|preparing\|scheduled\|applied\|rejected\|expired`, affected seqs, cutover info |
-| GET | `/api/admin/dj/character` | Configured character, setup readiness, available unused voice IDs; explicit error on voice-discovery failure |
+| GET | `/api/admin/dj/character` | Configured character, setup readiness, available unused voice IDs (the character's own reservation excluded); explicit error on voice-discovery failure |
 | POST | `/api/admin/dj/phrases` | `{command_id, character_id, text, cleaned_text_hash}` → validate, persist job, `202 {job_id, status, cleaned_text}` |
 | GET | `/api/admin/dj/phrases/{job_id}` | Phrase job: stage, character/voice snapshot, cleaned text, expiry, failure, or `{media_id, duration_s}` when ready |
 | POST | `/api/admin/dj/phrases/validate` | Pure cleaned-text validation → `{cleaned_text, changes, text_hash, ok, rejected_reason}`; no synthesis or scheduling |
@@ -935,9 +938,11 @@ dj:                            # DJ console (TUI.md §7)
   job_timeout_s: 300
   character:
     id: dj_operator            # stable ID; name + voice chosen by the operator by ear (§10)
-    name: ""                   # set by the operator (human decision)
-    voice: ""                  # reserved unused Kokoro voice (operator pick)
+    name: Jimmany              # operator-named character
+    voice: am_justin           # reserved unused Kokoro voice (operator pick, by ear)
     speed: 1.0
+  # a non-empty character voice that collides with any role voice is rejected
+  # at config load (RADIO §10); empty means "not assigned yet"
   # voice calibration (seconds_per_word, per-voice QC bounds) measured at setup
 ```
 

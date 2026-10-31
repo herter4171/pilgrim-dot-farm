@@ -398,6 +398,31 @@ class Config(BaseModel):
     dj: Dj = Field(default_factory=Dj)
     library: Library = Field(default_factory=Library)
 
+    @model_validator(mode="after")
+    def _validate_character_voice(self) -> Config:
+        """The operator character must reserve an *unused* Kokoro voice
+        (RADIO.md §10): reject a configured collision with any role voice at
+        load time instead of discovering it when a phrase renders.
+
+        An empty `dj.character.voice` is allowed — it means "not assigned yet"
+        and keeps the console in setup state (TUI.md §6)."""
+        voice = self.dj.character.voice
+        if not voice:
+            return self
+        role_voices = {
+            self.voices.dj,
+            self.voices.news,
+            self.voices.commercials,
+            self.voices.liners,
+            self.voices.field_reporter,
+        }
+        if voice in role_voices:
+            raise ValueError(
+                f"dj.character.voice {voice!r} collides with a configured role "
+                "voice; the operator character must reserve an unused Kokoro "
+                "voice (RADIO.md §10)")
+        return self
+
 
 def load_config(path: Path | None = None) -> Config:
     path = path or (ROOT / "config.yaml")

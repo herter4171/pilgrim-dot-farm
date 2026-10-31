@@ -5,9 +5,12 @@ changes there before implementing new contracts (RADIO §§11–12, 14).
 
 > **Status (2026-10-30).** Implemented: the read-only console, song catalogue,
 > character setup, and phrase jobs against the admin listener (§1 note below).
-> Skip/queue command mutations (§5, §7) are still proposed; those routes are
-> not implemented yet. The §1 discovery table records the pre-implementation
-> state and is kept as history.
+> The console's phrase bar (§2 mockup) now submits an administrator message
+> verbatim in the character's reserved voice and tracks the job to `aired`;
+> `pilgrim/tools/submit_phrase.sh` is the scripted equivalent. Skip/queue
+> command mutations (§5, §7) are still proposed; those routes are not
+> implemented yet. The §1 discovery table records the pre-implementation state
+> and is kept as history.
 
 Build a Textual console with three jobs: skip the current segment, choose an
 existing song from a sortable **Name / Artist** table, and submit a phrase

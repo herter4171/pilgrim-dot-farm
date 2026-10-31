@@ -9,10 +9,19 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from pilgrim.dj_contracts import DjCurrentItem, DjSong, DjState, DjUpcomingItem
+from pilgrim.dj_contracts import (
+    CharacterInfo,
+    DjCurrentItem,
+    DjSong,
+    DjState,
+    DjUpcomingItem,
+    PhraseJob,
+    PhraseSubmitResponse,
+    ValidateResponse,
+)
 from pilgrim.tui.app import DjConsole
 from pilgrim.tui.client import DjError
-from textual.widgets import DataTable, Input, Static
+from textual.widgets import Button, DataTable, Input, Static
 
 
 class FakeDjClient:
@@ -28,6 +37,16 @@ class FakeDjClient:
         self.last_q: str | None = None
         self.last_sort: str | None = None
         self.last_direction: str | None = None
+        # character + phrase (TUI.md §6)
+        self.character_info = CharacterInfo(
+            character_id="dj_operator", name="Jimmany", setup_complete=True,
+            voice="am_justin", available_voices=["am_adam"])
+        self.fail_character = False
+        self.validated: list[str] = []
+        self.submitted: list[dict] = []
+        self.jobs: dict[int, PhraseJob] = {}
+        self.job_statuses: list[str] = ["rendering", "aired"]
+        self._next_job = 1
 
     def set_songs(self, songs: list[tuple[str, str]]) -> None:
         self.songs = [DjSong(id=i, title=t, artist=a, duration_s=90.0 + i)
@@ -65,6 +84,41 @@ class FakeDjClient:
                                      artist="", duration_s=4.0)],
             pending_commands=[], catalogue_revision=self.cat_rev,
             player_status="unknown")
+
+    # ------------------------------------------------------- character/phrase
+    async def character(self) -> CharacterInfo:
+        if self.fail_character:
+            raise DjError(0, "transport", "simulated outage")
+        return self.character_info
+
+    async def validate_phrase(self, character_id: str,
+                              text: str) -> ValidateResponse:
+        self.validated.append(text)
+        if "http" in text:
+            return ValidateResponse(character_id=character_id, cleaned_text=text,
+                                    ok=False, rejected_reason="url")
+        return ValidateResponse(character_id=character_id, cleaned_text=text,
+                                ok=True, text_hash="h:" + text)
+
+    async def submit_phrase(self, command_id: str, character_id: str, text: str,
+                            cleaned_text_hash: str) -> PhraseSubmitResponse:
+        self.submitted.append({"command_id": command_id,
+                               "character_id": character_id, "text": text,
+                               "cleaned_text_hash": cleaned_text_hash})
+        jid = self._next_job
+        self._next_job += 1
+        self.jobs[jid] = PhraseJob(
+            job_id=jid, status="queued", character_id=character_id,
+            original_text=text, cleaned_text=text, voice="am_justin")
+        return PhraseSubmitResponse(command_id=command_id, job_id=jid,
+                                    status="queued", cleaned_text=text)
+
+    async def phrase_job(self, job_id: int) -> PhraseJob:
+        job = self.jobs[job_id]
+        status = self.job_statuses.pop(0) if self.job_statuses else "aired"
+        job = job.model_copy(update={"status": status})
+        self.jobs[job_id] = job
+        return job
 
 
 async def _wait(pilot, predicate, tries: int = 200) -> None:
@@ -256,3 +310,74 @@ async def test_small_terminal_renders(fake):
     async with app.run_test(size=(60, 20)) as pilot:
         await _wait(pilot, lambda: app.query_one("#catalogue", DataTable).row_count == 1)
         assert _rows(app) == ["Amber Fields"]
+
+
+# ------------------------------------------------------- administrator phrases
+@pytest.mark.asyncio
+async def test_phrase_bar_shows_character_and_voice(fake):
+    client, cfg = fake
+    app = DjConsole(cfg=cfg, client=client)
+    async with app.run_test() as pilot:
+        await _wait(pilot, lambda: "Jimmany" in _text(app, "#charbar"))
+        bar = _text(app, "#charbar")
+        assert "am_justin" in bar          # the reserved administrator voice
+        assert "1 unused voices" in bar
+        assert app.query_one("#send", Button).disabled is False
+
+
+@pytest.mark.asyncio
+async def test_character_unavailable_is_reported(fake):
+    client, cfg = fake
+    client.fail_character = True
+    app = DjConsole(cfg=cfg, client=client)
+    async with app.run_test() as pilot:
+        await _wait(pilot, lambda: "unavailable" in _text(app, "#charbar"))
+        assert app.character is None
+
+
+@pytest.mark.asyncio
+async def test_phrase_validate_preview_and_send(fake):
+    client, cfg = fake
+    app = DjConsole(cfg=cfg, client=client)
+    async with app.run_test() as pilot:
+        await _wait(pilot, lambda: "Jimmany" in _text(app, "#charbar"))
+        app.query_one("#phrase", Input).focus()
+        await pilot.press(*"Hello")
+        # live preview of the exact cleaned text that will air
+        await _wait(pilot, lambda: "Will say: Hello" in _text(app, "#willsay"))
+        await pilot.press("enter")  # Enter submits from the phrase field
+        await _wait(pilot, lambda: bool(client.submitted), tries=400)
+        assert client.submitted[0]["text"] == "Hello"
+        assert client.submitted[0]["cleaned_text_hash"] == "h:Hello"
+        assert client.submitted[0]["character_id"] == "dj_operator"
+        # job poll reaches the terminal state
+        await _wait(pilot, lambda: "AIRED" in _text(app, "#phrasestatus"), tries=400)
+
+
+@pytest.mark.asyncio
+async def test_phrase_rejected_never_submits(fake):
+    client, cfg = fake
+    app = DjConsole(cfg=cfg, client=client)
+    async with app.run_test() as pilot:
+        await _wait(pilot, lambda: "Jimmany" in _text(app, "#charbar"))
+        app.query_one("#phrase", Input).focus()
+        await pilot.press(*"http")
+        await _wait(pilot, lambda: "rejected" in _text(app, "#willsay"))
+        await pilot.press("enter")
+        await pilot.pause()
+        assert client.submitted == []
+        assert "rejected" in _text(app, "#phrasestatus")
+
+
+@pytest.mark.asyncio
+async def test_letters_in_phrase_input_do_not_sort(fake):
+    client, cfg = fake
+    client.set_songs([("a", "A"), ("b", "B")])
+    app = DjConsole(cfg=cfg, client=client)
+    async with app.run_test() as pilot:
+        await _wait(pilot, lambda: app.query_one("#catalogue", DataTable).row_count == 2)
+        app.query_one("#phrase", Input).focus()
+        await pilot.press(*"n")
+        await pilot.pause()
+        assert app.sort_field == "title" and app.sort_direction == "asc"
+        assert app.query_one("#phrase", Input).value == "n"

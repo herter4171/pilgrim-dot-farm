@@ -72,3 +72,34 @@ DataTable > .datatable--header {
     width: 1fr;
     margin-left: 1;
 }
+
+/* Administrator phrase bar (TUI.md §2, §6). */
+#phrase {
+    border: round #6b3fa0;
+    background: #191028;
+    margin-top: 1;
+}
+
+#willsay {
+    color: #b9c8e8;
+    background: #1d1030;
+    height: 1;
+    padding: 0 1;
+}
+
+#phraseactions {
+    height: auto;
+}
+
+#send {
+    background: #3a1f5c;
+    color: #ffcf5c;
+    min-width: 16;
+}
+
+#phrasestatus {
+    color: #9fd3ff;
+    height: 1;
+    padding: 0 1;
+    margin-left: 1;
+}

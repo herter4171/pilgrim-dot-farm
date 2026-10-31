@@ -15,7 +15,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"   # repo root (script lives in pilgrim/tools/)
-STATION_URL="${PILGRIM_STATION_URL:-http://127.0.0.1:5000}"
 POLL_S=5
 MAX_POLLS=180        # 15 min; a placed phrase airs well within this (tail rule)
 
@@ -23,6 +22,27 @@ die() { echo "error: $*" >&2; exit 1; }
 [ "$#" -eq 1 ] || { echo "usage: $0 \"admin message\"" >&2; exit 2; }
 TEXT="$1"
 [ -n "$TEXT" ] || die "empty message"
+
+# Admin listener URL: never hardcode the port (AGENTS rule 4). The public
+# listener has no /api/admin/* routes, so the default must be the admin one
+# (SPLIT_PLAN §1.4). PILGRIM_STATION_URL overrides for a remote/forwarded port.
+PY="$ROOT/.venv/bin/python"
+[ -x "$PY" ] || PY="python3"
+if [ -n "${PILGRIM_STATION_URL:-}" ]; then
+  STATION_URL="$PILGRIM_STATION_URL"
+else
+  STATION_URL="$("$PY" - "$ROOT" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+from pilgrim.config import load_config
+c = load_config()
+h = c.station.admin_host
+if h in ("0.0.0.0", "::"):   # a bind address is not a usable client URL
+    h = "127.0.0.1"
+print(f"http://{h}:{c.station.admin_port}")
+PYEOF
+)" || die "could not read station.admin_host/admin_port from pilgrim/config.yaml"
+fi
 
 # Operator bearer token (AGENTS rule 7: never in the script or repo files).
 TOKEN_FILE="$ROOT/.env"
@@ -110,7 +130,7 @@ for _i in $(seq 1 "$MAX_POLLS"); do
   fi
   case "$ST" in
     aired)
-      echo "AIREDS — your message is on the air (job $JOB_ID)."
+      echo "AIRED — your message is on the air (job $JOB_ID)."
       exit 0 ;;
     failed|expired|skipped)
       die "job $JOB_ID $ST: $(jget failure_reason)" ;;

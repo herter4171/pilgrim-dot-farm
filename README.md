@@ -19,6 +19,7 @@ make venv       # install Python dependencies
 make seed       # fill a new library using the real backends
 make run        # start the station: public listener :5000, admin (DJ console) :5001
 make tui        # operator DJ console (Textual; needs PILGRIM_DJ_TOKEN for /api/admin/dj/*)
+pilgrim/tools/submit_phrase.sh "message"   # air an administrator message verbatim
 ```
 
 The public listener serves the site and the edge-facing API; the admin listener
@@ -28,6 +29,22 @@ come from the `station` block in `pilgrim/config.yaml`.
 Seeding generates real audio and can take a while. The server also refills
 inventory in the background. The station keeps its media in `pilgrim/library/`
 and its inventory and airplay history in `pilgrim/station.db`.
+
+## Administrator messages
+
+The station's operator character (`dj.character` in `pilgrim/config.yaml`: name
+`Jimmany`, reserved Kokoro voice `am_justin`) can speak a message verbatim on
+air. Type it into the console (`make tui`, then `Ctrl+P`, type, Enter), or from
+a shell:
+
+```sh
+pilgrim/tools/submit_phrase.sh "This is your administrator. The pickle line is down."
+```
+
+The words are never rewritten by an LLM: the server runs the mandatory TTS
+cleanup, renders the clip in the character's voice, and appends it at the next
+legal boundary (RADIO.md §11, TUI.md §6). The script reads the admin listener
+address from `pilgrim/config.yaml`; override with `PILGRIM_STATION_URL`.
 
 ## Check the station
 

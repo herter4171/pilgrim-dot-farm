@@ -11,7 +11,7 @@ Services are NOT hosted on this box — they are forwarded via SSH tunnels:
 |---------|----------------|--------|-----------------|
 | LiteLLM (LLMs) | `http://localhost:4000/v1` | up | OK |
 | mlx-serve (MiniMax Music 3) | `http://127.0.0.1:11234` | up | OK |
-| Kokoro TTS | `http://localhost:8001` | up | OK (54 voices, 24 kHz mono) |
+| Kokoro TTS | `http://localhost:8001` | up | OK (55 voices, 24 kHz mono) |
 | Playwright | `http://localhost:8931` | up (MCP) | browser backend fails (still) |
 
 Auth: `LITELLM_TOKEN` in `.env`, sent as `Authorization: Bearer <token>`.
@@ -125,9 +125,10 @@ are **silently ignored** (both returned 60 s). The producer sends
 
 ## 3. Kokoro TTS — `localhost:8001` (verified)
 
-Tunnel up. `GET /health` → `{"status":"ok","device":"cuda","model_loaded":true,"num_voices":54,"default_voice":"af_heart","queue":{"pending":0}}`.
+Tunnel up. `GET /health` → `{"status":"ok","device":"cuda","model_loaded":true,"num_voices":55,"default_voice":"af_heart","queue":{"pending":0}}` (re-probed 2026-10-30: 55, was 54 at first probe).
 
-`GET /voices` → 54 ids. Plan §10 voice ids all confirmed present:
+`GET /voices` → 55 ids. Plan §10 voice ids all confirmed present
+(`am_justin` is the operator character's reserved voice, RADIO §10):
 `am_liam`, `am_michael`, `af_aoede` (plus `af_heart` default, many more).
 
 `/tts` is a **GET with query params** (POST body is rejected with 422

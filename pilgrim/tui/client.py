@@ -11,7 +11,15 @@ from __future__ import annotations
 import httpx
 
 from pilgrim.config import Config
-from pilgrim.dj_contracts import DjSongPage, DjState, StationState
+from pilgrim.dj_contracts import (
+    CharacterInfo,
+    DjSongPage,
+    DjState,
+    PhraseJob,
+    PhraseSubmitResponse,
+    StationState,
+    ValidateResponse,
+)
 from pilgrim.tui.models import load_dj_token
 
 
@@ -46,6 +54,19 @@ class DjClient:
             r = await self._h.get(path, params=params)
         except httpx.HTTPError as e:
             raise DjError(0, "transport", f"{type(e).__name__}: {e}") from e
+        return self._decode(r)
+
+    async def _post(self, path: str, payload: dict) -> dict:
+        try:
+            r = await self._h.post(path, json=payload)
+        except httpx.HTTPError as e:
+            raise DjError(0, "transport", f"{type(e).__name__}: {e}") from e
+        return self._decode(r)
+
+    @staticmethod
+    def _decode(r: httpx.Response) -> dict:
+        """Return the JSON body, or raise DjError with the server's stable code
+        and readable detail (TUI.md §3) instead of a raw traceback."""
         if r.status_code >= 400:
             try:
                 body = r.json()
@@ -94,3 +115,28 @@ class DjClient:
                 return items
             if len(items) > 20000:  # safety: never loop forever
                 return items
+
+    # --------------------------------------------------------- character/phrase
+    async def character(self) -> CharacterInfo:
+        """Configured operator character + unused voices (TUI.md §6)."""
+        return CharacterInfo.model_validate(
+            await self._get("/api/admin/dj/character"))
+
+    async def validate_phrase(self, character_id: str, text: str) -> ValidateResponse:
+        """Pure cleaned-text validation; no synthesis or scheduling."""
+        return ValidateResponse.model_validate(await self._post(
+            "/api/admin/dj/phrases/validate",
+            {"character_id": character_id, "text": text}))
+
+    async def submit_phrase(self, command_id: str, character_id: str, text: str,
+                            cleaned_text_hash: str) -> PhraseSubmitResponse:
+        """Confirm the cleaned text by hash and start the render job (202)."""
+        return PhraseSubmitResponse.model_validate(await self._post(
+            "/api/admin/dj/phrases",
+            {"command_id": command_id, "character_id": character_id,
+             "text": text, "cleaned_text_hash": cleaned_text_hash}))
+
+    async def phrase_job(self, job_id: int) -> PhraseJob:
+        """Render stage and finished clip for one phrase job."""
+        return PhraseJob.model_validate(
+            await self._get(f"/api/admin/dj/phrases/{job_id}"))

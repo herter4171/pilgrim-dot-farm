@@ -262,7 +262,7 @@ def test_character_and_phrases_api(dj_env, monkeypatch):
 
     async def _voices():
         # real Kokoro /voices shape: {voices: [...], default: ...} (probe §2)
-        return {"voices": ["am_adam", "am_liam", "am_michael"],
+        return {"voices": ["am_adam", "am_justin", "am_liam", "am_michael"],
                 "default": "af_alloy"}
 
     monkeypatch.setattr(st.kokoro, "voices", _voices)
@@ -271,8 +271,10 @@ def test_character_and_phrases_api(dj_env, monkeypatch):
     body = ch.json()
     assert body["name"] == "Jimmany"
     assert body["setup_complete"] is True
-    assert "am_adam" in body["available_voices"]
-    assert "am_liam" not in body["available_voices"]  # already a role voice
+    assert body["voice"] == "am_justin"
+    assert "am_justin" not in body["available_voices"]  # own reservation
+    assert "am_adam" in body["available_voices"]        # free again
+    assert "am_liam" not in body["available_voices"]    # already a role voice
 
     val = c.post("/api/admin/dj/phrases/validate", headers=_auth(),
                  json={"character_id": cfg.dj.character.id, "text": TEXT})
@@ -297,3 +299,26 @@ def test_character_and_phrases_api(dj_env, monkeypatch):
     assert c.post("/api/admin/dj/phrases/validate",
                   json={"character_id": "x", "text": "hi"}).status_code == 401
     assert c.get("/api/admin/dj/phrases/999999", headers=_auth()).status_code == 404
+
+
+# ------------------------------------------------------------------- config
+def test_character_voice_must_be_unused(base_config):
+    """RADIO.md §10: the operator character reserves an *unused* voice; a
+    collision with a role voice fails at config load, not at render time."""
+    from pilgrim.config import Config
+    from pydantic import ValidationError
+
+    raw = base_config.model_dump()
+    raw["dj"]["character"]["voice"] = raw["voices"]["dj"]
+    with pytest.raises(ValidationError, match="collides"):
+        Config(**raw)
+
+
+def test_character_voice_may_be_unassigned(base_config):
+    """An empty voice is the documented setup state (TUI.md §6), not an error."""
+    from pilgrim.config import Config
+
+    raw = base_config.model_dump()
+    raw["dj"]["character"]["voice"] = ""
+    cfg = Config(**raw)
+    assert cfg.dj.character.voice == ""

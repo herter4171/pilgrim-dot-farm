@@ -6,15 +6,21 @@ Wide-terminal layout per TUI.md §2:
     SONGS                          UPCOMING
       Search [         ]            #    Type      Name
       Sort: Name ↑ · 42 songs       ...  liner     ...
-    [Enter = queue next: not yet]   ...  song      ...
+    CHARACTER: <name>   ·   VOICE: <voice>
+    Phrase: [                                                   ]
+    Will say: <cleaned spoken text>
+    [Send phrase]        Status: ready
 
-Read-only in this milestone: it polls `/api/admin/dj/state` and browses/sorts/
-searches `/api/admin/dj/songs`. Skip/queue/phrase are bound but report "not
-yet available" until the playback-control and character milestones land.
+Implemented: state polling, catalogue browse/sort/search, character setup,
+and administrator phrase submission (`POST /api/admin/dj/phrases`). The words
+typed are rendered verbatim in the character's reserved Kokoro voice and the
+server appends the finished clip at the next legal boundary (TUI.md §6).
+Skip/queue command mutations (§5, §7) remain proposed.
 """
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Iterable
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -24,10 +30,10 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.timer import Timer
-from textual.widgets import DataTable, Footer, Header, Input, Label, Static
+from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
 
 from pilgrim.config import Config, load_config
-from pilgrim.dj_contracts import DjSong
+from pilgrim.dj_contracts import CharacterInfo, DjSong
 from pilgrim.tui.client import DjClient, DjError
 
 NAME_COL = "Name"
@@ -75,6 +81,7 @@ class DjConsole(App):
         self.cfg = cfg or load_config()
         self.client = client or DjClient(self.cfg)
         self._search_timer: Timer | None = None
+        self._phrase_timer: Timer | None = None
         # preserved across refresh (TUI.md §2): search, sort, selection
         self.query_text = ""
         self.sort_field = "title"
@@ -83,6 +90,15 @@ class DjConsole(App):
         self._seen_rev: int | None = None
         self._cat_keys: dict[str, object] = {}  # column label -> ColumnKey
         self._cat_idx: dict[str, int] = {}      # item id -> current row index
+        # character + phrase state (TUI.md §6)
+        self.character: CharacterInfo | None = None
+        self._phrase_raw = ""
+        self._phrase_ok = False
+        self._phrase_clean = ""
+        self._phrase_hash = ""
+        self._job_id: int | None = None
+        self._job_status = ""
+        self._sending = False
 
     # ------------------------------------------------------------- lifecycle
     def compose(self) -> ComposeResult:
@@ -100,6 +116,12 @@ class DjConsole(App):
                 yield Label("UPCOMING", classes="section")
                 yield DataTable(id="upcoming", cursor_type="row", zebra_stripes=True)
         yield Static("", id="charbar", classes="bar")
+        yield Input(placeholder="Administrator message (rendered verbatim)…",
+                    id="phrase")
+        yield Static("", id="willsay")
+        with Horizontal(id="phraseactions"):
+            yield Button("Send phrase", id="send", variant="primary")
+            yield Static("", id="phrasestatus")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -109,10 +131,12 @@ class DjConsole(App):
                               strict=True):
             self._cat_keys[label] = key
         self.query_one("#upcoming", DataTable).add_columns("#", "Type", "Name")
-        self.query_one("#charbar", Static).update(
-            "CHARACTER: pending setup   ·   VOICE: —   ·   "
-            "phrases arrive with character setup")
+        self._render_charbar()
+        self.query_one("#willsay", Static).update(
+            "Will say: —   (type a message, then Send phrase)")
+        self.query_one("#phrasestatus", Static).update("Status: idle")
         self._render_catalogue([])
+        self.load_character()
         self.poll_loop()
         self.refresh_catalogue()
 
@@ -174,6 +198,166 @@ class DjConsole(App):
         if self._search_timer is not None:
             self._search_timer.stop()
         self._search_timer = self.set_timer(0.3, self.refresh_catalogue)
+
+    # ------------------------------------------------------ character/phrase
+    def _typing(self) -> bool:
+        """True when a text field has focus: single-letter bindings must edit
+        text, not sort or refresh (TUI.md §2 focus rule)."""
+        focused = self.focused
+        return focused is not None and focused.id in ("search", "phrase")
+
+    def _character_id(self) -> str:
+        return (self.character.character_id if self.character is not None
+                else self.cfg.dj.character.id)
+
+    def _render_charbar(self) -> None:
+        ch = self.character
+        if ch is None:
+            text = "CHARACTER: loading…   ·   VOICE: —"
+        elif not ch.setup_complete:
+            text = (f"CHARACTER: {ch.name or 'unnamed'}   ·   VOICE: —   ·   "
+                    f"setup incomplete: {ch.block_reason or 'name/voice not set'}")
+        else:
+            text = (f"CHARACTER: {ch.name}   ·   VOICE: {ch.voice}   ·   "
+                    f"{len(ch.available_voices)} unused voices")
+            if ch.voice_discovery_error:
+                text += "   ·   voice list unavailable"
+        self.query_one("#charbar", Static).update(text)
+
+    @work(exclusive=True, group="character")
+    async def load_character(self) -> None:
+        try:
+            self.character = await self.client.character()
+        except DjError as e:
+            self._set_status(f"character unavailable — {e.code}")
+            self.query_one("#charbar", Static).update(
+                f"CHARACTER: unavailable — {e.code}   ·   VOICE: —")
+            return
+        except Exception:
+            self._set_status("character unavailable")
+            self.query_one("#charbar", Static).update(
+                "CHARACTER: unavailable   ·   VOICE: —")
+            return
+        self._render_charbar()
+
+    def _schedule_validate(self) -> None:
+        if self._phrase_timer is not None:
+            self._phrase_timer.stop()
+        self._phrase_timer = self.set_timer(0.35, self.validate_phrase_input)
+
+    def validate_phrase_input(self) -> None:
+        self._run_validate(self.query_one("#phrase", Input).value.strip())
+
+    @work(exclusive=True, group="validate")
+    async def _run_validate(self, text: str) -> None:
+        self._phrase_raw = text
+        self._phrase_ok = False
+        if not text:
+            self._phrase_clean = ""
+            self.query_one("#willsay", Static).update(
+                "Will say: —   (type a message, then Send phrase)")
+            self.query_one("#phrasestatus", Static).update("Status: idle")
+            return
+        try:
+            v = await self.client.validate_phrase(self._character_id(), text)
+        except DjError as e:
+            self.query_one("#phrasestatus", Static).update(
+                f"Status: validation failed — {e.code}")
+            return
+        except Exception:
+            self.query_one("#phrasestatus", Static).update(
+                "Status: validation failed")
+            return
+        self._phrase_clean = v.cleaned_text
+        self._phrase_hash = v.text_hash
+        self._phrase_ok = v.ok
+        if v.ok:
+            self.query_one("#willsay", Static).update(f"Will say: {v.cleaned_text}")
+            self.query_one("#phrasestatus", Static).update(
+                "Status: ready" + ("   ·   TTS cleanup applied" if v.changes else ""))
+        else:
+            self.query_one("#willsay", Static).update(
+                f"Will say: —   rejected: {v.rejected_reason}")
+            self.query_one("#phrasestatus", Static).update(
+                f"Status: rejected — {v.rejected_reason}")
+
+    def action_send_phrase(self) -> None:
+        self._submit_phrase()
+
+    @work(exclusive=True, group="submit")
+    async def _submit_phrase(self) -> None:
+        if self._sending:
+            self._set_status("phrase submission already in progress")
+            return
+        text = self.query_one("#phrase", Input).value.strip()
+        if not text:
+            self.query_one("#phrasestatus", Static).update(
+                "Status: type a message first")
+            return
+        if self.character is not None and not self.character.setup_complete:
+            self.query_one("#phrasestatus", Static).update(
+                "Status: character setup incomplete")
+            return
+        self._sending = True
+        self.query_one("#send", Button).disabled = True
+        self.query_one("#phrasestatus", Static).update("Status: validating…")
+        try:
+            # Re-validate the *current* text: the hash must match what renders
+            # (TUI.md §6), so a stale preview can never submit other words.
+            v = await self.client.validate_phrase(self._character_id(), text)
+            if not v.ok:
+                self.query_one("#phrasestatus", Static).update(
+                    f"Status: rejected — {v.rejected_reason}")
+                return
+            self._phrase_clean, self._phrase_hash = v.cleaned_text, v.text_hash
+            self.query_one("#willsay", Static).update(f"Will say: {v.cleaned_text}")
+            self.query_one("#phrasestatus", Static).update("Status: rendering…")
+            r = await self.client.submit_phrase(
+                uuid.uuid4().hex, self._character_id(), text, v.text_hash)
+        except DjError as e:
+            self.query_one("#phrasestatus", Static).update(
+                f"Status: not submitted — {e.code}: {e.detail}")
+            return
+        except Exception:
+            self.query_one("#phrasestatus", Static).update(
+                "Status: not submitted")
+            return
+        finally:
+            self._sending = False
+            self.query_one("#send", Button).disabled = False
+        self._job_id = r.job_id
+        self.query_one("#phrasestatus", Static).update(
+            f"Status: {r.status} (job {r.job_id})")
+        self.poll_phrase(r.job_id)
+
+    @work(exclusive=True, group="pollphrase")
+    async def poll_phrase(self, job_id: int) -> None:
+        """Track the render job until it airs or reaches a terminal state."""
+        terminal = {"aired", "failed", "expired", "skipped"}
+        while True:
+            try:
+                job = await self.client.phrase_job(job_id)
+            except DjError as e:
+                self.query_one("#phrasestatus", Static).update(
+                    f"Status: job {job_id} unavailable — {e.code}")
+                return
+            except Exception:
+                self.query_one("#phrasestatus", Static).update(
+                    f"Status: job {job_id} unavailable")
+                return
+            self._job_status = job.status
+            if job.status == "aired":
+                self.query_one("#phrasestatus", Static).update(
+                    f"Status: AIRED (job {job_id})")
+                return
+            if job.status in terminal:
+                self.query_one("#phrasestatus", Static).update(
+                    f"Status: {job.status} — {job.failure_reason or 'no detail'} "
+                    f"(job {job_id})")
+                return
+            self.query_one("#phrasestatus", Static).update(
+                f"Status: {job.status} (job {job_id})")
+            await asyncio.sleep(2.0)
 
     # ------------------------------------------------------------------- sort
     def _sorted(self, songs: Iterable[DjSong]) -> list[DjSong]:
@@ -248,24 +432,38 @@ class DjConsole(App):
         self._set_status("skip not enabled — read-only console (playback control next)")
 
     def action_phrase(self) -> None:
-        self._set_status("phrases not enabled — character setup next")
+        self.query_one("#phrase", Input).focus()
 
     def action_sort_name(self) -> None:
-        if self.focused is not self.query_one("#search", Input):
+        if not self._typing():
             self._toggle_sort("title")
 
     def action_sort_artist(self) -> None:
-        if self.focused is not self.query_one("#search", Input):
+        if not self._typing():
             self._toggle_sort("artist")
 
     def action_refresh(self) -> None:
-        self.refresh_catalogue()
+        if not self._typing():
+            self.refresh_catalogue()
 
     # ------------------------------------------------------------- handlers
     @on(Input.Changed, "#search")
     def _on_search(self, event: Input.Changed) -> None:
         self.query_text = (event.value or "").strip()
         self._schedule_search()
+
+    @on(Input.Changed, "#phrase")
+    def _on_phrase_changed(self, event: Input.Changed) -> None:
+        self._phrase_ok = False
+        self._schedule_validate()
+
+    @on(Input.Submitted, "#phrase")
+    def _on_phrase_submitted(self, event: Input.Submitted) -> None:
+        self.action_send_phrase()
+
+    @on(Button.Pressed, "#send")
+    def _on_send(self, event: Button.Pressed) -> None:
+        self.action_send_phrase()
 
     @on(DataTable.HeaderSelected, "#catalogue")
     def _on_header(self, event: DataTable.HeaderSelected) -> None:
