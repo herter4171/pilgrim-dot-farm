@@ -296,6 +296,8 @@ class Dj(BaseModel):
     cutover_fade_s: float = 0.02     # anti-click fade at the cutover boundary
     queue_max: int = 20
     phrase_max_chars: int = 280
+    phrase_prefix: str = "This is the administrator,"  # sign-on prepended to
+    # operator messages that do not already open with it (RADIO.md §4)
     phrase_ttl_s: int = 7200         # unqueued ready phrase lifetime
     job_timeout_s: int = 300
     character: DjCharacter = Field(default_factory=DjCharacter)

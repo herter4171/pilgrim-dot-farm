@@ -42,9 +42,12 @@ pilgrim/tools/submit_phrase.sh "This is your administrator. The pickle line is d
 ```
 
 The words are never rewritten by an LLM: the server runs the mandatory TTS
-cleanup, renders the clip in the character's voice, and appends it at the next
-legal boundary (RADIO.md §11, TUI.md §6). The script reads the admin listener
-address from `pilgrim/config.yaml`; override with `PILGRIM_STATION_URL`.
+cleanup, prepends the sign-on "This is the administrator," when the message
+does not already open with it (set `dj.phrase_prefix` to change it; empty
+disables it), renders the clip in the character's voice, and appends it at the
+next legal boundary (RADIO.md §4, §11, TUI.md §6). The script reads the admin
+listener address from `pilgrim/config.yaml`; override with
+`PILGRIM_STATION_URL`.
 
 ## Check the station
 

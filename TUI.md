@@ -342,9 +342,11 @@ Production sequence:
 
 1. Validate character, input limits and raw text. Reject URLs, empty text
    after cleanup and terminal/control escape sequences. Run the mandatory
-   TTS cleanup and show exactly the text to be spoken. Hash that result with
-   the character/config version; rendering requires the operator-confirmed
-   version so a validation race cannot change the spoken words.
+   TTS cleanup, prepend the administrator sign-on (`dj.phrase_prefix`) unless
+   the message already opens with it (RADIO §4), and show exactly the text to
+   be spoken. Hash that result with the character/config version; rendering
+   requires the operator-confirmed version so a validation race cannot change
+   the spoken words.
 2. Persist a bounded job and return immediately. A background worker freezes
    the voice/speed/cleaned-text snapshot and renders using the existing
    Kokoro client. `docs/backends.md` §3 records **GET** `/tts` with query

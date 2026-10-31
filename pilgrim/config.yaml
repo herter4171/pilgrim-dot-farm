@@ -149,6 +149,7 @@ dj:                          # DJ console (TUI.md §7, RADIO §12)
   cutover_fade_s: 0.02       # anti-click fade at the cutover boundary (§9.2)
   queue_max: 20
   phrase_max_chars: 280
+  phrase_prefix: "This is the administrator,"   # prepended unless already spoken (§4)
   phrase_ttl_s: 7200         # unqueued ready phrase lifetime
   job_timeout_s: 300
   character:

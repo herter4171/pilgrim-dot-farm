@@ -322,3 +322,45 @@ def test_character_voice_may_be_unassigned(base_config):
     raw["dj"]["character"]["voice"] = ""
     cfg = Config(**raw)
     assert cfg.dj.character.voice == ""
+
+
+# ------------------------------------------------------- administrator sign-on
+def test_validate_prepends_administrator_sign_on(cfg, tmp_env):
+    """RADIO.md §4: a message that does not open with the sign-on gets it."""
+    _, store, _ = tmp_env
+    m = _manager(cfg, store, _scheduler(cfg, store))
+    v = m.validate(cfg.dj.character.id, "We are sorry for the interruption.")
+    assert v["ok"] is True
+    assert v["cleaned_text"] == ("This is the administrator, We are sorry "
+                                 "for the interruption.")
+    assert any("prepended" in c["change"] for c in v["changes"])
+
+
+def test_validate_does_not_double_prepend(cfg, tmp_env):
+    _, store, _ = tmp_env
+    m = _manager(cfg, store, _scheduler(cfg, store))
+    for text in ("This is the administrator, we are back.",
+                 "this is the administrator. We are back.",
+                 "This is the administrator we are back."):
+        v = m.validate(cfg.dj.character.id, text)
+        assert v["ok"] is True
+        assert v["cleaned_text"].casefold().count("this is the administrator") == 1
+
+
+def test_empty_prefix_disables_sign_on(cfg, tmp_env):
+    cfg.dj.phrase_prefix = ""
+    _, store, _ = tmp_env
+    m = _manager(cfg, store, _scheduler(cfg, store))
+    v = m.validate(cfg.dj.character.id, "We are back.")
+    assert v["cleaned_text"] == "We are back."
+    assert v["changes"] == []
+
+
+def test_sign_on_counts_toward_max_chars(cfg, tmp_env):
+    cfg.dj.phrase_max_chars = 40
+    _, store, _ = tmp_env
+    m = _manager(cfg, store, _scheduler(cfg, store))
+    v = m.validate(cfg.dj.character.id, "x" * 20)
+    assert v["ok"] is False
+    assert v["rejected_reason"] == "too_long"
+    assert v["cleaned_text"].startswith("This is the administrator,")

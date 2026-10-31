@@ -1,11 +1,14 @@
-"""Operator phrase jobs (RADIO.md §11, §6.3; TUI.md §6).
+"""Operator phrase jobs (RADIO.md §4, §11, §6.3; TUI.md §6).
 
 A phrase is submitted **verbatim** by the station operator through the DJ
 console API: the typed words are the copy and are never rewritten or extended
-by an LLM. The mandatory TTS cleanup (\u00a7voice.tts_cleanup) runs on
-submission; the operator sees the exact cleaned text and confirms it via a
-`cleaned_text_hash` over (character, cleaned text, config version) so a
-submission/render race cannot change what is spoken.
+by an LLM. One deterministic exception is the administrator sign-on
+(`dj.phrase_prefix`): if the message does not already open with it, the server
+prepends it so listeners know who is speaking. The mandatory TTS cleanup
+(§voice.tts_cleanup) runs on submission; the operator sees the exact cleaned
+text (sign-on included) and confirms it via a `cleaned_text_hash` over
+(character, cleaned text, config version) so a submission/render race cannot
+change what is spoken.
 
 Lifecycle: ``queued -> rendering -> ready -> scheduled -> aired`` with
 ``failed`` / ``expired`` / ``skipped`` terminal outcomes. One-shot by
@@ -99,6 +102,7 @@ class PhraseManager:
         cleaned, changes = clean_and_diff(text)
         if not cleaned:
             return self._reject("empty_after_cleanup", character_id, text)
+        cleaned, changes = self._add_sign_on(cleaned, changes)
         if len(cleaned) > self.cfg.dj.phrase_max_chars:
             return self._reject("too_long", character_id, text, cleaned=cleaned,
                                 changes=changes)
@@ -110,6 +114,21 @@ class PhraseManager:
             "ok": True,
             "rejected_reason": None,
         }
+
+    def _add_sign_on(self, cleaned: str, changes: list[dict]) -> tuple[str, list[dict]]:
+        """Prepend the administrator sign-on unless the message already opens
+        with it (RADIO.md §4). This is deterministic station copy, never an LLM
+        rewrite. Matching ignores case and trailing punctuation so
+        ``This is the administrator,`` / ``this is the administrator.`` do not
+        get a doubled prefix. The prefix counts toward `phrase_max_chars`."""
+        prefix = (self.cfg.dj.phrase_prefix or "").strip()
+        if not prefix:
+            return cleaned, changes
+        core = prefix.rstrip(",.;:!?").casefold()
+        if core and cleaned.strip().casefold().startswith(core):
+            return cleaned, changes
+        return f"{prefix} {cleaned}", [
+            *changes, {"field": "text", "change": f"prepended {prefix!r}"}]
 
     def _reject(self, reason: str, character_id: str, text: str,
                 cleaned: str | None = None, changes: list | None = None) -> dict:

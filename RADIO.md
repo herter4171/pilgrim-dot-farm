@@ -123,7 +123,12 @@ Segment types the selector chooses from:
   sign-off (enforced in code). Contextual: aired once, never recycled.
 - `operator_phrase` — a phrase submitted **verbatim** by the station operator
   through the DJ console (TUI.md §6): the typed words are the copy, never
-  rewritten or extended by an LLM. Rendered once by the operator's character
+  rewritten or extended by an LLM. One deterministic exception: if the message
+  does not already open with the administrator sign-on (`dj.phrase_prefix`,
+  default `"This is the administrator,"`), the server prepends it so listeners
+  know who is speaking; matching ignores case and trailing punctuation, and the
+  prefix counts toward `phrase_max_chars`. The cleaned, hashed text includes
+  the sign-on. Rendered once by the operator's character
   (§10) with the mandatory TTS cleanup (§6.3). One-shot (never recycled);
   counts as a voice bridge and non-song segment with DJ-like news adjacency
   (§5.2); no automatic SFX in v1. Not drawn by the selector — only ever
@@ -934,6 +939,8 @@ dj:                            # DJ console (TUI.md §7)
   cutover_fade_s: 0.02         # anti-click fade at the cutover boundary (§9.2)
   queue_max: 20
   phrase_max_chars: 280
+  phrase_prefix: "This is the administrator,"  # prepended to a message that
+  # does not already open with it (§4); empty disables the sign-on
   phrase_ttl_s: 7200           # unqueued ready phrase lifetime
   job_timeout_s: 300
   character:
