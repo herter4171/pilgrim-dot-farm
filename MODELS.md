@@ -36,8 +36,10 @@ this file is the human-readable summary of *which model does what*.
     attributed on air ("according to…"). Bounded: **max 3 web searches, 60 s
     wall clock**; abort and keep the previous bulletin if the budget is hit.
   - **Song briefs** — JSON `{title, artist, genre, style_prompt, lyrics}`
-    validated against a schema (§6.2). Highest-priority LLM work once a request
-    lands.
+    validated against a schema (§6.2). `genre` is a MiniMax Music 3 style-family
+    id (18 families, `pilgrim/genres.py`); `style_prompt` is the full
+    three-heading structured caption (250-450 words). Highest-priority LLM work
+    once a request lands.
   - **DJ talk** — contextual talk-ups and intros, written just-in-time with the
     previous/next items as neighbors.
   - **Field reports** — the British field reporter's farm factoids.

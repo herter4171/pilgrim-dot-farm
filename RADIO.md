@@ -426,6 +426,17 @@ Workers:
    `{title, artist, genre, style_prompt, lyrics}`.
    - Genre drawn from a weighted list in config (variety is the point), subject
      to the no-repeat rule.
+   - **Style lock** (`genres.route_style`): a request that names a style routes
+     to the nearest family and the caption's `Genre / Subgenre` must name that
+     requested style. The validator also rejects a *positive* mention of a
+     conflicting style's signature instruments (fiddle, banjo, pedal steel,
+     steel guitar, dobro, twang, yodel, bluegrass, honky-tonk) in either the
+     caption or the lyrics when the brief is not in the country/folk
+     neighbourhood — negated mentions such as "no steel guitar" are allowed,
+     because stating an exclusion is required. Rationale: the audio model sings
+     the lyrics it is given and takes much of its feel from them, so a reggae
+     brief carrying country-coded lyrics comes back sounding country. Rejected
+     briefs are repaired once, then abandoned.
    - Artist may be drawn from the station bible's recurring fictional artists
      (§7), or invented.
    - Lyrics of arbitrary length. The request sends `duration_seconds` =
@@ -849,7 +860,16 @@ songs:
   stock_gap_s: 600           # idle gap between stock song generations; requests skip it
   stock_max_library: 100     # pause stock generation once the library holds this many songs;
                              # listener requests still produce. 0 = no ceiling
-  genres: {synthwave: 1, bluegrass: 1, doom metal: 1, bossa nova: 1, polka: 1, ...}
+  genres: {country-americana: 3, jazz-swing-big-band: 3, contemporary-folk-acoustic: 2,
+           roots-traditional-global: 2, soul-blues-gospel: 2, dance-pop-disco-funk: 2,
+           general-pop-ballad: 2, pop-alternative-rock: 2, traditional-vocal-stage: 2,
+           electronic-synth-ambient-pop: 1, hip-hop-rap: 1, modern-rnb-neo-soul: 1,
+           club-edm-house-trance: 1, metal-heavy-rock: 1, cinematic-pop-ballad: 1,
+           cinematic-orchestral-epic: 1, east-asian-modern: 1,
+           east-asian-ballad-heritage: 1}
+           # MiniMax Music 3 style families (prompting guide §5); ids must exist in
+           # pilgrim/genres.py. Genre is family-level; the caption names the
+           # specific Genre / Subgenre inside the family.
 
 news:
   refresh_s: 1800

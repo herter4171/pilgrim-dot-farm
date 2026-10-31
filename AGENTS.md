@@ -1,6 +1,8 @@
 # AGENTS.md — Pilgrim Dot Farm Radio
 
-Active work plan: SPLIT_PLAN.md (Steps 1–9 accepted; work Step 10).
+Active work plan: PAYMENT.md (paid priority requests via Stripe; start at
+Step 0). SPLIT_PLAN.md is complete (Steps 1–10) and stays the reference for
+the edge/gateway/origin layout.
 
 You are building an AI-generated radio station. **`RADIO.md` is the source of
 truth.** Read the relevant section of RADIO.md before implementing anything,
@@ -45,6 +47,14 @@ If a task cannot be done without breaking one, stop and report.
    `AudioBufferSourceNode.start(when)`). Never chain `<audio>` elements.
 10. **News is never recycled.** Contextual items (DJ talk-ups, time checks) are
     never recycled. Enforce this in code, not just in prompts.
+11. **Payments never touch playout, and the browser is never trusted about
+    money** (PAYMENT.md §0.3). `pilgrim/scheduler.py`, `pilgrim/selector.py`
+    and `pilgrim/producer.py` never import `pilgrim/payments.py` or call
+    Stripe. Only a signature-verified webhook or a server-side session
+    retrieve marks a request paid. Moderate before creating a Checkout
+    Session. Tests use `pilgrim/tests/fakes/fake_stripe.py`; real Stripe calls
+    happen only in `make pay-smoke` with a **test-mode** key. Never log or
+    store keys, `client_secret`, card data or customer email.
 
 ---
 
@@ -57,6 +67,7 @@ If a task cannot be done without breaking one, stop and report.
 | `ornith` | 4070 Ti host | via LiteLLM; commercials, liners |
 | Kokoro TTS | `192.168.68.89:8001` | `/tts`, `/voices`, `/health`; 16-bit mono 24 kHz |
 | searxng | see config | news search |
+| Stripe | `payments.api_base` in config | Checkout Sessions + webhooks; keys in `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (PAYMENT.md Step 0) |
 
 **Do not guess external APIs.** Before writing a client for any backend,
 probe it (`curl .../health`, `curl .../voices`, a minimal request) and record
@@ -143,6 +154,7 @@ make run       # start the station (public + admin listeners from config)
 make deploy-check # render both deploy templates and nginx -t them
 make e2e-split    # Playwright gap test through the local edge stack
 make split-smoke  # origin + gateway + edge PASS/FAIL checks (real public app)
+make pay-smoke    # Stripe test-mode smoke; refuses a live key (only when asked)
 ```
 
 ---
@@ -157,6 +169,8 @@ Run, in order, and include the results in your report:
 4. `make e2e` (from M9 onward)
 5. For split/deploy changes: `make deploy-check`, `make split-smoke`, and
    `make e2e-split`.
+6. For payment changes: everything above that the step lists (PAYMENT.md),
+   plus `make pay-smoke` output when Step 11 or later is touched.
 
 **Never report a task as complete without having run these.** If something
 fails and you can't fix it, say so plainly and show the failure. Do not skip,
@@ -188,6 +202,9 @@ Stop and ask instead of guessing when:
 - A design choice isn't covered by RADIO.md and would be hard to reverse
   (schemas, API shape, storage layout).
 - Voice role assignment (§10). This is a human listening decision.
+- Stripe behaves differently from PAYMENT.md or `docs/backends.md`, or a
+  payment step needs a key permission, Dashboard setting or policy text that
+  is not in place (PAYMENT.md Step 0, §14).
 
 For small, reversible choices, decide, note it under **Deviations**, and
 continue.
