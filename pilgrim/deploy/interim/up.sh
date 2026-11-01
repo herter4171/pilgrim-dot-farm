@@ -94,7 +94,15 @@ render() {
 
 case "${1:-start}" in
 start)
-    : "${TRUSTED_PROXY_CIDR:?set TRUSTED_PROXY_CIDR to the VPC CIDR of the ALB}"
+    if [ -z "${TRUSTED_PROXY_CIDR:-}" ]; then   # default: this instance's VPC (IMDSv2)
+        tok=$(curl -fsS -m 2 -X PUT http://169.254.169.254/latest/api/token \
+              -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' || true)
+        mac=$(curl -fsS -m 2 -H "X-aws-ec2-metadata-token: $tok" \
+              http://169.254.169.254/latest/meta-data/mac || true)
+        TRUSTED_PROXY_CIDR=$(curl -fsS -m 2 -H "X-aws-ec2-metadata-token: $tok" \
+              "http://169.254.169.254/latest/meta-data/network/interfaces/macs/$mac/vpc-ipv4-cidr-block" || true)
+    fi
+    : "${TRUSTED_PROXY_CIDR:?not on EC2: set TRUSTED_PROXY_CIDR to the VPC CIDR of the ALB}"
     cidr_ok "$TRUSTED_PROXY_CIDR" || { echo "error: TRUSTED_PROXY_CIDR=$TRUSTED_PROXY_CIDR" >&2; exit 2; }
     render
     case "$LOCAL_GATEWAY" in

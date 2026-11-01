@@ -3,7 +3,7 @@ PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
 FFMPEG := $(HOME)/bin/ffmpeg
 
-.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke
+.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status
 
 # --- setup ---------------------------------------------------------------
 venv:
@@ -42,6 +42,19 @@ e2e-split:
 
 split-smoke:
 	bash pilgrim/deploy/local/smoke.sh
+
+# --- EC2 stateless half (edge :8080 behind the ALB, + local gateway until the
+# origin moves to the M5). Env passes through: LOCAL_GATEWAY, ORIGIN_SCHEME,
+# ORIGIN_HOST, ORIGIN_HOSTPORT, MEDIA_CACHE_MAX, TRUSTED_PROXY_CIDR (default:
+# this instance's VPC CIDR). See pilgrim/deploy/interim/up.sh.
+edge-up:
+	bash pilgrim/deploy/interim/up.sh start
+
+edge-down:
+	bash pilgrim/deploy/interim/up.sh stop
+
+edge-status:
+	bash pilgrim/deploy/interim/up.sh status
 
 # --- run --------------------------------------------------------------
 run:
