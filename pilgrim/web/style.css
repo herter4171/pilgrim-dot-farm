@@ -218,14 +218,20 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   text-align: center; }
 .hit-link:hover { color: var(--cyan); }
 
-/* Infra and data flow pane (COSMETIC_PATCHING §7). */
+/* Infra and data flow pane (COSMETIC_PATCHING §7). The image is a portrait
+   diagram (1024x1536): it must be exactly as wide as the pane's interior
+   (pane width minus border and .win-body padding) and scale its height from
+   that width. Without the explicit width/height:auto pair the img renders at
+   its intrinsic 1024px and .window{overflow:hidden} clips it. The pane's
+   padding is tightened so the diagram sits close to the window outline, and
+   the image carries no frame of its own. */
 .window.infra { width: min(94vw, 484px); }
-.win-body.infra { align-items: stretch; text-align: left; gap: 12px; }
+.win-body.infra { padding: 6px; align-items: stretch; text-align: left; gap: 6px; }
 .infra-link { display: block; text-decoration: none; }
-.infra-img { display: block; width: 100%; height: auto; border: 1px solid var(--violet);
-  border-radius: 4px; background: #000; }
+.infra-img { display: block; width: 100%; max-width: 100%; height: auto;
+  border: 0; border-radius: 4px; background: #000; }
 .infra-link:hover .infra-img, .infra-link:focus-visible .infra-img {
-  border-color: var(--magenta); }
+  opacity: .92; }
 
 /* Footer copyright (COSMETIC_PATCHING): same centered column as the panes,
    plain cyan type, no glow so it reads as a footer rather than a label. */

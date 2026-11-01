@@ -46,6 +46,23 @@ test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", as
   // and the asset actually loads (not a 404 placeholder)
   const loaded = await page.$eval('.infra-img', img => img.complete && img.naturalWidth > 0);
   expect(loaded).toBe(true);
+  // COSMETIC_PATCHING §7: the diagram is scaled to the pane's INTERIOR width
+  // (pane width minus borders and .win-body padding), never its intrinsic
+  // 1024px (which .window{overflow:hidden} would clip).
+  const box = await page.$eval('.infra-img', img => {
+    const r = img.getBoundingClientRect();
+    const body = img.closest('.win-body') as HTMLElement;
+    const cs = getComputedStyle(body);
+    const interior = body.clientWidth
+      - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    return { imgW: r.width, imgH: r.height, interior, natW: img.naturalWidth,
+             natH: img.naturalHeight, contentW: img.clientWidth, contentH: img.clientHeight };
+  });
+  // border-box width equals the pane's interior width (border-box sizing is global)
+  expect(Math.abs(box.imgW - box.interior)).toBeLessThan(1);
+  expect(box.imgW).toBeLessThan(box.natW);
+  // height follows the width, preserving the diagram's aspect ratio (content box)
+  expect(Math.abs(box.contentH - box.contentW * (box.natH / box.natW))).toBeLessThan(1);
 });
 
 test("song label shows the audible track, not a buffered next one; STOP clears it", async ({ page }) => {
