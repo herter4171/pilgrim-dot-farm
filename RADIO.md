@@ -826,7 +826,7 @@ implemented in `server.py` yet; the read-only DJ routes, character setup, and
 phrase jobs are.
 
 **Listeners (SPLIT_PLAN §1).** One station process serves two HTTP listeners.
-The **public** listener (`station.host:station.port`; `:5000` on the origin)
+The **public** listener (`station.host:station.port`; loopback `:5080` on the origin)
 serves only the edge-facing routes: `GET /api/station/program`,
 `GET /api/station/state`, `POST /api/station/heartbeat`,
 `GET /api/media/{id}`, `GET|POST /api/requests`, `POST /api/visitors`, the
@@ -835,7 +835,7 @@ paid routes (`POST /api/paid-requests`, `GET /api/paid-requests/{token}`,
 `GET /api/health`. Its `/api/health` returns only `{"on_air", "time"}` and
 performs no backend or inventory probe — it is the only health shape a browser
 or edge sees. Any other `/api/*` path on the public listener is `404`. The
-**admin** listener (`station.admin_host:station.admin_port`; loopback `:5001`)
+**admin** listener (`station.admin_host:station.admin_port`; loopback `:5081`)
 is a superset: every route above plus `/api/station/start`,
 `/api/station/stop`, `/api/admin/voices`, and every `/api/admin/dj/*` route,
 with the full health payload. `/api/admin/*` is admin-only and must never be
@@ -897,9 +897,9 @@ deployment's encrypted connection or an SSH tunnel.
 ```yaml
 hosts:
   kokoro: http://192.168.68.89:8001
-  litellm: http://<LITELLM_HOST>
-  searxng: http://<SEARXNG_HOST>
-  sfx: http://127.0.0.1:8000      # MOSS-SoundEffect v2.0
+  litellm: https://litellm.twr.church/v1
+  searxng: https://litellm.twr.church/mcp   # LiteLLM MCP (web_search tool)
+  sfx: http://192.168.68.88:8000  # MOSS-SoundEffect v2.0
 
 models:
   news: qwen38
@@ -1036,11 +1036,11 @@ audio:
 
 station:
   name: Pilgrim Dot Farm
-  host: 0.0.0.0             # public listener bind
-  port: 5000                # public listener port (edge-facing routes only)
+  host: 127.0.0.1           # public listener bind (loopback; the gateway fronts it)
+  port: 5080                # public listener port (edge-facing routes only; 5000 is macOS AirPlay)
   admin_host: 127.0.0.1     # admin listener bind: loopback only
-  admin_port: 5001          # admin listener port; must differ from `port`
-  serve_web: true           # mount web/ on the public listener (single-host runs)
+  admin_port: 5081          # admin listener port; must differ from `port`
+  serve_web: false          # true only for single-host runs; edges serve web/
   timezone: America/Detroit   # DJ clock time (OVERHAUL 5.3)
 
 talk:
@@ -1364,6 +1364,8 @@ pilgrim/
     gateway/compose.yaml
     gateway/serve.json
     tailscale/policy.example.hujson
+    interim/up.sh         # EC2 edge launcher (`make edge-up`)
+    mac/origin.sh         # M5 origin: launchd station + Homebrew nginx gateway + tailscale serve
     launchd/farm.pilgrim.station.plist.example
     local/compose.yaml
   tools/

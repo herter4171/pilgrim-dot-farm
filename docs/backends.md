@@ -1,25 +1,31 @@
 # Backend probes — observed shapes (M1)
 
-Probed 2025-09-26. All hosts reached through SSH tunnels. Do not trust PLAN/AGENTS
-assumptions; trust these observed responses. Re-probe if a backend changes.
+First probed 2025-09-26 from the EC2 through SSH tunnels (`localhost:*`).
+Since 2026-11-01 the station runs on the M5 Mac Studio and reaches every
+backend directly; **no SSH tunnels**. Do not trust PLAN/AGENTS assumptions;
+trust these observed responses. Re-probe if a backend changes.
 
-## 0. Access
+## 0. Access (from the M5 origin, probed 2026-11-01)
 
-Services are NOT hosted on this box — they are forwarded via SSH tunnels:
+| Backend | Endpoint (`config.yaml`) | Observed |
+|---------|--------------------------|----------|
+| LiteLLM (LLMs) | `https://litellm.twr.church/v1` | `/health/liveliness` 200; `/v1/models` 401 without token, 200 with: `qwen38`, `Ornith-1.5-9B`, `MiniMax-Music-3`, `qwen38-mlx`, `deepseek-v4-flash`, … |
+| Song pool via LiteLLM | `https://litellm.twr.church/vllm` | derived from `hosts.litellm` (§2b) |
+| searxng (LiteLLM MCP) | `https://litellm.twr.church/mcp` | §5 |
+| mlx-serve (MiniMax Music 3) | `http://127.0.0.1:11234` (also `:8420`) | `/health` 200; one of three pool members (§2b) |
+| Kokoro TTS | `http://192.168.68.89:8001` | `/health` 200, `/voices` 55 ids |
+| SFX (MOSS) | `http://192.168.68.88:8000` | `/health` → `{"status":"ok","model":"moss-soundeffect-v2.0","device":"cuda","dtype":"torch.bfloat16","sample_rate":48000,"max_seconds":30,"error":null}` |
 
-| Backend | Local endpoint | Tunnel | Status on probe |
-|---------|----------------|--------|-----------------|
-| LiteLLM (LLMs) | `http://localhost:4000/v1` | up | OK |
-| mlx-serve (MiniMax Music 3) | `http://127.0.0.1:11234` | up | OK (now one of three; see §2b) |
-| Song pool via LiteLLM | `http://localhost:4000/vllm` | (proxy) | OK, 2026-11-01 (§2b) |
-| Kokoro TTS | `http://localhost:8001` | up | OK (55 voices, 24 kHz mono) |
-| Playwright | `http://localhost:8931` | up (MCP) | browser backend fails (still) |
+The EC2 is now an edge only and cannot reach LiteLLM or the LAN; it reaches
+the origin solely through Tailscale serve (§8). Sections below keep their
+original probe notes; the `localhost:*` URLs in them are the old tunnel
+addresses for the endpoints in this table.
 
 Auth: `LITELLM_TOKEN` in `.env`, sent as `Authorization: Bearer <token>`.
 
 ---
 
-## 1. LLM — LiteLLM proxy (`localhost:4000/v1`)
+## 1. LLM — LiteLLM proxy (`https://litellm.twr.church/v1`; was `localhost:4000/v1`)
 
 ### Models (`GET /v1/models`) — observed:
 
@@ -247,7 +253,7 @@ Authorization: Bearer $LITELLM_TOKEN
 
 ---
 
-## 3. Kokoro TTS — `localhost:8001` (verified)
+## 3. Kokoro TTS — `192.168.68.89:8001` (verified; was tunnelled as `localhost:8001`)
 
 Tunnel up. `GET /health` → `{"status":"ok","device":"cuda","model_loaded":true,"num_voices":55,"default_voice":"af_heart","queue":{"pending":0}}` (re-probed 2026-10-30: 55, was 54 at first probe).
 
@@ -275,7 +281,7 @@ concatenates (same 24 kHz) before writing the WAV.
 
 ---
 
-## 5. SearXNG — via LiteLLM MCP (`http://localhost:4000/mcp`)
+## 5. SearXNG — via LiteLLM MCP (`https://litellm.twr.church/mcp`; was `localhost:4000/mcp`)
 
 searxng is **not** a direct HTTP service reachable at `:8888`. It is exposed
 as the `web_search-searxng_web_search` tool on the LiteLLM MCP server
@@ -329,7 +335,7 @@ degrades to a model-written bulletin.
 
 ---
 
-## 7. SFX — MOSS-SoundEffect v2.0 (`127.0.0.1:8000`, verified 2026-10-01)
+## 7. SFX — MOSS-SoundEffect v2.0 (`192.168.68.88:8000`, re-verified 2026-11-01; was tunnelled as `127.0.0.1:8000`)
 
 OpenAI-style wrapper (FastAPI, `/openapi.json` available), no auth, CUDA bf16.
 Replaced Stable Audio 3 Small SFX (`:8500`); `SFX.md` §1–§2 hold the old
@@ -466,6 +472,31 @@ Expected `https://js.stripe.com/v3/` then
 `stripe.initEmbeddedCheckout({ fetchClientSecret, onComplete })` →
 `checkout.mount("#pay-checkout")`. The probe above proves the server side; the
 client side is verified against the real page in Step 8.
+
+---
+
+## 8. Split transport — Tailscale serve (edge → origin), observed 2026-11-01
+
+- **Serve must be enabled for the tailnet once** (admin console). Until then
+  `tailscale serve --bg ...` prints `Serve is not enabled on your tailnet` plus
+  a `login.tailscale.com/f/serve?node=...` link and blocks.
+- Origin: `tailscale serve --bg --https=443 http://127.0.0.1:8090` on the M5's
+  own node → `https://justins-mac-studio.tail063158.ts.net (tailnet only)`,
+  `/ proxy http://127.0.0.1:8090`.
+- Edge node tag is **`tag:radio-relay`** (not `tag:radio-edge` as in
+  `deploy/tailscale/policy.example.hujson`); the M5 is an untagged user node.
+  Live grant: `{"src": ["tag:radio-relay"], "dst": ["pilgrim-origin"],
+  "ip": ["tcp:443"]}` with host alias `pilgrim-origin: 100.114.40.70`. Without
+  it, `tailscale ping` still works but TCP 443 times out.
+- **Certificate chain is three deep:** `CN=<node>.ts.net` ← `Let's Encrypt YE1`
+  ← `ISRG Root YE` (cross-signed by `ISRG Root X2`). `openssl s_client
+  -verify_depth 1` → `22 (certificate chain too long)`; depth 2 → `0 (ok)`,
+  with both the AL2023 bundle and the `nginx:1.30.6-alpine` bundle. nginx's
+  `proxy_ssl_verify_depth` defaults to 1, which logs `upstream SSL certificate
+  verify error: (20:unable to get local issuer certificate)` and makes the edge
+  serve off-air. The edge template sets `proxy_ssl_verify_depth 3`.
+- busybox `wget` in the alpine image does **not** verify certificates, so a
+  `wget` success from inside the edge container proves nothing about TLS.
 
 ---
 

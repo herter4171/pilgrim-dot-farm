@@ -102,6 +102,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_cache edge_micro;
@@ -121,6 +122,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_cache edge_micro;
@@ -142,6 +144,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_read_timeout 300s;   # > gateway's 270s (§5.3.8)
@@ -165,6 +168,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_read_timeout 300s;   # moderation + Checkout create
@@ -184,6 +188,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_read_timeout 60s;    # one Checkout Session create
@@ -202,6 +207,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_cache off;          # origin sends no-store
@@ -218,6 +224,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             client_max_body_size 256k;
@@ -238,6 +245,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_cache edge_micro;
@@ -258,6 +266,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_cache off;
@@ -274,6 +283,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_cache off;
@@ -294,6 +304,7 @@ http {
             proxy_ssl_server_name on;
             proxy_ssl_name @@ORIGIN_HOST@@;
             proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
             proxy_ssl_verify_depth 3;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_cache edge_media;

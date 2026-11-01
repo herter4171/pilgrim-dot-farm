@@ -92,7 +92,8 @@ def test_public_web_mount_follows_serve_web(tmp_env):
 
 def test_public_cache_headers(tmp_env):
     """SPLIT_PLAN §2: one assertion per row of the caching table."""
-    cfg, station = _station(tmp_env)
+    # the static-file row needs the web mount (single-host mode)
+    cfg, station = _station(tmp_env, serve_web=True)
     media = Path(cfg.library.dir) / "tone.flac"
     media.write_bytes(tone_wav(0.2))
     item_id = station.db.add_item(type_="song", media_path=str(media),

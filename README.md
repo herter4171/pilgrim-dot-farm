@@ -11,13 +11,28 @@ The Makefile uses Python 3.14. Install `ffmpeg` and `ffprobe`, then set the
 backend addresses and models in [pilgrim/config.yaml](pilgrim/config.yaml).
 Their observed request formats are recorded in [docs/backends.md](docs/backends.md).
 Put `LITELLM_TOKEN=...` in a git-ignored `.env` file at the repo root.
-The origin gateway's Tailscale sidecar reads `TS_AUTHKEY` from an env file
-outside the repo (see [pilgrim/deploy/README.md](pilgrim/deploy/README.md)).
+The Docker gateway variant's Tailscale sidecar reads `TS_AUTHKEY` from an env
+file outside the repo (see [pilgrim/deploy/README.md](pilgrim/deploy/README.md));
+the current native M5 setup needs no key.
+
+## Deployment
+
+Split, with all state on one machine:
+
+```
+listener → Cloudflare → ALB → EC2 edge nginx :8080 (stateless; make edge-up)
+        → tailnet https://justins-mac-studio.tail063158.ts.net (tailscale serve)
+        → M5 gateway nginx 127.0.0.1:8090 → station 127.0.0.1:5080
+```
+
+The M5 Mac Studio holds `station.db`, `pilgrim/library/` and `.env`, and runs
+the station + gateway under launchd (`pilgrim/deploy/mac/origin.sh install`).
+The EC2 holds only the edge. Details: [pilgrim/deploy/README.md](pilgrim/deploy/README.md).
 
 ```sh
 make venv       # install Python dependencies
 make seed       # fill a new library using the real backends
-make run        # start the station: public listener :5000, admin (DJ console) :5001
+make run        # start the station: public listener :5080, admin (DJ console) :5081
 make tui        # operator DJ console (Textual; needs PILGRIM_DJ_TOKEN for /api/admin/dj/*)
 pilgrim/tools/submit_phrase.sh "message"   # air an administrator message verbatim
 ```
@@ -87,7 +102,7 @@ All application code, prompts, the station bible, and tests live under
 Keep credentials in environment variables or the git-ignored `.env` file.
 `LITELLM_TOKEN` authenticates LLM, moderation, and news requests.
 `PILGRIM_DJ_TOKEN` authenticates `/api/admin/dj/*` on the admin listener
-(`127.0.0.1:5001`); `make tui` reads it. Never use the LiteLLM token for DJ
+(`127.0.0.1:5081`); `make tui` reads it. Never use the LiteLLM token for DJ
 controls. Service URLs belong in `pilgrim/config.yaml`.
 
 Stripe (PAYMENT.md Step 0.8) — all three must be set, and `payments.enabled`

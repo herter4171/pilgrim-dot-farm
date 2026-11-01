@@ -111,7 +111,7 @@ if [ -n "${ORIGIN_TS_IP:-}" ]; then
     else
         fail "11 origin $ORIGIN_TS_IP:443 unreachable"
     fi
-    for port in 22 80 5000 5001 8090; do
+    for port in 22 80 5000 5001 5080 5081 8090; do
         if timeout 3 bash -c "</dev/tcp/$ORIGIN_TS_IP/$port" 2>/dev/null; then
             fail "11 origin $ORIGIN_TS_IP:$port unexpectedly reachable"
         else
@@ -143,7 +143,7 @@ fi
 # Optional: other tailnet devices that must be unreachable from an edge
 # (space-separated, e.g. the M5 host's own Tailscale IP).
 for ip in ${DENY_TS_IPS:-}; do
-    for port in 22 443 5000 5001; do
+    for port in 22 443 5000 5001 5080 5081; do
         if timeout 3 bash -c "</dev/tcp/$ip/$port" 2>/dev/null; then
             fail "11 $ip:$port unexpectedly reachable"
         else

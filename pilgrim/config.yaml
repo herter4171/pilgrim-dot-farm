@@ -3,22 +3,22 @@
 
 station:
   name: "Pilgrim Dot Farm"
-  port: 5000               # PUBLIC listener: edge-facing routes only
-  host: "0.0.0.0"
-  admin_port: 5001         # ADMIN listener: full API incl. /api/admin/*
+  port: 5080               # PUBLIC listener: edge-facing routes only (5000 is macOS AirPlay Receiver)
+  host: "127.0.0.1"        # loopback only on the M5 origin (RUNBOOK §2); the gateway fronts it
+  admin_port: 5081         # ADMIN listener: full API incl. /api/admin/*
   admin_host: "127.0.0.1"  # loopback only by default; never expose this
-  serve_web: true          # mount web/ on the public listener (single-host run)
+  serve_web: false         # edges serve pilgrim/web/ (split); true only for a single-host run
   rng_seed: null           # set for deterministic tests/sim
   timezone: America/Detroit  # DJ clock time (OVERHAUL 5.3)
 
 hosts:
   # song generators are the pool in songs.gen_backends (RADIO §6.2)
-  kokoro: http://localhost:8001
-  litellm: http://localhost:4000/v1
+  kokoro: http://192.168.68.89:8001
+  litellm: https://litellm.twr.church/v1
   # searxng is reached through the LiteLLM MCP server (web_search-searxng tool),
   # NOT a direct HTTP /search. This is the MCP Streamable-HTTP endpoint.
-  searxng: http://localhost:4000/mcp
-  sfx: http://127.0.0.1:8000   # MOSS-SoundEffect v2.0 (docs/backends.md §7)
+  searxng: https://litellm.twr.church/mcp
+  sfx: http://192.168.68.88:8000   # MOSS-SoundEffect v2.0 (docs/backends.md §7)
 
 models:
   news: qwen38

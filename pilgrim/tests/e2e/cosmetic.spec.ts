@@ -1,18 +1,18 @@
 /** Cosmetic page tests (COSMETIC_PATCHING). Backend-free; the e2e server seeds
  *  a temp library with fake FLAC + song titles. Verifies pane order/labels,
  *  the song label under the meter, the three-row recent history, the model
- *  credits, hit counter, and SoundCloud panes, and that a failing visitor counter never
+ *  credits, hit counter, and infra/data-flow panes, and that a failing visitor counter never
  *  disturbs PLAY or the request line. */
 import { test, expect } from "@playwright/test";
 
 test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", async ({ page }) => {
   await page.goto("/");
   const order = await page.$$eval(".window", els => els.map(e => e.getAttribute("data-win")));
-  expect(order).toEqual(["radio", "requests", "credits", "hit", "soundcloud"]);
+  expect(order).toEqual(["radio", "requests", "credits", "hit", "infra"]);
   expect(await page.textContent('[data-win="radio"] .win-title')).toBe("RADIO BROADCAST");
   expect(await page.$('[data-win="credits"]')).toBeTruthy();
   expect(await page.$('[data-win="hit"]')).toBeTruthy();
-  expect(await page.textContent('[data-win="soundcloud"] .win-title')).toBe("SOUNDCLOUD");
+  expect(await page.textContent('[data-win="infra"] .win-title')).toBe("INFRA AND DATA FLOW");
   // five documented models + Kokoro-82M = six credit rows, plus the asset credit
   expect(await page.$$eval(".credits-list li", els => els.length)).toBe(7);
   expect(await page.textContent('[data-win="credits"] .win-title')).toBe("CREDITS");
@@ -35,15 +35,17 @@ test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", as
     "_blank",
     "noopener noreferrer",
   ]);
-  // the SoundCloud pane lists both tracks as "Title - Artist" links, new tab
-  const scLinks = await page.$$eval(".sc-list a.sc-track",
-    els => els.map(a => [a.textContent, a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")]));
-  expect(scLinks).toEqual([
-    ["My Girl Carrying Big Melons - user6464167",
-     "https://soundcloud.com/user6464167/my-girl-carrying-big-melons", "_blank", "noopener noreferrer"],
-    ["Goblin's Furlong - user6464167",
-     "https://soundcloud.com/user6464167/goblins-furlong", "_blank", "noopener noreferrer"],
-  ]);
+  // the infra pane shows infra.png as content, linked to the full-size image
+  const infra = await page.$eval('.infra-link img.infra-img',
+    img => [img.getAttribute('src'), img.getAttribute('alt')]);
+  expect(infra[0]).toBe("img/infra.png");
+  expect(infra[1]).toMatch(/infrastructure and data flow/i);
+  const infraLink = await page.$eval(".infra-link",
+    a => [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")]);
+  expect(infraLink).toEqual(["img/infra.png", "_blank", "noopener noreferrer"]);
+  // and the asset actually loads (not a 404 placeholder)
+  const loaded = await page.$eval('.infra-img', img => img.complete && img.naturalWidth > 0);
+  expect(loaded).toBe(true);
 });
 
 test("song label shows the audible track, not a buffered next one; STOP clears it", async ({ page }) => {

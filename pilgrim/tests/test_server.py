@@ -15,6 +15,7 @@ from pilgrim.server import create_app
 def test_site_served(tmp_env):
     """RADIO.md §11 GET / serves the static UI; assets are reachable."""
     cfg, _, _ = tmp_env
+    cfg.station.serve_web = True  # single-host mode; the split origin ships false
     app = create_app(cfg)
     c = TestClient(app)
     r = c.get("/")
