@@ -1,5 +1,5 @@
 """Operator import: add an existing audio file (MP3/WAV/FLAC/...) to the song
-library. QC (§8.1) -> two-pass normalize -> FLAC delivery (§8.2) -> store as a
+library. QC (§8.1) -> two-pass normalize -> MP3 delivery (§8.2) -> store as a
 fresh evergreen song -> best-effort DJ intro, exactly like the stock song path
 (§6.2 / producer.song_step). The scheduler airs fresh songs newest-first
 (Tier 1, RADIO §5.2), so an imported song plays at the next song slot after
@@ -83,8 +83,8 @@ async def import_song(src: Path, title: str | None, artist: str | None,
     print(f"QC ok: {duration:.1f}s, {sr} Hz, {x.shape[1] if x.ndim > 1 else 1}ch"
           + (", abrupt end -> soft fade" if verdict.abrupt_end else ""))
 
-    # 2) Two-pass loudnorm -> FLAC (§8.2), same soft landing as stock songs.
-    dst = media_dir / f"song_{int(time.time() * 1000)}.flac"
+    # 2) Two-pass loudnorm -> MP3 (§8.2), same soft landing as stock songs.
+    dst = media_dir / f"song_{int(time.time() * 1000)}.mp3"
     meta = normalize.normalize(src, dst, cfg,
                                fade_out_s=cfg.songs.abrupt_fade_s
                                if verdict.abrupt_end else 0.0)

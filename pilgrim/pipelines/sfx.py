@@ -1,5 +1,5 @@
 """Sound-effect pipeline (SFX.md §1, §7.3): prompt -> MOSS-SoundEffect -> QC ->
-normalize -> FLAC `sfx` item.
+normalize -> MP3 `sfx` item.
 
 SFX items are never airable on their own: they ride on a host clip as a
 sidecar overlay (`meta.sfx` on the host, see `pilgrim/sfx_plan.py`). Rendering
@@ -73,7 +73,7 @@ class SfxClient:
 
 
 class SfxPipeline:
-    """Render one curated cue into a normalized FLAC (not yet stored)."""
+    """Render one curated cue into a normalized MP3 (not yet stored)."""
 
     def __init__(self, cfg: Config, client: SfxClient, media_dir: Path) -> None:
         self.cfg = cfg
@@ -106,7 +106,7 @@ class SfxPipeline:
             raise ValueError("sfx mostly silent")
         stamp = int(time.time() * 1000)
         tmp = self.media_dir / f"_sfx_tmp_{stamp}.wav"
-        dst = self.media_dir / f"sfx_{name}_{stamp}.flac"
+        dst = self.media_dir / f"sfx_{name}_{stamp}.mp3"
         tmp.write_bytes(wav)
         try:
             meta = normalize.normalize(tmp, dst, self.cfg)

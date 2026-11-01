@@ -35,7 +35,10 @@ def _no_repo_secrets(monkeypatch):
 
 @pytest.fixture
 def base_config() -> Config:
-    return load_config(ROOT / "config.yaml")
+    cfg = load_config(ROOT / "config.yaml")
+    # Tests never upload to S3 (AGENTS §1.2): publisher tests inject a fake.
+    cfg.media.publish = False
+    return cfg
 
 
 @pytest.fixture

@@ -3,7 +3,7 @@ PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
 FFMPEG := $(HOME)/bin/ffmpeg
 
-.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status
+.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status media-smoke mp3-migrate
 
 # --- setup ---------------------------------------------------------------
 venv:
@@ -77,3 +77,12 @@ seed:
 smoke:
 	PATH="$(HOME)/bin:$(PATH)" LITELLM_TOKEN=$$(grep LITELLM_TOKEN .env | cut -d= -f2) \
 		$(PY) -m pilgrim.tests.smoke $(SMOKE_ARGS)
+
+# Real S3 + CloudFront round trip of one 2 s tone (RADIO §8.4). Only when asked.
+media-smoke:
+	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tools.media_smoke
+
+# Library backfill to MP3 + S3 (RADIO §8.4). Dry run by default:
+#   make mp3-migrate MIGRATE_ARGS="--apply --upload"
+mp3-migrate:
+	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tools.mp3_migrate $(MIGRATE_ARGS)

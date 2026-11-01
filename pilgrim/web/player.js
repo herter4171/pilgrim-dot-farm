@@ -122,8 +122,10 @@
     }
     throw new Error(what + " HTTP " + res.status);
   }
-  async function decode(mediaId, audioContext) {
-    const r = await fetch("/api/media/" + mediaId);
+  /* Audio comes from CloudFront (`url`, RADIO §8.4); the origin's
+     /api/media/<id> is only the fallback for items not yet in S3. */
+  async function decode(entry, audioContext) {
+    const r = await fetch(entry.url || ("/api/media/" + entry.media_id));
     if (!r.ok) await throwHttp("media", r);
     return await audioContext.decodeAudioData(await r.arrayBuffer());
   }
@@ -131,14 +133,14 @@
   async function getDecoded(i) {
     const it = items[i];
     if (!it) return null;
-    if (!it.buffer) it.buffer = await decode(it.media_id, ctx);
+    if (!it.buffer) it.buffer = await decode(it, ctx);
     // SFX overlays decode in the background and are never awaited: a slow or
     // failed stinger is skipped, it never delays its host (SFX.md §7.4).
     for (const ov of it.sfx || []) {
       if (ov._loading) continue;
       ov._loading = true;
       const c = ctx;
-      decode(ov.media_id, c).then(b => {
+      decode(ov, c).then(b => {
         if (c !== ctx || (it._scheduled && !it._gain)) return;  // host already done
         ov.buffer = b;
         if (it._scheduled) scheduleOverlay(it, ov);

@@ -189,6 +189,13 @@ class Store:
             if "play_count" not in cols:
                 self._conn.execute(
                     "ALTER TABLE items ADD COLUMN play_count INTEGER DEFAULT 0")
+            # idempotent migration (RADIO §8.4, §14): S3 is the media source of
+            # truth. s3_key is the object key in media.bucket (NULL = not yet
+            # uploaded; the API then falls back to /api/media/<id>).
+            if "s3_key" not in cols:
+                self._conn.execute("ALTER TABLE items ADD COLUMN s3_key TEXT")
+            if "uploaded_at" not in cols:
+                self._conn.execute("ALTER TABLE items ADD COLUMN uploaded_at TEXT")
             # idempotent migration (OVERHAUL 4.4 + PAYMENT.md §3.1): request
             # lifecycle + paid-priority columns. Additive only.
             req_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(requests)")}
@@ -252,6 +259,35 @@ class Store:
                 self._bump_catalogue()
             self._conn.commit()
             return int(rid)
+
+    def items_to_publish(self, limit: int = 50) -> list[dict[str, Any]]:
+        """MP3 items not yet in S3 (RADIO §8.4), oldest first. Emergency items
+        are local-only (§8.3) and never published."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM items WHERE s3_key IS NULL AND emergency=0 "
+                "AND media_path LIKE '%.mp3' ORDER BY id LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_published(self, item_id: int, s3_key: str) -> None:
+        """Record a confirmed upload. Only a successful PUT calls this."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE items SET s3_key=?, uploaded_at=? WHERE id=?",
+                (s3_key, _now_iso(), item_id))
+            self._conn.commit()
+
+    def set_media_file(self, item_id: int, *, media_path: str, duration_s: float,
+                       sample_rate: int, channels: int) -> None:
+        """Point an item at a re-encoded file (tools/mp3_migrate). The old file
+        stays on disk (hard rule 5); any previous upload no longer matches, so
+        s3_key is cleared and the uploader re-publishes."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE items SET media_path=?, duration_s=?, sample_rate=?, "
+                "channels=?, s3_key=NULL, uploaded_at=NULL WHERE id=?",
+                (media_path, duration_s, sample_rate, channels, item_id))
+            self._conn.commit()
 
     def get_item(self, item_id: int) -> dict[str, Any] | None:
         with self._lock:

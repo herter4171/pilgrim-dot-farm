@@ -263,7 +263,7 @@ class VoicePipeline:
         speed = self.cfg.voices.speed
         wav = await self.kokoro.synth(clean, voice, speed)
         # staging-safe (TUI.md §6.4): the intermediate WAV never collides with a
-        # concurrent job; the final FLAC lands directly in the media dir.
+        # concurrent job; the final MP3 lands directly in the media dir.
         with tempfile.TemporaryDirectory(prefix="radio_vp_") as td:
             r = _finalize_voice(self.cfg, wav, clean, self.media_dir, role,
                                 Path(td), target_s=target_s)
@@ -275,7 +275,7 @@ class VoicePipeline:
         """Render EXACT words (verbatim, never LLM-rewritten) as an operator
         phrase (RADIO §11, TUI.md §6, §6.4). Runs the mandatory TTS cleanup
         (idempotent on already-confirmed text), synthesizes with the given
-        voice/speed, and QC/normalizes into a fresh FLAC in a per-job staging
+        voice/speed, and QC/normalizes into a fresh MP3 in a per-job staging
         dir outside the library, publishing only after QC passes."""
         clean = tts_cleanup(text)
         speed = speed if speed is not None else self.cfg.voices.speed
@@ -321,8 +321,8 @@ def _finalize_voice(cfg, wav: bytes, clean: str, out_dir: Path, tag: str,
                     staging: Path, target_s: float | None = None,
                     min_dur: float = 0.5, max_dur: float = float("inf")) -> dict:
     """Shared post-synth voice path: write a staged WAV, QC it, two-pass
-    normalize to −16 LUFS / −1 dBTP FLAC in ``out_dir``, then a speech-rate gate
-    that rejects truncated TTS and removes the just-written bad FLAC (OVERHAUL
+    normalize to −16 LUFS / −1 dBTP MP3 in ``out_dir``, then a speech-rate gate
+    that rejects truncated TTS and removes the just-written bad MP3 (OVERHAUL
     2.1, RADIO §6.3, §8.2). Pure-ish: raises ValueError on any rejection."""
     tmp = staging / "_render_tmp.wav"
     tmp.write_bytes(wav)
@@ -337,8 +337,8 @@ def _finalize_voice(cfg, wav: bytes, clean: str, out_dir: Path, tag: str,
     # rough duration targeting: accept within ±40% since voice length is an estimate
     if target_s is not None and (duration < 0.4 * target_s or duration > 2.2 * target_s):
         raise ValueError(f"voice duration {duration}s outside tolerance of {target_s}s")
-    # normalize -> flac
-    dst = out_dir / f"{tag}_{int(time.time()*1000)}.flac"
+    # normalize -> mp3 (RADIO §8.2)
+    dst = out_dir / f"{tag}_{int(time.time()*1000)}.mp3"
     meta = normalize.normalize(tmp, dst, cfg)
     # speech-rate gate: re-run the duration tolerance on the NORMALIZED audio
     # too (post-processing can shorten it), and reject truncated TTS — too many

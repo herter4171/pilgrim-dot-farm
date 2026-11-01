@@ -46,6 +46,7 @@ from pilgrim.config import (
 )
 from pilgrim.dj_security import require_dj
 from pilgrim.logging_setup import setup_logging
+from pilgrim.media_publish import MediaPublisher, S3ObjectStore, public_url
 from pilgrim.payments import (
     PaymentService,
     StripeClient,
@@ -146,6 +147,22 @@ class Station:
         self.override_token = load_secret(PAID_OVERRIDE_ENV)
         self._tasks: list = []
         self._http = httpx.AsyncClient(timeout=4.0)
+        # S3 publishing (RADIO §8.4): its own task, never inside playout.
+        self.publisher: MediaPublisher | None = None
+        if cfg.media.publish:
+            try:
+                self.publisher = MediaPublisher(cfg, self.db, S3ObjectStore(cfg))
+            except Exception as e:  # noqa: BLE001 - no creds/boto3: degrade to /api/media
+                log.warning("media.publisher_disabled", extra={"error": str(e)[:300]})
+
+    def media_url(self, item_id: int, inv: dict | None = None) -> str:
+        """Browser URL for an item's audio (RADIO §8.4, §11)."""
+        if inv is None:
+            inv = self.db.get_item(item_id)
+        return public_url(self.cfg, inv, item_id)
+
+    def _with_urls(self, overlays: list[dict]) -> list[dict]:
+        return [{**ov, "url": self.media_url(int(ov["media_id"]))} for ov in overlays]
 
     # ------------------------------------------------------------------ health
     async def backend_status(self) -> dict:
@@ -254,8 +271,9 @@ class Station:
             title = (inv.get("title") if inv else None) or ""
             artist = (inv.get("artist") if inv else None) or ""
             out.append({"seq": it["seq"], "media_id": it["item_id"],
+                        "url": self.media_url(it["item_id"], inv),
                         "type": it["type"], "duration_s": it["duration_s"],
-                        "sfx": scheduler.overlays_for(it["seq"]),
+                        "sfx": self._with_urls(scheduler.overlays_for(it["seq"])),
                         "title": title, "artist": artist})
         return {"items": out, "start_offset_s": start_offset,
                 "epoch": scheduler.epoch, "revision": scheduler.revision,
@@ -265,7 +283,7 @@ class Station:
         """Cheap station state for DJ-aware clients (RADIO §11, §5.3).
         Reads in-memory schedule state; never probes production backends."""
         st = self.scheduler
-        seq = ctype = None
+        seq = ctype = url = None
         offset = 0.0
         if st._items:
             s, off = st.on_air()
@@ -273,9 +291,11 @@ class Station:
                 row = next((r for r in st._items if r["seq"] == s), None)
                 seq, offset = s, off
                 ctype = row["type"] if row else None
+                url = self.media_url(row["item_id"]) if row else None
         return {"epoch": st.epoch, "revision": st.revision,
                 "server_time": time.time(), "current_seq": seq,
-                "current_type": ctype, "current_offset_s": round(offset, 3),
+                "current_type": ctype, "current_url": url,
+                "current_offset_s": round(offset, 3),
                 "prepared_cutover": None, "listeners": self.active_listeners()}
 
     # ------------------------------------------------------------- listeners
@@ -440,6 +460,8 @@ class Station:
         self._tasks.append(asyncio.create_task(self.producer.song_loop()))
         self._tasks.append(asyncio.create_task(self.producer.sfx_loop()))
         self._tasks.append(asyncio.create_task(_backfill_paid_summaries(self)))
+        if self.publisher is not None:
+            self._tasks.append(asyncio.create_task(self.publisher.run()))
         inv = await self.inventory_levels()
         log.info("station.startup", extra={
             "lookahead_s": self.cfg.playout.committed_lookahead_s, "inventory": inv})
@@ -738,7 +760,9 @@ def _add_public_routes(app: FastAPI, station: Station,
         # A media id always maps to the same bytes: every pipeline writes a new
         # file before add_item(); retire keeps it, purge deletes it (SPLIT_PLAN
         # §2 check, no in-place rewrite exists). Safe to cache for a year.
-        return FileResponse(str(p), media_type="audio/flac",
+        # Transitional (RADIO §8.4): only items not yet in S3 are fetched here.
+        mtype = "audio/mpeg" if p.suffix == ".mp3" else "audio/flac"
+        return FileResponse(str(p), media_type=mtype,
                             headers={"Cache-Control":
                                      "public, max-age=31536000, immutable"})
 

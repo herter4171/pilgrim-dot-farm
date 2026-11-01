@@ -87,6 +87,8 @@ and Chrome. Unit tests and simulation do not call real backends.
   ready items to the library.
 - The scheduler chooses from ready inventory and keeps a committed program
   ahead of the listener.
+- Every rendered clip is a 48 kHz stereo MP3, uploaded to S3 and served to
+  browsers by CloudFront (RADIO §8.4); the origin only hands out URLs.
 - The browser schedules decoded clips through the Web Audio API for continuous
   playback.
 - The origin serves two listeners: a public one for the site/API and a
@@ -104,6 +106,13 @@ Keep credentials in environment variables or the git-ignored `.env` file.
 `PILGRIM_DJ_TOKEN` authenticates `/api/admin/dj/*` on the admin listener
 (`127.0.0.1:5081`); `make tui` reads it. Never use the LiteLLM token for DJ
 controls. Service URLs belong in `pilgrim/config.yaml`.
+
+AWS (media upload, RADIO §8.4): no environment variable. The station reads
+the AWS shared credentials for the profile named in `media.aws_profile`
+(`mac-studio`, an IAM user limited to the two `pilgrim-dot-farm-*` buckets)
+from `~/.aws/credentials` on the M5. Don't point it at an `aws login`
+profile: those sessions expire and need `botocore[crt]`. Never put AWS keys in
+the repo or `.env`.
 
 Stripe (PAYMENT.md Step 0.8) — all three must be set, and `payments.enabled`
 must be true, or paid requests are closed. Each is read from the environment

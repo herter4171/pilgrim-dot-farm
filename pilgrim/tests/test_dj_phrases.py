@@ -113,8 +113,8 @@ def test_render_and_place_end_to_end(cfg, tmp_env):
     assert it["fresh"] == 0  # one-shot, consumed on placement
     assert m.get(sid["job_id"])["status"] == "scheduled"
     assert (pathlib.Path(it["media_path"])).exists()
-    # FLAC artifact landed in the media dir
-    assert list((tmp_path / "library").glob("*.flac"))
+    # MP3 artifact landed in the media dir (RADIO §8.2)
+    assert list((tmp_path / "library").glob("*.mp3"))
 
 
 def test_place_phrase_deferred_after_news(cfg, tmp_env):

@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=1.26",
     "PyYAML>=6.0",
     "textual==8.2.8",
+    "boto3==1.43.123",
 ]
 
 [project.optional-dependencies]

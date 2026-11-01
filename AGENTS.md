@@ -78,6 +78,7 @@ If a task cannot be done without breaking one, stop and report.
 | Kokoro TTS | `192.168.68.89:8001` | `/tts`, `/voices`, `/health`; 16-bit mono 24 kHz |
 | SFX (MOSS-SoundEffect v2.0) | `192.168.68.88:8000` | `/health` |
 | searxng | see config | news search |
+| Media (S3 + CloudFront) | `media.*` in config | Public bucket `pilgrim-dot-farm-public` (us-west-1), read only by CloudFront `E2FWAKQQO45U1V`; station uploads with AWS profile `mac-studio` (RADIO §8.4, docs/backends.md §9) |
 | Stripe | `payments.api_base` in config | Checkout Sessions + webhooks; keys in `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (PAYMENT.md Step 0) |
 
 **Do not guess external APIs.** Before writing a client for any backend,
@@ -166,6 +167,8 @@ make deploy-check # render both deploy templates and nginx -t them
 make e2e-split    # Playwright gap test through the local edge stack
 make split-smoke  # origin + gateway + edge PASS/FAIL checks (real public app)
 make pay-smoke    # Stripe test-mode smoke; refuses a live key (only when asked)
+make media-smoke  # one 2 s tone through S3 + CloudFront (only when asked)
+make mp3-migrate  # library backfill to MP3 + S3; dry run unless MIGRATE_ARGS="--apply --upload"
 ```
 
 ---
@@ -224,8 +227,14 @@ continue.
 
 ## 10. Known pitfalls
 
-- **MP3 adds encoder padding** at the start/end and breaks gapless joins.
-  Deliver FLAC.
+- **MP3 adds encoder padding** at the start/end. Delivery is MP3 anyway
+  (RADIO §8.2): browsers trim it via the LAME/Info header, but WebKit only for
+  **48 kHz stereo**. Never emit mono or 24 kHz MP3s; go through
+  `normalize.encode_mp3`, which verifies the header.
+- **CloudFront drops the managed CORS header** when a request has a
+  `priority:` header (every Chromium fetch). The `pilgrim-media-cors`
+  CloudFront Function sets it instead; don't "simplify" it back to
+  `Managed-SimpleCORS` (docs/backends.md §9).
 - **AudioContext must be created inside the PLAY click handler**, or browsers
   block audio.
 - **Decoded audio is large** (~70 MB per 3-min 48 kHz stereo song as float32).

@@ -42,17 +42,17 @@ def test_truncated_render_rejected_no_flac_left(cfg, tmp_path):
     vp = pipe(cfg, ShortKokoro(fixed_s=2.0), tmp_path)
     with pytest.raises(ValueError):
         asyncio.run(vp.produce_item("dj_talk", 18.0))
-    assert not list(tmp_path.glob("*.flac"))
+    assert not list(tmp_path.glob("*.mp3"))
 
 
 def test_speech_rate_gate_fires_within_duration_tolerance(cfg, tmp_path):
     """9 s (duration-tolerable for target 18 s) with 50 words (~5.6 w/s, a
     truncation, well above legit Kokoro reads of 3.6-4.0 w/s): the speech-rate
-    gate rejects and deletes the flac."""
+    gate rejects and deletes the mp3."""
     vp = pipe(cfg, ShortKokoro(fixed_s=9.0), tmp_path)
     with pytest.raises(ValueError, match="speech rate"):
         asyncio.run(vp.produce_item("dj_talk", 18.0))
-    assert not list(tmp_path.glob("*.flac"))
+    assert not list(tmp_path.glob("*.mp3"))
 
 
 def test_normal_rate_passes_and_meta_carries_words_per_s(cfg, tmp_path):
@@ -62,7 +62,7 @@ def test_normal_rate_passes_and_meta_carries_words_per_s(cfg, tmp_path):
     wps = item["meta"]["words_per_s"]
     assert cfg.audio.min_words_per_s <= wps <= cfg.audio.max_words_per_s
     assert item["meta"]["words"] == len(LONG_COPY.split())
-    assert list(tmp_path.glob("*.flac"))
+    assert list(tmp_path.glob("*.mp3"))
 
 
 def test_chunk_text_limits_chunk_size():

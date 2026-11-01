@@ -582,7 +582,7 @@ class SongPipeline:
             gen["path"].unlink(missing_ok=True)
             raise ValueError(f"song QC failed: {verdict.reasons} (len {duration:.0f}s)")
         # unique name: concurrent renders can finish in the same millisecond
-        dst = self.media_dir / f"song_{int(time.time()*1000)}_{secrets.token_hex(3)}.flac"
+        dst = self.media_dir / f"song_{int(time.time()*1000)}_{secrets.token_hex(3)}.mp3"
         # Soft landing (OVERHAUL 3.2): when the song ends on loud energy
         # (likely the generator's token cap), fade the last seconds rather
         # than truncating or discarding the track.

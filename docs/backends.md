@@ -498,6 +498,61 @@ client side is verified against the real page in Step 8.
 - busybox `wget` in the alpine image does **not** verify certificates, so a
   `wget` success from inside the edge container proves nothing about TLS.
 
+## 9. Media delivery — S3 + CloudFront, and browser MP3 decoding (observed 2026-11-01)
+
+**Buckets (us-west-1, account 821856822529).** `pilgrim-dot-farm-public` and
+`pilgrim-dot-farm-private`: Block Public Access on (all four), SSE-S3
+(AES256, SSE-C blocked), versioning off, no lifecycle, no S3 CORS. Bucket
+policy denies non-TLS; the public bucket also allows `s3:GetObject` to
+`cloudfront.amazonaws.com` only for distribution `E2FWAKQQO45U1V` (OAC
+`E26Z91FITQ4LLM`). So objects are **not** readable at an S3 URL; the public
+URL is `https://d7gwl8cmdyh0k.cloudfront.net/<key>` (no alias yet).
+The private bucket is unused (operator decision 2026-11-01).
+
+**Identities.** IAM user `mac-studio` (static keys, profile `mac-studio` on
+the M5): List/GetBucketLocation, Get/Put/Delete object, multipart on both
+buckets — this is what the station uses (`media.aws_profile`). The M5's
+`default` profile is an `aws login` session (needs `botocore[crt]`, expires):
+fine for an operator, wrong for a launchd daemon. EC2 `pg` (= ssh `pf`,
+52.53.93.0) has instance profile `pg-s3-read` (List + GetObject, both buckets).
+
+**Distribution** `E2FWAKQQO45U1V`: one S3 origin, viewer `redirect-to-https`,
+GET/HEAD, cache policy `Managed-CachingOptimized`, compress on.
+
+**CORS trap (verified 2026-11-01).** With the managed response headers policy
+`Managed-SimpleCORS` attached, curl with `Origin:` got
+`access-control-allow-origin: *`, but Chromium 156 and WebKit 27.2
+`fetch()` from `https://pilgrim.farm` were blocked ("No
+'Access-Control-Allow-Origin' header"). Bisecting the browser's headers with
+curl: **any `priority:` request header** (RFC 9218; Chromium sends
+`priority: u=1, i` on every fetch) makes CloudFront omit the CORS header —
+`u=1`, `i`, `u=3` all reproduce it, with or without `Origin`. A custom header
+named `Access-Control-Allow-Origin` in a response headers policy is rejected
+(`InvalidArgument: ... is a CORS header and cannot be set as custom header`).
+**Fix in place:** CloudFront Function `pilgrim-media-cors`
+(cloudfront-js-2.0, viewer-response) sets `access-control-allow-origin: *`
+unconditionally; no response headers policy on the behavior.
+
+**Objects we write** (`pilgrim/media_publish.py`): key
+`audio/<type>/<stem>-<sha256[:16]>.mp3`, `Content-Type: audio/mpeg`,
+`Cache-Control: public, max-age=31536000, immutable`. CloudFront passes both
+through (`make media-smoke`: 200, bytes match, `x-cache: Miss`→`Hit`).
+
+**MP3 gapless in browsers** (`decodeAudioData`, 1 s 440 Hz tone, ffmpeg 9.0.2
+`libmp3lame` CBR, LAME/Info header present; probes in Playwright):
+
+| Encoding | Chromium 156 | WebKit 27.2 (Safari / all iOS) |
+|----------|--------------|--------------------------------|
+| 48 kHz stereo 96/128/192k | 48000 samples, trimmed | 48000, trimmed |
+| 48 kHz **mono** 96/128/192k | trimmed | **49536** (untrimmed, ~576 lead) |
+| 24 kHz mono (MPEG-2) | trimmed | **50688 @48k** (untrimmed) |
+
+The header for 48 kHz: delay 576, padding 960, 43 frames × 1152 = 49536 =
+576 + 48000 + 960; ffmpeg and libsndfile 1.2.2 both trim to exactly 48000.
+Hence RADIO §8.2 delivers **48 kHz stereo** for everything (mono speech is
+duplicated). Firefox could not be launched by Playwright on this host;
+unverified.
+
 ---
 
 ## Open gaps (to verify before depending on these in code)

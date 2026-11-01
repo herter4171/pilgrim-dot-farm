@@ -1,8 +1,9 @@
 """E2E server for the Playwright client gap test (RADIO.md §15, M9).
 
 Boots the REAL scheduler (SimClock-free, real Clock) over a temp Store seeded
-with SHORT rendered FLAC items generated on the fly (no real backends — AGENTS
-§2). Exposes just the endpoints the client needs. Run by the Playwright
+with SHORT rendered MP3 items (the delivery format, RADIO §8.2) generated on
+the fly (no real backends — AGENTS §2). Exposes just the endpoints the client
+needs. Run by the Playwright
 webServer so the browser can exercise PLAY -> heartbeats -> gapless joins.
 """
 from __future__ import annotations
@@ -21,18 +22,26 @@ import soundfile as sf
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pilgrim.audio.normalize import encode_mp3
 from pilgrim.config import RNG, Clock, Config, ensure_dirs, load_config
 from pilgrim.scheduler import Scheduler
 from pilgrim.selector import RandomSelector
 from pilgrim.store import Store
 
+_CFG = load_config()
 
-def _make_flac(dst: Path, seconds: float) -> None:
+
+def _make_audio(dst: Path, seconds: float) -> None:
+    """A tone encoded exactly like production delivery (48 kHz stereo MP3 with
+    a gapless header), so the gap test exercises the browser's MP3 trimming."""
     sr = 24000
     n = int(sr * seconds)
     t = np.linspace(0, seconds, n, endpoint=False)
     x = (0.25 * np.sin(2 * np.pi * 330 * t)).astype(np.float32)
-    sf.write(dst, x, sr, format="FLAC")
+    src = dst.with_suffix(".src.flac")
+    sf.write(src, x, sr, format="FLAC")
+    encode_mp3(src, dst, _CFG, _CFG.audio.mp3_mono_source_kbps)
+    src.unlink()
 
 
 def _seed(cfg: Config, store: Store, tmp: Path) -> None:
@@ -40,23 +49,23 @@ def _seed(cfg: Config, store: Store, tmp: Path) -> None:
     lib.mkdir(parents=True, exist_ok=True)
     genres = list(cfg.songs.genres.keys())
     for i in range(30):  # songs
-        f = lib / f"song_{i}.flac"
-        _make_flac(f, 1.5 + (i % 3) * 0.5)
+        f = lib / f"song_{i}.mp3"
+        _make_audio(f, 1.5 + (i % 3) * 0.5)
         store.add_item(type_="song", media_path=str(f), duration_s=1.5 + (i % 3) * 0.5,
                        genre=genres[i % len(genres)], evergreen=True, fresh=True,
                        title=f"Song {i}", artist="The Fakes")
     # one short SFX stinger that rides on talk clips (SFX.md §7.4): exercises
     # the client's overlay path without touching the host joins
-    sfx = lib / "sfx_0.flac"
-    _make_flac(sfx, 0.5)
+    sfx = lib / "sfx_0.mp3"
+    _make_audio(sfx, 0.5)
     sfx_id = store.add_item(type_="sfx", media_path=str(sfx), duration_s=0.5,
                             meta={"cue": "cow"})
     cue = {"item_id": sfx_id, "cue": "cow", "kind": "stinger", "offset_s": 0.6,
            "duration_s": 0.5}
     for t, n in (("liner", 20), ("commercial", 20), ("dj_talk", 15)):
         for j in range(n):
-            f = lib / f"{t}_{j}.flac"
-            _make_flac(f, 2.0 + (j % 3) * 0.5)
+            f = lib / f"{t}_{j}.mp3"
+            _make_audio(f, 2.0 + (j % 3) * 0.5)
             store.add_item(type_=t, media_path=str(f),
                            duration_s=2.0 + (j % 3) * 0.5, evergreen=True, fresh=True,
                            meta={"sfx": [cue]} if j % 2 == 0 else None)
@@ -155,7 +164,7 @@ def build_app() -> FastAPI:
             return JSONResponse({"detail": "no such item"}, status_code=404,
                                 headers={"Cache-Control": "public, max-age=30"})
         p = Path(it["media_path"])
-        return FileResponse(str(p), media_type="audio/flac",
+        return FileResponse(str(p), media_type="audio/mpeg",
                             headers={"Cache-Control":
                                      "public, max-age=31536000, immutable"})
 
@@ -198,10 +207,10 @@ def build_app() -> FastAPI:
         """Test-only: submit a rendered request and let the scheduler splice it
         into the next song slot (revision-aware client reset, TUI.md §5)."""
         lib = tmp / "library"
-        song_f = lib / "req_song.flac"
-        intro_f = lib / "req_intro.flac"
-        _make_flac(song_f, 2.0)
-        _make_flac(intro_f, 0.8)
+        song_f = lib / "req_song.mp3"
+        intro_f = lib / "req_intro.mp3"
+        _make_audio(song_f, 2.0)
+        _make_audio(intro_f, 0.8)
         req = store.add_request("e2e request", cap=10)
         song = store.add_item(type_="song", media_path=str(song_f), duration_s=2.0,
                               fresh=True, title="Request Song", artist="Listener")

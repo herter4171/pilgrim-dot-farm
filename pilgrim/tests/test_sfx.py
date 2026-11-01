@@ -97,12 +97,12 @@ def _approve_all(cfg):
         c.approved = True
 
 
-async def test_render_produces_normalized_flac(tmp_env):
+async def test_render_produces_normalized_mp3(tmp_env):
     cfg, _, tmp = tmp_env
     fake = FakeSfx()
     pipe = SfxPipeline(cfg, fake, tmp)  # type: ignore[arg-type]
     r = await pipe.render("cow", seed=5)
-    assert r["media_path"].endswith(".flac") and r["meta"]["cue"] == "cow"
+    assert r["media_path"].endswith(".mp3") and r["meta"]["cue"] == "cow"
     assert 1.0 < r["duration_s"] < 3.0
     assert fake.calls[0][2] == 5
     # a cue's own fixed seed wins over the caller's
@@ -278,7 +278,7 @@ def test_program_endpoint_exposes_sfx_sidecar(tmp_env):
     fr = [it for it in items if it["type"] == "field_report"]
     assert fr and fr[0]["sfx"][0]["media_id"] == sfx_id
     assert set(fr[0]["sfx"][0]) == {"media_id", "cue", "kind", "offset_s",
-                                     "duration_s", "gain", "duck"}
+                                     "duration_s", "gain", "duck", "url"}
 
 
 # ---------------------------------------------------------------- selector

@@ -73,10 +73,11 @@ Notes:
                  │  selector.choose_next()  ─▶ planned items ─▶ contextual items        │
                  │  rendered just in time ─▶ COMMITTED program (≥5 min ahead)           │
                  └──────────────────────────────────────────────────────────────────────┘
+   library/*.mp3 ─▶ media publisher (background) ─▶ S3 public bucket ─▶ CloudFront (§8.4)
                                                    │  GET /api/station/program
                                                    ▼
                  ┌─────────────── CLIENT (browser) ────────────────────────────────────┐
-                 │  fetch ─▶ decodeAudioData ─▶ AudioBufferSourceNode.start(when)       │
+                 │  fetch(url: CloudFront) ─▶ decodeAudioData ─▶ .start(when)           │
                  │  heartbeat {seq, position} ─▶ server (airplay + listener count)  │
                  └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -652,10 +653,19 @@ Failures are logged with reason and discarded; the producer refills.
   `areverse,trim,fade-in,areverse` (a fade-in on reversed audio is a fade-out
   on the original). The producer uses this (`songs.abrupt_fade_s`, default
   2.5 s) for songs with hard endings.
-- Keep each file at its **native sample rate**; the browser's AudioContext
-  resamples on decode.
-- Deliver as **FLAC**. It's lossless, roughly half the size of WAV, and has no
-  encoder padding (MP3 adds padding samples that break gapless joins).
+- Resample everything to **48 kHz** (`audio.sample_rate`) and deliver
+  **stereo** (mono speech is duplicated); the browser's AudioContext
+  resamples on decode as before.
+- Deliver as **CBR MP3** (`libmp3lame`; `audio.mp3_kbps` 192 for stereo
+  sources, `audio.mp3_mono_source_kbps` 96 for mono sources) with the
+  LAME/Info **gapless header** (encoder delay + padding). Browsers trim that
+  padding in `decodeAudioData`, so joins stay sample-contiguous — but WebKit
+  (Safari, every iOS browser) only honours it for **stereo MPEG-1** files;
+  mono or 24 kHz MP3s keep ~576 samples of lead-in there (docs/backends.md
+  §9). That is why the rate and channel count are fixed. `encode_mp3`
+  verifies `delay + frames + padding == MPEG frames × 1152` and rejects a
+  file without the header. *(Operator decision 2026-11-01; supersedes FLAC
+  delivery. Pre-switch FLAC files stay on disk as masters, hard rule 5.)*
 
 ### 8.3 Emergency pack
 
@@ -665,6 +675,41 @@ when everything else is unavailable. The producer keeps
 `inventory.station_ids_min` emergency station IDs (timeless copy, type
 `station_id`), so there are words between songs even right after a library
 wipe; `clear_library --keep-songs` keeps the pack.
+
+### 8.4 Media delivery — S3 + CloudFront
+
+S3 is the source of truth for listener audio; the M5 no longer streams it
+(operator decision 2026-11-01).
+
+- A **media publisher** task in the station process (`pilgrim/media_publish.py`,
+  started with the scheduler/producers; never inside them, hard rules 1 and 3)
+  scans for items whose `media_path` is an MP3 and `s3_key` is NULL, and
+  uploads each to `media.bucket` under
+  `media.key_prefix + <type>/<file stem>-<sha256[:16]>.mp3` with
+  `Content-Type: audio/mpeg` and `Cache-Control: public, max-age=31536000,
+  immutable`. The key is content-addressed, so a key never changes bytes.
+  Only after a successful PUT does it set `items.s3_key` / `uploaded_at`.
+  A failed upload is logged and retried after 5 min; it never blocks or
+  crashes anything.
+- CloudFront (`media.public_base_url`) is the only reader of the bucket. The
+  program and state APIs (§11) give each item
+  `url = public_base_url + "/" + s3_key`.
+- **Fallback:** an item not yet uploaded gets `url = /api/media/<id>` (the
+  origin route, served through the edges as before). Publishing normally
+  completes seconds after an item is rendered, well inside the ≥5 min
+  committed window, so this path is transitional.
+- Emergency items (§8.3) are never published: they are local by definition
+  and keep the fallback URL.
+- Nothing is deleted from S3 yet (no lifecycle; operator decision 2026-11-01).
+- Backfill: `make mp3-migrate MIGRATE_ARGS="--apply --upload"`
+  (`pilgrim/tools/mp3_migrate.py`) encodes an MP3 next to every non-emergency
+  FLAC, repoints the row (after a SQLite `.backup`), and uploads. Resumable.
+- `make media-smoke` round-trips one 2 s tone through S3 and CloudFront and
+  checks status, type, cache and CORS headers. Real backend: only when asked.
+- CORS: browsers `fetch()` the CloudFront URL cross-origin from the site, so
+  every response must carry `access-control-allow-origin`. A CloudFront
+  Function (viewer-response) sets `*`; the managed CORS policy drops the
+  header whenever the request carries a `priority` header (docs/backends.md §9).
 
 ---
 
@@ -717,7 +762,9 @@ the station name.
 - The `AudioContext` is created inside the PLAY click handler (satisfies
   autoplay policy).
 - Fetch the committed program; keep the **next 2 items fetched and decoded**
-  ahead of the current one.
+  ahead of the current one. Audio (items and SFX overlays) is fetched from
+  each entry's `url` (CloudFront, §8.4), falling back to `/api/media/<id>`
+  when absent.
 - Schedule each `AudioBufferSourceNode` with `start(when)` at exactly the
   previous item's end time on the AudioContext clock (sample-accurate joins).
 - Send a heartbeat `{seq, position, player_id}` every 5 s and on each item
@@ -796,9 +843,9 @@ refill target.
 | GET | `/` | Static UI |
 | POST | `/api/station/start` | Start playout session |
 | POST | `/api/station/stop` | Stop playout session |
-| GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, type, duration_s, sfx, title, artist}`. `sfx` is a list (usually empty) of overlays to play over that item: `{media_id, cue, kind, offset_s, duration_s, gain, duck}`; overlay audio is served by `/api/media/<id>`. `title`/`artist` come from the referenced inventory item on both initial and incremental responses, normalized to empty strings when absent (song label, COSMETIC_PATCHING §3). |
+| GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, url, type, duration_s, sfx, title, artist}`. `url` is where the audio lives: the CloudFront URL once the item is in S3, else `/api/media/<id>` (§8.4). `sfx` is a list (usually empty) of overlays to play over that item: `{media_id, url, cue, kind, offset_s, duration_s, gain, duck}`. `title`/`artist` come from the referenced inventory item on both initial and incremental responses, normalized to empty strings when absent (song label, COSMETIC_PATCHING §3). |
 | POST | `/api/station/heartbeat` | `{seq, media_id, position, type}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events |
-| GET | `/api/media/<id>` | FLAC file |
+| GET | `/api/media/<id>` | Transitional fallback (§8.4): the item's file from the origin library (`audio/mpeg` for MP3, `audio/flac` for a not-yet-migrated FLAC). Browsers use it only for items without an `s3_key` |
 | GET | `/api/health` | Backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
 | GET | `/api/requests` | Request board: `{queue: [{text, status, paid, stage, song_title}], recent: [{text, song_title, song_artist, paid, wait_s}], cap}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); recent = **last 5** aired. The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `wait_s` (Prep Time) is whole seconds from `prep_started_at` — the moment lyrics/brief writing began — to `aired_at`; time spent in line or waiting for the station to come back is not prep, and a row with no recorded writing start (aired before that column existed) sends `null`, which the page renders as an em dash (`—`) — measured-or-nothing, never queue idle dressed up as prep. `POST` answers `line_full: true` when the free line is at `free_queue_max` |
@@ -808,7 +855,7 @@ refill target.
 | POST | `/api/stripe/webhook` | Signature-verified Stripe events (PAYMENT.md Step 5) |
 | POST | `/api/visitors` | Register the server-derived client IP; returns `{unique_visitors: <nonnegative int>}` with `Cache-Control: no-store`. One call per page load; media/heartbeat/health/request calls never hit it. Always 200: an unresolvable identity or disabled counter returns the current count without registering (RADIO §14) |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
-| GET | `/api/station/state` | Cheap station state for DJ-aware clients: `{epoch, revision, current_seq, current_type, current_offset_s, server_time, prepared_cutover, listeners}` (TUI.md §4); `listeners` is the live listener count (§14) |
+| GET | `/api/station/state` | Cheap station state for DJ-aware clients: `{epoch, revision, current_seq, current_type, current_url, current_offset_s, server_time, prepared_cutover, listeners}` (TUI.md §4); `current_url` is the on-air item's audio URL (§8.4) — with `current_offset_s` it says what is playing and how far in; `listeners` is the live listener count (§14) |
 | GET | `/api/station/program` | Extended: `?epoch=E&revision=R&after_seq=N`; response adds `epoch`, `revision`, `reset`, `server_time` (`reset: true` = stale cursor, replace the whole list) |
 | GET | `/api/admin/dj/state` | DJ console state: `{epoch, revision, server_time, on_air, current, upcoming, pending_commands, catalogue_revision, player_status}` — no backend probes |
 | GET | `/api/admin/dj/songs` | Sortable/searchable song catalogue: `q, sort=title|artist, direction, cursor, limit` → `{items, next_cursor, catalogue_revision}`; allowlisted sort expressions, bound SQL, stable tie-breaker |
@@ -860,7 +907,10 @@ Cloudflare only have to honor it:
 
 A media id always maps to the same bytes: every pipeline writes a new file
 before `add_item()`, retiring keeps the file, and purging deletes it (no
-in-place rewrite exists). The `max-age=1` on `/api/station/state` means
+in-place rewrite exists). The one exception is the one-time MP3 backfill
+(§8.4), which repoints an id from its FLAC to an MP3 of the same audio; an
+edge or browser still holding the cached FLAC decodes it just the same.
+CloudFront objects carry their own `immutable` header from S3 (§8.4). The `max-age=1` on `/api/station/state` means
 `server_time` can be up to about 1 s old at the client; DJ cutovers use
 `cutover_lead_s: 1.0` (§5.5), which this plan does not change.
 
@@ -1030,9 +1080,24 @@ audio:
   true_peak_db: -1
   edge_pad_ms: 150
   tts_join_gap_ms: 250       # pause between Kokoro chunks (each chunk edge-trimmed first)
-  delivery: flac
+  delivery: mp3              # §8.2: 48 kHz stereo CBR MP3 + gapless header
+  sample_rate: 48000         # MPEG-1 rate (WebKit ignores gapless on 24 kHz MP3s)
+  mp3_kbps: 192              # stereo sources (songs)
+  mp3_mono_source_kbps: 96   # mono sources (speech, SFX), delivered as stereo
   max_words_per_s: 3.6   # speech-rate QC gate (truncation smell)
   min_words_per_s: 1.2
+
+media:                       # §8.4: S3 + CloudFront media source of truth
+  publish: true              # uploader task in the station process (tests force false)
+  bucket: pilgrim-dot-farm-public
+  region: us-west-1
+  aws_profile: mac-studio    # AWS shared-config profile name (keys live in ~/.aws, never here)
+  key_prefix: audio/
+  public_base_url: https://d7gwl8cmdyh0k.cloudfront.net
+  poll_s: 5                  # scan interval when idle
+  concurrency: 4             # parallel uploads
+  timeout_s: 120             # per S3 call
+  max_attempts: 5            # boto3 standard-mode retries
 
 station:
   name: Pilgrim Dot Farm
@@ -1126,10 +1191,16 @@ but below minimums the station leans heavily on filler.
 
 ## 14. Storage
 
-Songs are kept (recycled), delivered as FLAC: roughly 15–20 MB per 3-min
-stereo song. At continuous generation that's several GB per day. Phase 1 uses
+Songs are kept (recycled), delivered as MP3 (§8.2): roughly 4.3 MB per
+3-min song at 192 kbps (speech at 96 kbps, ~0.7 MB/min). Every delivered
+file also lives in S3 (§8.4); pre-switch FLAC masters stay on the M5. At continuous generation that's several GB per day. Phase 1 uses
 `library.soft_cap_gb` to throttle generation once the pool is large; pruning
 policy is Phase 3.
+
+The `items` table carries `s3_key TEXT` (object key in `media.bucket`; NULL =
+not uploaded) and `uploaded_at TEXT` (§8.4), both added by an idempotent
+migration. `set_media_file` (MP3 backfill) clears them so the new file is
+re-published.
 
 The `items` table carries a `retired` flag (default 0) — a soft-delete used to
 pull truncated/unusable inventory out of playout and production while keeping

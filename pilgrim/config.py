@@ -420,7 +420,10 @@ class Audio(BaseModel):
     lra: float = 7.0
     edge_pad_ms: int = 150
     tts_join_gap_ms: int = 250  # pause between Kokoro chunks after edge trim
-    delivery: str = "flac"
+    delivery: str = "mp3"       # RADIO §8.2: 48 kHz stereo CBR MP3 + gapless header
+    sample_rate: int = 48000    # delivery rate (WebKit gapless needs MPEG-1 rates)
+    mp3_kbps: int = 192         # stereo sources (songs, beds)
+    mp3_mono_source_kbps: int = 96  # mono sources (speech, most SFX), still sent as stereo
     silence_db: int = -50
     max_words_per_s: float = 3.6  # speech-rate QC ceiling (truncation smell)
     min_words_per_s: float = 1.2  # speech-rate QC floor
@@ -470,6 +473,23 @@ class Dj(BaseModel):
     phrase_ttl_s: int = 7200         # unqueued ready phrase lifetime
     job_timeout_s: int = 300
     character: DjCharacter = Field(default_factory=DjCharacter)
+
+
+class Media(BaseModel):
+    """Public media delivery (RADIO §8.4): the station uploads every rendered
+    MP3 to S3, CloudFront serves it, and the program/state API hands browsers
+    the CloudFront URL. Credentials come from the AWS shared config/credentials
+    (`aws_profile`; null = the default chain), never from this file."""
+    publish: bool = False            # run the uploader in the station process
+    bucket: str = ""
+    region: str = "us-west-1"
+    aws_profile: str | None = None
+    key_prefix: str = "audio/"
+    public_base_url: str = ""        # CloudFront origin, no trailing slash
+    poll_s: float = 5.0              # uploader scan interval
+    concurrency: int = 4
+    timeout_s: float = 120.0         # per S3 call (connect + read)
+    max_attempts: int = 5            # boto3 standard-mode retries
 
 
 class Library(BaseModel):
@@ -564,6 +584,7 @@ class Config(BaseModel):
     payments: Payments = Field(default_factory=Payments)
     visitors: Visitors = Field(default_factory=Visitors)
     audio: Audio = Field(default_factory=Audio)
+    media: Media = Field(default_factory=Media)
     logging: Logging = Field(default_factory=Logging)
     talk: Talk = Field(default_factory=Talk)
     sfx: Sfx = Field(default_factory=Sfx)

@@ -2,7 +2,7 @@
 
 Default wipes everything: every row from the items, program, airplay, and
 requests tables, resets the AUTOINCREMENT sequences, and removes the rendered
-FLAC files in the app library dir. Files on disk are NOT preserved: this is a
+audio files (.flac, .mp3) in the app library dir. Files on disk are NOT preserved: this is a
 full clean-slate reset (an explicit operator override of AGENTS rule 5, "never
 delete pilgrim/library/ files").
 
@@ -111,7 +111,8 @@ def wipe_non_songs(db_path: Path, library_dir: Path) -> dict[str, int]:
 
 
 def flac_files(library_dir: Path) -> list[Path]:
-    return sorted(library_dir.glob("*.flac"))
+    # FLAC masters from before the MP3 switch (RADIO §8.2) plus MP3 deliveries
+    return sorted([*library_dir.glob("*.flac"), *library_dir.glob("*.mp3")])
 
 
 def wipe_files(library_dir: Path) -> int:
@@ -139,7 +140,7 @@ def main(argv: list[str] | None = None) -> None:
         lib_gb = sum(p.stat().st_size for p in flac_files(library_dir)) / 1e9
         n_flac = len(flac_files(library_dir))
         print(f"DB:        {db_path} ({db_path.stat().st_size / 1e6:.1f} MB)")
-        print(f"Library:   {library_dir} ({lib_gb:.2f} GB, {n_flac} .flac)")
+        print(f"Library:   {library_dir} ({lib_gb:.2f} GB, {n_flac} audio files)")
         print(f"Would DELETE non-song item rows: {counts['items']}")
         print(f"Would DELETE non-song files:     {counts['files']}")
         print(f"Would DELETE program rows:       {counts['program']}")
@@ -166,7 +167,7 @@ def main(argv: list[str] | None = None) -> None:
 
     lib_gb = sum(p.stat().st_size for p in flacs) / 1e9
     print(f"DB:        {db_path} ({db_path.stat().st_size / 1e6:.1f} MB)")
-    print(f"Library:   {library_dir} ({lib_gb:.2f} GB, {len(flacs)} .flac)")
+    print(f"Library:   {library_dir} ({lib_gb:.2f} GB, {len(flacs)} audio files)")
     print(f"Would DELETE rows: {total_rows}  {dict(counts)}")
     print(f"Would DELETE files: {len(flacs)}")
     if not args.apply:
