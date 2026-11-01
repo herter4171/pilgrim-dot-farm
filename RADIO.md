@@ -762,9 +762,14 @@ the station name.
 - The `AudioContext` is created inside the PLAY click handler (satisfies
   autoplay policy).
 - Fetch the committed program; keep the **next 2 items fetched and decoded**
-  ahead of the current one. Audio (items and SFX overlays) is fetched from
-  each entry's `url` (CloudFront, §8.4), falling back to `/api/media/<id>`
-  when absent.
+  ahead of the current one, and keep decoding further (up to 5 ahead) while
+  that holds less than 60 s of scheduled audio, so a run of short talk and
+  liners can't leave a slow fetch exposed. Audio (items and SFX overlays) is
+  fetched from each entry's `url` (CloudFront, §8.4), falling back to
+  `/api/media/<id>` when absent. A media fetch that gets no headers or bytes
+  for 8 s is aborted and retried once from `/api/media/<id>` (a different
+  host, so a different connection): browsers can hang on a dead pooled CDN
+  connection for a minute or more.
 - Schedule each `AudioBufferSourceNode` with `start(when)` at exactly the
   previous item's end time on the AudioContext clock (sample-accurate joins).
 - Send a heartbeat `{seq, position, player_id}` every 5 s and on each item

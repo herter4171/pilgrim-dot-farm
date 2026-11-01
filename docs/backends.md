@@ -497,6 +497,15 @@ client side is verified against the real page in Step 8.
   serve off-air. The edge template sets `proxy_ssl_verify_depth 3`.
 - busybox `wget` in the alpine image does **not** verify certificates, so a
   `wget` success from inside the edge container proves nothing about TLS.
+- **Edge security group needs UDP (2026-11-01 dead air).** `pg-ec2` allowed
+  only TCP egress, so the edge's tailscaled reported `UDP: false` in
+  `tailscale netcheck`, could not hole-punch, and the M5 ↔ edge path ran via
+  the DERP relay (`relay "sfo"`). DERP is throttled: cold `/api/media` fetches
+  of 2–3 MB songs exceeded the edge's 60 s proxy timeout and listeners got dead
+  air. Fixed with **egress UDP all ports → 0.0.0.0/0** (STUN 3478 + peers),
+  plus **ingress UDP 41641 from the M5's public IP** (`24.192.203.8/32`). After
+  that, `tailscale status` shows `direct 52.53.93.0:41641`. Check this on every
+  new edge; a relayed path still "works" for pings and small JSON.
 
 ## 9. Media delivery — S3 + CloudFront, and browser MP3 decoding (observed 2026-11-01)
 

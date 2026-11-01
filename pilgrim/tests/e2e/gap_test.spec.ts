@@ -140,3 +140,43 @@ test("STOP during a pending decode cannot schedule into the next session", async
   expect(contexts).toBe(1);
   expect(errors).toEqual([]);
 });
+
+test("a stalled CloudFront fetch falls back to the origin instead of dead air", async ({ page }) => {
+  // RADIO §9.2: audio comes from each entry's `url`; a fetch that delivers no
+  // bytes for the stall timeout is abandoned and retried from /api/media/<id>.
+  // Production saw a browser sit on a dead CDN connection for over a minute.
+  const errors: string[] = [];
+  page.on("pageerror", e => errors.push(e.message));
+  await page.route("**/api/station/program*", async route => {
+    const res = await route.fetch();
+    const body = await res.json();
+    for (const it of body.items || []) it.url = "/cdn/audio/" + it.media_id + ".mp3";
+    await route.fulfill({ response: res, json: body });
+  });
+  let stalled: string | null = null;
+  const originHits: string[] = [];
+  page.on("request", r => {
+    const m = r.url().match(/\/api\/media\/(\d+)$/);
+    if (m) originHits.push(m[1]);
+  });
+  await page.route("**/cdn/audio/*", async route => {
+    const id = route.request().url().match(/(\d+)\.mp3$/)![1];
+    if (stalled === null) {
+      stalled = id;
+      return;  // never answered: a hung connection
+    }
+    const res = await route.fetch({ url: new URL("/api/media/" + id, route.request().url()).href });
+    await route.fulfill({ response: res });
+  });
+  await page.goto("/");
+  await page.click("#btn-play");
+  await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 20_000 });
+  await page.waitForTimeout(8_000);
+  expect(stalled, "the first CDN fetch was held").not.toBeNull();
+  expect(originHits, "the stalled item was refetched from the origin").toContain(stalled);
+  const starts = await page.evaluate(() =>
+    (window as any).__audioStarts.filter((s: any) => !s.sfx).length);
+  expect(starts, "playback kept going past the stalled item").toBeGreaterThan(3);
+  await expect(page.locator("#indicator")).toHaveClass(/onair/);
+  expect(errors).toEqual([]);
+});

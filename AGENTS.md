@@ -235,6 +235,9 @@ continue.
   `priority:` header (every Chromium fetch). The `pilgrim-media-cors`
   CloudFront Function sets it instead; don't "simplify" it back to
   `Managed-SimpleCORS` (docs/backends.md §9).
+- **Every client media fetch needs the stall timeout + origin fallback**
+  (`player.js` `fetchBytes`/`decode`). A plain `fetch()` to CloudFront hung
+  for 30 s to forever in Firefox (dead pooled connection) = dead air.
 - **AudioContext must be created inside the PLAY click handler**, or browsers
   block audio.
 - **Decoded audio is large** (~70 MB per 3-min 48 kHz stereo song as float32).

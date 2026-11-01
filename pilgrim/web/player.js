@@ -1,5 +1,6 @@
 /* Pilgrim Dot Farm — Web Audio client (RADIO.md §9).
-   AudioContext created inside PLAY (autoplay). Decodes current+next2, schedules
+   AudioContext created inside PLAY (autoplay). Decodes current+next2 (more
+   while that is under a minute of audio), schedules
    sample-accurate gapless joins, proves audio flows via an AnalyserNode meter.
    Production health never interrupts already buffered audio. The station stays on
    air server-side; the client just joins the committed program at "now".
@@ -34,6 +35,13 @@
   // the session after this long with the buffer dry; any success resets it.
   const OFFAIR_GRACE_MS = 10000;
   let dryFailSince = null;   // performance.now() of the first dry failure
+  // A media fetch with no new bytes for this long is abandoned and retried
+  // from the origin (decode()).
+  const MEDIA_STALL_MS = 8000;
+  // Decode window (RADIO §9.2): current + next 2 always; while that holds
+  // less than LOOKAHEAD_S of scheduled audio (runs of short talk/liners),
+  // keep decoding up to current + MAX_AHEAD so one slow fetch is not a gap.
+  const MIN_AHEAD = 3, MAX_AHEAD = 6, LOOKAHEAD_S = 60;
   class OffAirError extends Error {}
 
   /* Cross-tab single-listener guard: if this page is open in more than one
@@ -122,12 +130,60 @@
     }
     throw new Error(what + " HTTP " + res.status);
   }
-  /* Audio comes from CloudFront (`url`, RADIO §8.4); the origin's
-     /api/media/<id> is only the fallback for items not yet in S3. */
+  /* Fetch a whole body, aborting when no headers or no bytes arrive for
+     MEDIA_STALL_MS. A browser can sit on a dead pooled connection for a
+     minute or forever (seen in Firefox against CloudFront); without this the
+     decode window waits silently instead of retrying (RADIO §9.2). */
+  async function fetchBytes(url, what) {
+    const ac = new AbortController();
+    let timer = null;
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => ac.abort(), MEDIA_STALL_MS);
+    };
+    arm();
+    try {
+      const r = await fetch(url, { signal: ac.signal });
+      if (!r.ok) await throwHttp(what, r);
+      if (!r.body || !r.body.getReader) return await r.arrayBuffer();
+      const reader = r.body.getReader();
+      const parts = [];
+      let n = 0;
+      for (;;) {
+        arm();
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value); n += value.byteLength;
+      }
+      const out = new Uint8Array(n);
+      let o = 0;
+      for (const v of parts) { out.set(v, o); o += v.byteLength; }
+      return out.buffer;
+    } catch (e) {
+      if (ac.signal.aborted) throw new Error(what + " stalled");
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  /* Audio comes from CloudFront (`url`, RADIO §8.4). If that fetch fails or
+     stalls, retry once from the origin's /api/media/<id> (a different host,
+     so a different connection); that route is also the only source for
+     items not yet in S3. */
   async function decode(entry, audioContext) {
-    const r = await fetch(entry.url || ("/api/media/" + entry.media_id));
-    if (!r.ok) await throwHttp("media", r);
-    return await audioContext.decodeAudioData(await r.arrayBuffer());
+    const origin = "/api/media/" + entry.media_id;
+    let bytes;
+    if (entry.url && entry.url !== origin) {
+      try {
+        bytes = await fetchBytes(entry.url, "media");
+      } catch (e) {
+        if (e instanceof OffAirError) throw e;
+        bytes = await fetchBytes(origin, "media (origin)");
+      }
+    } else {
+      bytes = await fetchBytes(origin, "media");
+    }
+    return await audioContext.decodeAudioData(bytes);
   }
 
   async function getDecoded(i) {
@@ -282,12 +338,13 @@
   }
 
   /* The audio clock advances the decode window as clips finish. Keep current
-     plus next two decoded and schedule each as soon as it is ready (§9.2). */
+     plus next two decoded (up to MAX_AHEAD while under LOOKAHEAD_S of audio)
+     and schedule each as soon as it is ready (§9.2). */
   async function fillWindow(startOffset, token, ptoken = programToken) {
     while (playing && token === session && ptoken === programToken) {
       try {
         advancePlayhead();
-        if (items.length < cursor + 3) {
+        if (items.length < cursor + MAX_AHEAD) {
           const lastSeq = items.length ? items[items.length - 1].seq : null;
           const p = await fetchProgram(lastSeq, epoch, revision);
           if (!playing || token !== session || ptoken !== programToken) return;
@@ -295,7 +352,9 @@
             if (!items.some(x => x.seq === it.seq)) items.push(it);
           }
         }
-        while (scheduleCursor < Math.min(items.length, cursor + 3)) {
+        while (scheduleCursor < Math.min(items.length, cursor + MIN_AHEAD)
+               || (scheduleCursor < Math.min(items.length, cursor + MAX_AHEAD)
+                   && nextWhen - ctx.currentTime < LOOKAHEAD_S)) {
           await getDecoded(scheduleCursor);
           if (!playing || token !== session || ptoken !== programToken) return;
           // A slow fetch must not schedule a source in the past. Record the
