@@ -309,14 +309,15 @@ def style_excludes(family_id: str, style_hint: str | None = None) -> tuple[str, 
 
 
 # Americana lyric idiom. The instrument ban above is not enough: a reggae brief
-# whose lyrics say "county line", "pickup truck" and "tin roof" is a country
-# song with "reggae" in the chorus, and the audio model sings it that way.
+# whose lyrics say "county line" and "tin roof" is a country song with
+# "reggae" in the chorus, and the audio model sings it that way. A truck, a
+# barn or a porch stays fine as a subject. Farm subjects such as hayrides,
+# cornbread and cowboys are not musical directions and remain available in
+# every genre (RADIO §6.2).
 # Applied wherever `style_excludes` applies; matched with simple inflections.
 _AMERICANA_IDIOM: tuple[str, ...] = (
     "county line", "dirt road", "gravel road", "back road", "backroad",
-    "pickup truck", "tin roof", "front porch", "porch light", "porch swing",
-    "holler", "y'all", "yall", "hoedown", "barn dance", "square dance",
-    "two-step", "hayride", "moonshine", "cornbread", "rodeo", "cowboy",
+    "tin roof", "holler", "y'all", "yall", "hoedown", "two-step",
 )
 
 

@@ -101,13 +101,22 @@ disables it (the test suite does this so a live `.env` can never leak in).
   Server only. Mode comes from the prefix; the matching price is picked from
   `payments.price_id_live` / `price_id_test`. Never commit, log, or return it.
 - `STRIPE_PUBLISHABLE_KEY` — `pk_live_…` / `pk_test_…`. Safe in the browser;
-  the server hands it to the page in the `POST /api/paid-requests` response.
+  the server hands it to the page in the `POST /api/paid-requests/{token}/checkout` response.
   Never hard-code it in the static files.
 - `STRIPE_WEBHOOK_SECRET` — `whsec_…` from Dashboard → Developers → Webhooks
   (endpoint → Signing secret → Reveal), or the value `stripe listen` prints.
   Server only; used to verify `Stripe-Signature`.
 
-Never commit them. Rotate the webhook secret if it is ever exposed.
+- `PAID_OVERRIDE_TOKEN` — operator comp for paid requests (PAYMENT.md Step
+  12b). A paid prompt whose **first line** is exactly this value skips Stripe
+  (moderation and the copyright screen still run) and joins the priority queue
+  with `comped=1`, amount 0. Unset, empty or shorter than 24 characters = off.
+  Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+  The line is stripped before the text is stored, logged, moderated or shown;
+  a free request containing it is rejected unstored. Origin `.env` only.
+
+Never commit them. Rotate the webhook secret, or the override token, if it is
+ever exposed.
 
 
 ![Pilgrim Dot Farm Radio](image.png)

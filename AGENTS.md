@@ -35,9 +35,10 @@ If a task cannot be done without breaking one, stop and report.
    `pilgrim/config.yaml`.** No hardcoded addresses anywhere else.
 5. **Never delete or modify files in `pilgrim/library/`** or anything flagged
    `emergency`. Never delete `station.db`. Tests use a temp directory.
-6. **M5 song generation is expensive** (~1.6 s of compute per 1 s of audio).
-   Never start real song generation except in a smoke test, and then request
-   ≤ 10 s of audio.
+6. **Song generation is expensive** (~1.6 s of compute per 1 s of audio on
+   the M5; the GPU boxes are faster but not free). Never start real song
+   generation except in a smoke test (`make smoke SMOKE_ARGS=--gen`), and then
+   request ≤ 10 s of audio per render.
 7. **No secrets in the repo.** Keys go in environment variables; document the
    variable name in `README.md`.
 8. **Do not change the HTTP API (§11), the config schema (§12), or the
@@ -55,6 +56,12 @@ If a task cannot be done without breaking one, stop and report.
     Session. Tests use `pilgrim/tests/fakes/fake_stripe.py`; real Stripe calls
     happen only in `make pay-smoke` with a **test-mode** key. Never log or
     store keys, `client_secret`, card data or customer email.
+    **Operator-approved exception (PAYMENT.md Step 12b):** a paid prompt whose
+    first line equals the `PAID_OVERRIDE_TOKEN` secret is an operator comp. It
+    is marked queued with `comped=1` and amount 0 without Stripe, after the
+    same moderation and copyright checks. Treat the token like a key: never in
+    the repo, logs, DB, prompts or responses. Do not remove this path as a
+    "fix" for the rule above.
 
 ---
 
@@ -62,7 +69,8 @@ If a task cannot be done without breaking one, stop and report.
 
 | Component | Where | Notes |
 |-----------|-------|-------|
-| Station server + song generation | M5 | mlx-serve at `127.0.0.1:11234`, `/v1/audio/music-generations`. Reuse the existing working generation path; read it before writing new code. |
+| Station server | M5 | also one of the three song generators (mlx-serve) |
+| Song generation | pool in `songs.gen_backends` | MiniMax Music 3 ×3 (M5 mlx-serve + two audiocpp GPU boxes) via LiteLLM's vLLM pass-through `localhost:4000/vllm/v1/audio/music-generations`, `model: MiniMax-Music-3`, Bearer `LITELLM_TOKEN`. The station enforces the slot ceiling and staggers submissions (docs/backends.md §2b). Read `pipelines/songs.py` before writing new code. |
 | `qwen38` (Qwen 3.8 27B) | 5090 host | via LiteLLM; news, song briefs, DJ talk |
 | `ornith` | 4070 Ti host | via LiteLLM; commercials, liners |
 | Kokoro TTS | `192.168.68.89:8001` | `/tts`, `/voices`, `/health`; 16-bit mono 24 kHz |

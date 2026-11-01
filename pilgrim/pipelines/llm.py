@@ -18,6 +18,12 @@ class LLMError(Exception):
     pass
 
 
+class LLMTruncated(LLMError):  # type: ignore[no-redef]
+    """The model's output was cut off (empty answer, or JSON that never
+    closes): a backend limit or overload, not the request's fault. Callers
+    may retry without charging the item an attempt."""
+
+
 def _strip_code_fences(text: str) -> str:
     text = text.strip()
     m = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, re.DOTALL)
@@ -58,6 +64,18 @@ class LLM:
     async def close(self) -> None:
         await self._client.aclose()
 
+    def room_for(self, model: str, system: str, user: str) -> int | None:
+        """Output room for "no limit": the model's context minus a conservative
+        prompt estimate (2 chars/token over-counts English, plus chat-template
+        slack). None when the context isn't configured (max_tokens omitted)."""
+        ctx = (self.cfg.models.context_tokens or {}).get(model)
+        if not ctx:
+            return None
+        prompt_est = (len(system) + len(user)) // 2 + 512
+        room = max(1024, ctx - prompt_est)
+        cap = (self.cfg.models.output_tokens or {}).get(model)
+        return min(room, cap) if cap else room
+
     @staticmethod
     def _message_text(msg: dict[str, Any]) -> str:
         """Extract final text from an LLM message.
@@ -86,20 +104,25 @@ class LLM:
         return ""
 
     async def chat_json(self, model: str, system: str, user: str,
-                        max_tokens: int = 4096) -> dict[str, Any]:
+                        max_tokens: int | None = None) -> dict[str, Any]:
         """Ask an LLM for a JSON object. Returns parsed, validated-by-caller dict."""
         content = await self._complete(model, system, user, max_tokens)
         if not content or not content.strip():
-            raise LLMError("llm empty content (reasoning ate the token budget?)")
-        return parse_json_strict(content)
+            raise LLMTruncated("llm empty content (reasoning ate the token budget?)")
+        try:
+            return parse_json_strict(content)
+        except LLMError:
+            if not content.rstrip().endswith(("}", "```")):
+                raise LLMTruncated("llm output cut off mid-JSON") from None
+            raise
 
     async def chat_text(self, model: str, system: str, user: str,
-                        max_tokens: int = 4096) -> str:
+                        max_tokens: int | None = None) -> str:
         """Like chat_json but just returns the raw content string."""
         return await self._complete(model, system, user, max_tokens)
 
     async def _complete(self, model: str, system: str, user: str,
-                        max_tokens: int) -> str:
+                        max_tokens: int | None) -> str:
         """One completion, read as an SSE stream.
 
         Streaming is deliberate: qwen38 is a reasoning model, and a full
@@ -107,6 +130,11 @@ class LLM:
         a non-streaming read timeout. With a stream the timeout measures
         inactivity between chunks, not total generation time (docs/backends.md
         §1). Reasoning deltas are ignored; only `delta.content` is accumulated.
+
+        `max_tokens` is omitted by default: the reasoning trace counts against
+        it, and a cap only ever turned a slow answer into an empty one
+        (moderation at 4096, briefs at 4096). Both models stop on their own
+        with no cap (probed 2026-10-31, docs/backends.md §1).
         """
         url = self.cfg.hosts.litellm.rstrip("/") + "/chat/completions"
         payload = {
@@ -115,14 +143,19 @@ class LLM:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "max_tokens": max_tokens,
             "temperature": 0.8,
             "stream": True,
         }
+        if max_tokens is None:
+            max_tokens = self.room_for(model, system, user)
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if not self.api_key:
             raise LLMError("no LiteLLM token (set LITELLM_TOKEN or add it to .env)")
         t0 = time.monotonic()
         content = ""
+        finish = ""  # stop | length (output cap hit) | ...
+        stream_error = ""
         raw: list[str] = []
         status = "ok"
         try:
@@ -148,10 +181,16 @@ class LLM:
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    if isinstance(chunk.get("error"), dict):
+                        # the proxy reports backend failures IN the stream
+                        stream_error = str(chunk["error"].get("message") or chunk["error"])
+                        break
                     for choice in chunk.get("choices") or []:
                         delta = choice.get("delta") or {}
                         if delta.get("content"):
                             content += str(delta["content"])
+                        if choice.get("finish_reason"):
+                            finish = str(choice["finish_reason"])
                 if not content.strip():
                     # proxy ignored `stream`: fall back to a plain JSON body
                     body = "\n".join(raw).strip()
@@ -170,7 +209,13 @@ class LLM:
                 "error": f"{type(e).__name__}: {e}"})
             raise LLMError(f"llm transport: {type(e).__name__}: {e}") from None
         duration_ms = round((time.monotonic() - t0) * 1000, 1)
+        if stream_error and not content.strip():
+            status = "stream_error"
         log.info("llm.call", extra={
             "model": model, "duration_ms": duration_ms, "status": status,
-            "empty": not bool(content.strip()), "max_tokens": max_tokens})
+            "empty": not bool(content.strip()), "max_tokens": max_tokens,
+            "finish_reason": finish, "error": stream_error[:200] or None})
+        if stream_error and not content.strip():
+            # overload/admission/connection trouble upstream: retryable
+            raise LLMTruncated(f"llm backend error: {stream_error[:200]}")
         return content

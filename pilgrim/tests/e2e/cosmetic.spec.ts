@@ -64,14 +64,20 @@ test("song label shows the audible track, not a buffered next one; STOP clears i
   expect(await page.textContent("#song-label")).toBe("");
 });
 
-test("recently-played shows up to five with an aired-in label", async ({ page }) => {
+test("aired requests table shows up to five with a prep time", async ({ page }) => {
   await page.goto("/");
   await page.fill("#req-input", "play the synthesizer, Liam");
   await page.click("#req-send");
   await expect(page.locator(".req-recent-item")).toHaveCount(5, { timeout: 10_000 });
   const waits = await page.$$eval(".req-wait", els => els.map(e => e.textContent));
   expect(waits.length).toBeGreaterThan(0);
-  expect(waits[0]).toMatch(/^aired in /);
+  expect(waits[0]).toMatch(/^\d+ (min|h|d)/);   // column is headed "Prep Time"
+  const airedTable = page.locator(".req-table").filter({ has: page.locator("#req-recent") });
+  await expect(airedTable.getByRole("columnheader")).toHaveText(["Prompt", "Title", "Prep Time"]);
+  // the queue table's header row stays pinned while its box scrolls
+  const pos = await page.$eval(".req-scroll thead th",
+                               el => getComputedStyle(el).position);
+  expect(pos).toBe("sticky");
 });
 
 test("a failed visitor counter never breaks PLAY or request submission", async ({ page }) => {

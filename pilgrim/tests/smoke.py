@@ -1,7 +1,12 @@
 """Real-backend smoke probe (AGENTS §6 `make smoke`).
 
-Explicitly NOT part of the unit suite: contacts LiveLLM/Kokoro/mlx/searxng.
-Only run deliberately. Verifies /health on every host and reports a summary.
+Explicitly NOT part of the unit suite: contacts LiteLLM/Kokoro/song
+generators/searxng. Only run deliberately. Verifies /health on every host and
+reports a summary.
+
+`--gen` (only when asked; hard rule 6) also renders one 10 s instrumental per
+song-pool slot, all submitted through the pool (staggered, so LiteLLM fans
+them out), QC-grades each and prints wall time / RTF / generator.
 """
 from __future__ import annotations
 
@@ -48,7 +53,6 @@ def probe() -> int:
             ("litellm", cfg.hosts.litellm.rstrip("/") + "/models",
              {"Authorization": f"Bearer {key}"} if key else None),
             ("kokoro", cfg.hosts.kokoro.rstrip("/") + "/health", None),
-            ("mlx_serve", cfg.hosts.mlx_serve.rstrip("/") + "/v1/models", None),
             ("sfx", cfg.hosts.sfx.rstrip("/") + "/health", None),
         ]
         for name, url, headers in checks:
@@ -61,6 +65,17 @@ def probe() -> int:
             except Exception as e:  # noqa: BLE001 - probe reports any reachability failure
                 print(f"{name:10s} {url:45s} FAIL ({e.__class__.__name__})")
                 failures.append(f"{name} {e.__class__.__name__}")
+    import asyncio
+
+    from pilgrim.pipelines.songs import song_backend_health
+
+    async def _music() -> dict[str, bool]:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as ac:
+            return await song_backend_health(cfg, ac, key)
+    for name, ok in asyncio.run(_music()).items():
+        print(f"{'music:' + name:10s} {'':45s} {'OK' if ok else 'FAIL'}")
+        if not ok:
+            failures.append(f"music backend {name} unreachable")
     # searxng goes through the LiteLLM MCP endpoint (not a /health route)
     ok, why = _mcp_probe(cfg.hosts.searxng, key)
     print(f"{'searxng':10s} {cfg.hosts.searxng:45s} {'OK' if ok else 'FAIL'} ({why})")
@@ -75,5 +90,63 @@ def probe() -> int:
     return 0
 
 
+GEN_SECONDS = 10.0  # hard rule 6: real smoke renders are <= 10 s
+
+
+def gen_probe() -> int:
+    """One 10 s instrumental per pool slot, concurrently through the pool."""
+    import asyncio
+
+    import numpy as np
+    import soundfile as sf
+    from pilgrim.audio.qc import grade_audio
+    from pilgrim.pipelines.songs import SongPipeline
+
+    cfg = load_config()
+    cfg.songs.max_duration_s = GEN_SECONDS  # generate() sends this as duration_seconds
+    key = os.environ.get("LITELLM_TOKEN", "")
+    out = Path(cfg.library.dir if Path(cfg.library.dir).is_absolute()
+               else Path(__file__).resolve().parents[1] / cfg.library.dir) / "_smoke_gen"
+    out.mkdir(parents=True, exist_ok=True)
+    sp = SongPipeline(cfg, llm=None, media_dir=out, api_key=key)  # type: ignore[arg-type]
+    n = sp.pool.capacity()
+
+    async def one(i: int) -> tuple[int, str]:
+        brief = {"style_prompt": "mellow lo-fi piano, soft brushed drums",
+                 "lyrics": "", "seed": 1000 + i}
+        async with sp.pool.lease("slow") as b:
+            gen = await sp.generate(brief, b)
+        data, sr = sf.read(str(gen["path"]))
+        x = np.asarray(data, dtype=np.float32)
+        dur = len(x) / sr
+        v = grade_audio(x, sr, duration_s=dur, min_dur=5.0, max_dur=GEN_SECONDS + 2,
+                        kind="song", max_gap_s=2.0, silence_db=cfg.audio.silence_db)
+        gen["path"].unlink(missing_ok=True)
+        return i, (f"{'OK' if v.ok else 'QC FAIL ' + str(v.reasons)}  {dur:.1f}s audio "
+                   f"in {gen['wall_s']:.1f}s (rtf {dur / gen['wall_s']:.2f}) "
+                   f"via {gen['backend']} / {gen['generator']}")
+
+    async def run() -> list:
+        try:
+            return await asyncio.gather(*(one(i) for i in range(n)),
+                                        return_exceptions=True)
+        finally:
+            await sp.close()
+    results = asyncio.run(run())
+    bad = 0
+    for r in results:
+        if isinstance(r, BaseException):
+            bad += 1
+            print(f"gen FAIL ({r.__class__.__name__}: {r})")
+        else:
+            print(f"gen {r[0]}: {r[1]}")
+            bad += "OK" not in r[1][:2]
+    print(f"\nGEN {'OK' if not bad else 'FAILURES'}: {n - bad}/{n} slots rendered + QC passed")
+    return 1 if bad else 0
+
+
 if __name__ == "__main__":
-    raise SystemExit(probe())
+    rc = probe()
+    if "--gen" in sys.argv[1:]:
+        rc = gen_probe() or rc
+    raise SystemExit(rc)

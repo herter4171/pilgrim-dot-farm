@@ -176,7 +176,7 @@ class FakeSong:
         return valid_brief("country-americana", title="Mittens the Night",
                            artist="The Barn Cats", lyrics="[verse]\nmeow")
 
-    async def produce_song(self, brief):
+    async def produce_song(self, brief, prefer="slow"):
         if self.fail:
             raise RuntimeError("mlx down")
         return {"type": "song", "media_path": "/tmp/s.flac", "duration_s": 45.0,
@@ -386,7 +386,7 @@ def test_ensure_station_ids_builds_the_emergency_pack_once(cfg, tmp_env):
 
 
 class _DownSong(FakeSong):
-    async def produce_song(self, brief):
+    async def produce_song(self, brief, prefer="slow"):
         self.calls.append(("produce", brief.get("request_id")))
         import httpx
         raise httpx.ReadError("connection dropped")

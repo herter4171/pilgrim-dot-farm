@@ -36,6 +36,10 @@ def _config(state: Path, port: int) -> Config:
     cfg.logging.dir = str(state / "logs")
     for name in type(cfg.hosts).model_fields:
         setattr(cfg.hosts, name, CLOSED)
+    # Payments went live in config.yaml and the repo .env holds live keys:
+    # never let the smoke origin reach Stripe (checks 11-15 expect closed).
+    cfg.payments.enabled = False
+    cfg.payments.api_base = CLOSED
     cfg.station.host = "127.0.0.1"
     cfg.station.port = port
     cfg.station.admin_port = port + 1 if port < 65535 else port - 1  # unused
@@ -55,6 +59,7 @@ async def _serve(cfg: Config, fresh: bool) -> None:
     station = build_station(cfg)
     station.llm = FakeLLM()  # type: ignore[assignment]
     station.moderator.llm = station.llm  # type: ignore[assignment]
+    station.override_token = ""         # no operator comps in the smoke origin
     public = create_public_app(cfg, station)
     station.scheduler.commit_lookahead()
     task = asyncio.create_task(station.scheduler.run())

@@ -38,8 +38,7 @@ class NewsPipeline:
         user = (f"Write a 3-4 headline news bulletin in the station's voice, attributed "
                 f'(\"according to...\"), never read verbatim.\n\n'
                 f"Search context:\n{ctx}\n\n{schema}")
-        obj = await self.llm.chat_json(self.cfg.models.news, prompt, user,
-                                        max_tokens=4096)
+        obj = await self.llm.chat_json(self.cfg.models.news, prompt, user)
         obj.setdefault("text", " ".join(obj.get("headlines", [])))
         obj["gravity"] = obj.get("gravity", "normal")
         return {

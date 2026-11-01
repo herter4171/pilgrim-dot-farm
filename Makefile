@@ -62,4 +62,4 @@ seed:
 
 smoke:
 	PATH="$(HOME)/bin:$(PATH)" LITELLM_TOKEN=$$(grep LITELLM_TOKEN .env | cut -d= -f2) \
-		$(PY) -m pilgrim.tests.smoke
+		$(PY) -m pilgrim.tests.smoke $(SMOKE_ARGS)

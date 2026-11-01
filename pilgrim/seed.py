@@ -32,8 +32,8 @@ from pilgrim.store import Store  # noqa: E402
 def _prompts(cfg: Config) -> dict:
     pdir = ROOT / cfg.library.prompts_dir
     return {f.replace(".md", ""): (pdir / f).read_text()
-            for f in ("voice.md", "song_brief.md", "news.md", "field.md", "sfx_cues.md",
-                      "sfx_joke.md") if (pdir / f).exists()}
+            for f in ("voice.md", "song_brief.md", "station_song.md", "news.md", "field.md",
+                      "sfx_cues.md", "sfx_joke.md") if (pdir / f).exists()}
 
 
 async def seed(cfg: Config, api_key: str) -> int:
@@ -44,7 +44,8 @@ async def seed(cfg: Config, api_key: str) -> int:
     rng = RNG(cfg.station.rng_seed)
     kokoro = KokoroClient(cfg)
     voice = VoicePipeline(cfg, llm, kokoro, db, media_dir, prompts=_prompts(cfg))
-    songs = SongPipeline(cfg, llm, media_dir, prompts=_prompts(cfg), rng=rng)
+    songs = SongPipeline(cfg, llm, media_dir, prompts=_prompts(cfg), rng=rng,
+                         api_key=api_key)
     news = NewsPipeline(cfg, llm, api_key=api_key, prompts=_prompts(cfg))
     sfx_client = SfxClient(cfg)
     prod = Producer(cfg, db, llm, kokoro, voice, songs, Clock(), prompts=_prompts(cfg),

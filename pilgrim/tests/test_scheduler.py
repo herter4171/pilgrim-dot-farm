@@ -396,8 +396,10 @@ def test_pending_request_holds_window_and_takes_next_slot(cfg, tmp_env):
     """A pending listener request holds the committed window at
     filler_horizon_s: the stock songs already ahead drain and no new ones queue
     in front of it. When its song + intro land, they take the next slot instead
-    of airing behind a full lookahead (the 'up next for three songs' bug; §5.2)."""
+    of airing behind a full lookahead (the 'up next for three songs' bug; §5.2).
+    The hold is opt-in (playout.request_hold_max_s > 0; config.yaml ships 0)."""
     _, store, _ = tmp_env
+    cfg.playout.request_hold_max_s = 900
     seed_pool(store, cfg, n_song=8, n_liner=12, n_com=8, n_dj=4)
     clock = SimClock()
     sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
@@ -679,3 +681,23 @@ def test_top_of_hour_leads_with_words(cfg):
         st.callout_pending = True
         st.near_top_of_hour = True
         assert sel.choose_next(st) in ("liner", "dj_talk")
+
+
+def test_request_hold_zero_keeps_songs_airing_while_a_request_renders(cfg, tmp_env):
+    """request_hold_max_s = 0 (the shipped default): a request that is still
+    being written/generated does not starve the air of songs (the 2026-11-01
+    'endless liners' incident); once ready it splices into the next song slot."""
+    _, store, _ = tmp_env
+    cfg.playout.request_hold_max_s = 0
+    seed_pool(store, cfg, n_song=8, n_liner=12, n_com=8, n_dj=4)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
+    sched.commit_lookahead()
+    req = store.add_request("play for Mittens", cap=10)
+    store.mark_request_producing(req["id"])
+    before = store.max_seq()
+    for _ in range(4):
+        clock.advance(cfg.playout.committed_lookahead_s)
+        sched.commit_lookahead()
+    assert sched.coverage() >= cfg.playout.committed_lookahead_s
+    assert "song" in [r["type"] for r in store.program_after(before)]

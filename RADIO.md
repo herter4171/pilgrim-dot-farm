@@ -40,7 +40,7 @@ without touching the rest of the system.
 
 | Host | Role | Endpoint |
 |------|------|----------|
-| M5 | Song generation only (MiniMax Music 3 via mlx-serve). Also runs the station server. | `127.0.0.1:11234` `/v1/audio/music-generations` |
+| Song generators | MiniMax Music 3 ×3: the M5 (mlx-serve, MLX 8-bit) and two audiocpp GPU boxes, reached as one LiteLLM model group (`models.music`) through the vLLM pass-through. The M5 also runs the station server. | `songs.gen_backends` → `{url}/v1/audio/music-generations` (§6.2) |
 | 5090 | `qwen38` (Qwen 3.8 27B): news (with search tools), song briefs/lyrics, just-in-time DJ talk | `<QWEN_HOST>` via LiteLLM |
 | 4070 Ti | `ornith`: commercials, liners (high volume, low stakes, inventory work) | `<ORNITH_HOST>` via LiteLLM |
 | Kokoro-82M | TTS, 16-bit mono 24 kHz | `192.168.68.89:8001` |
@@ -51,8 +51,9 @@ Notes:
   generation. If Kokoro shares a GPU with one of the LLMs, measure its latency
   under load.
 - All hosts, model aliases, and targets live in `config.yaml` (see §12).
-- Measured song rate: 10 s of audio in 16 s (**~1.6× real time**). A 180 s song
-  takes ~290 s. Continuous generation yields ~35 min of fresh music per hour.
+- Measured song rate (M5 alone): 10 s of audio in 16 s (**~1.6× real time**). A
+  180 s song takes ~290 s. Through the pool (2026-11-01, 10 s clips, staggered
+  2 s): audiocpp boxes ~24–28 s, the M5 ~39 s per clip, all three in parallel.
   Re-measure at the actual target song length; do not assume linear scaling.
 
 ---
@@ -266,11 +267,13 @@ Constraints (applied before drawing):
   request airs at the next boundary instead of behind the lookahead. The splice
   renumbers future occurrences with fresh seqs (never reusing an old seq) and
   bumps the programme revision; revision-aware clients cancel their obsolete
-  future sources and refetch the snapshot (TUI.md §5, §9.2). While a request is
-  still queued/producing, the committed window is held at
-  `playout.filler_horizon_s` so no stock song queues ahead of it; the hold is
-  bounded per request by `playout.request_hold_max_s` (a stuck request releases
-  it rather than pinning a shallow lookahead).
+  future sources and refetch the snapshot (TUI.md §5, §9.2). Optional hold:
+  with `playout.request_hold_max_s` > 0, while a request is still
+  queued/producing the committed window is held at `playout.filler_horizon_s`
+  so no stock song queues ahead of it, bounded per request by that value. It
+  ships **0 (off)**: holding for a request that takes minutes to write and
+  render filled the air with liners (2026-11-01). With it off, songs keep
+  airing and a ready request splices into the next song slot.
 
 ### 5.3 Planned vs. committed
 
@@ -378,8 +381,8 @@ target, per host worker.
 
 | Item | Target |
 |------|--------|
-| Fresh (unaired) songs ready | ≥ 2, plus 1 generating (stock generation stops at `songs.stock_max_library` usable songs) |
-| Song briefs queued for the M5 | ≥ 3 (M5 must never wait on the LLM) |
+| Fresh (unaired) songs ready | ≥ 2, counting stock renders in flight (stock generation stops at `songs.stock_max_library` usable songs) |
+| Song briefs queued | none: each song job writes its own brief while other jobs render (`inventory.briefs_queued` is unused) |
 | Current news bulletin | 1 valid; refreshed every 30 min |
 | Commercials (library) | ≥ 20 at launch; top up slowly (they repeat on purpose) |
 | Liners, by length bucket (3 / 5 / 10 / 15 / 30 s) | ≥ 5 each |
@@ -391,10 +394,37 @@ The voice worker fills callouts first (emergency station IDs, liners, DJ talk),
 then commercials (a few per cycle) and field reports. It runs alongside the
 song worker, so talk is ready by the time a new song lands.
 
-The song worker spaces stock songs out: after a stock song finishes, it waits
+The song worker (`Producer.song_loop`) is a decider that keeps up to
+C = the generator pool's healthy slots (`songs.gen_backends`, §6.2) song jobs
+in flight. Each job is brief → render → intro → store. The decider picks:
+1. the next queued listener request (queue order: paid first, FIFO within a
+   tier), scanning past requests that can't start yet. Up to
+   `songs.free_request_slots` (2) free requests render at once.
+2. otherwise a stock song.
+Free requests and stock together never occupy every slot: one stays open for
+a paid request. Paid jobs don't count against that, so with two paid requests
+rendering a free one may take the third (with C = 1 free/stock use the slot
+whenever it is idle). Paid requests may take any free slot, several at once. Ready order
+is air order (the splice, §5.2), so a request song that finishes early is
+**held** outside the library until every request ahead of it in queue order
+that is still in flight has become ready, failed, or been re-queued. A paid
+request is ahead of every free one, even one that started first. A held song
+is lost on a crash; its request re-queues and renders again.
+In-flight stock counts toward the fresh target, so a cold start doesn't
+overshoot. Song briefs (requests and stock) run one at a time on the LLM,
+turns granted in queue order (paid, then oldest free, then stock; not
+first-come), while renders run in parallel, and each sees the genres of jobs still rendering
+(§5.2 `genre_no_repeat`). A brief whose output was cut off (empty, or JSON
+that never closes: an LLM limit or overload) re-queues its request without
+spending an attempt, up to 4 times per request; after that it counts. A generator outage (transport error,
+429/502/503/504) re-queues the request without spending an attempt and pauses
+new jobs (15 s doubling to 2 min); jobs are never cancelled for a request.
+`song_step()` runs one job inline (seed, tests, the simulation).
+
+Stock songs stay spaced out: after a stock song finishes, the worker waits
 `songs.stock_gap_s` (default 600 s) before starting the next one, even when
-fresh stock is below target. Queued listener requests skip the gap and are
-produced as soon as the worker is free; they do not reset it.
+fresh stock is below target. Queued listener requests skip the gap and start
+as soon as a slot is free; they do not reset it.
 
 Song generation is the expensive path (~1.6 s of compute per 1 s of audio), so
 stock production also has a library ceiling: once the library holds
@@ -413,7 +443,7 @@ up front). A clip committed before its cues are ready airs dry. A failing SFX
 backend only means hosts air dry.
 
 Workers:
-- **M5 worker:** pulls briefs, generates songs continuously.
+- **Song worker:** the decider above; up to C concurrent song jobs.
 - **qwen38 worker:** priority order: contextual talk-ups (deadline-bound) >
   news refresh > song briefs.
 - **ornith worker:** commercials and liners into inventory.
@@ -437,11 +467,13 @@ Workers:
      the lyrics it is given and takes much of its feel from them, so a reggae
      brief carrying country-coded lyrics comes back sounding country. Rejected
      briefs are repaired once, then abandoned.
-   - **Idiom lock:** under the same exemptions, Americana lyric phrasing
-     (`genres._AMERICANA_IDIOM`: county line, dirt road, pickup truck, tin
-     roof, front porch, holler, y'all, …) is rejected in the caption and
-     lyrics, and the caption must *negate* at least one of the excluded
-     instruments (the explicit exclusion is enforced, not just requested).
+   - **Idiom lock:** under the same exemptions, stock Americana phrasing
+     (`genres._AMERICANA_IDIOM`: county line, dirt road, tin roof, holler,
+     y'all, …) is rejected in the caption and lyrics, and the caption must
+     *negate* at least one of the excluded instruments (the explicit exclusion
+     is enforced, not just requested). Rural subjects such as trucks, porches,
+     hayrides, cornbread, cowboys and barn dances remain available in every
+     genre; they do not specify the music's instrumentation or delivery.
    - **Sound sheets** (`genres.sheet_text`): the pinned family's (or the
      requested style's, e.g. reggae, bossa nova) groove, core instruments,
      native scene, exclusion and lyric idiom are sent with the brief prompt.
@@ -451,18 +483,58 @@ Workers:
      value is validated like a routed style: it must be named in
      `Genre / Subgenre`, must match its routed family when it has one, and
      turns on the style and idiom locks.
-   - The station name (PILGRIM DOT FARM) may appear in any style's title or
-     lyrics; farm humour otherwise lives in the title and artist name.
-   - Artist may be drawn from the station bible's recurring fictional artists
-     (§7), or invented.
+   - **Creative direction:** `song_brief.md` supplies the shared musical
+     contract. Exactly one of `station_song.md` (stock/free) or
+     `paid_request.md` (paid, including operator comps) is appended to the
+     **system** prompt, selected from the request's server-side priority.
+     Missing direction templates fail the brief before any generation.
+   - **Stock songs and free requests get the Pilgrim Dot Farm treatment:**
+     tongue-in-cheek rural character belongs in the title, artist and sung
+     story, in the chosen style's own idiom. Preserve a free request's subject
+     and musical style while bringing it into the station's farm world.
+     Full farm stories are welcome, with no one-image limit; PILGRIM DOT FARM
+     may slip naturally into lyrics and hooks. No exact station-name or farm
+     keyword quota is enforced. Instrumentals carry the character in title
+     and artist. A station-name title tag ("(PILGRIM DOT FARM)") is rejected
+     for stock/free songs; a funny title alone is not the requested lyric
+     treatment. The musical caption stays focused on the requested sound.
+   - **Paid songs follow the customer's brief:** no unsolicited farm humor
+     or station branding in lyrics, caption, title or artist. Preserve named
+     titles and artists, including a requested parenthetical title. A requested
+     farm subject is welcome without adding an unsolicited station name.
+     These creative directions are prompt requirements, not keyword filters.
+   - **Payer's own MiniMax input** (PAYMENT.md Step 12c): when a paid request
+     contains a structured caption and/or tagged lyrics, the brief LLM reads
+     the request in any English and returns `caption_verbatim` /
+     `lyrics_verbatim`; code (`pipelines/verbatim.py`) then copies those
+     blocks from the request exactly (only section tags are normalised). The
+     LLM writes only the missing parts. Verbatim parts skip the style, idiom
+     and caption length/content checks; structure checks still apply.
+     A supplied caption routes on its own Basic Attributes line. Free requests
+     always receive the station treatment, even if they contain tagged lyrics
+     or a structured caption; verbatim flags are ignored for free requests.
+   - Stock/free artists may be drawn from the station bible's recurring
+     fictional artists (§7), or invented; paid artists follow the brief.
    - Lyrics of arbitrary length. The request sends `duration_seconds` =
      `songs.max_duration_s` (360 s) as the ceiling; the model may end sooner.
      (Supersedes OVERHAUL 3.1, which sent no duration: without it mlx-serve defaults to 60 s and
      cuts every song there. `duration_s` is silently ignored.)
-2. **Generate** (M5, mlx-serve): reuse the existing working path; poll until the
-   WAV exists; record wall-clock generation time for the rate metric.
+2. **Generate** on the backend pool (`songs.gen_backends`): one synchronous
+   POST `{url}/v1/audio/music-generations` returns the WAV inline. A
+   `auth: litellm` backend gets `model: models.music` and the Bearer
+   `LITELLM_TOKEN`; the proxy's least-busy router spreads renders over the
+   three deployments when they arrive at least `songs.submit_stagger_s` apart.
+   The pool never runs more than a backend's `slots` renders (nothing upstream
+   refuses extras: a box would take a 2nd render and halve both). Requests
+   lease the fastest idle backend (EWMA real-time factor), stock the slowest.
+   A backend that fails at transport level sits out `songs.backend_cooldown_s`
+   (doubling to 600 s). The song's `meta` records `backend` and `generator`
+   (the `x-generated-by` header; a seed replays only on the same generator).
+   Record wall-clock generation time for the rate metric.
 3. **QC** (§8.1).
-4. **Normalize and encode** (§8.2); store the brief as metadata.
+4. **Normalize and encode** (§8.2); store the brief as metadata. QC and
+   normalize run in a worker thread: the scheduler and HTTP server share the
+   event loop.
 
 ### 6.3 Voice pipeline
 
@@ -729,7 +801,11 @@ refill target.
 | GET | `/api/media/<id>` | FLAC file |
 | GET | `/api/health` | Backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
-| GET | `/api/requests` | Request board: `{queue: [{status}], recent: [{text, song_title, song_artist}], cap}` — queue = queued+producing+ready, oldest first; recent = **last 3** aired/serviced by ID order (COSMETIC_PATCHING §4) |
+| GET | `/api/requests` | Request board: `{queue: [{text, status, paid, stage, song_title}], recent: [{text, song_title, song_artist, paid, wait_s}], cap}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); recent = **last 5** aired. The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `POST` answers `line_full: true` when the free line is at `free_queue_max` |
+| POST | `/api/paid-requests` | Paid priority request `{text}` (PAYMENT.md Step 12b): rate limit -> normalise -> operator-comp check (first line == `PAID_OVERRIDE_TOKEN`, stripped) -> prefilter. Prefilter reject: `{ok:false, rejected:true, reason}`. Otherwise the row is stored as `checking` and `{ok:true, token, stage:"moderation"}` returns at once; moderation, the copied-lyrics screen and the board summary run in the background. `503 {paid_closed:true}` when payments are inactive (comps still accepted) |
+| GET | `/api/paid-requests/{token}` | `{status, position, stage, comped, reason?}` (`no-store`): `stage` is `moderation\|copyright\|ready` while `status=checking`; `reason` only when `rejected`. Reconciles an `awaiting_payment` row with Stripe when payments are active |
+| POST | `/api/paid-requests/{token}/checkout` | Only for a non-comped row at `checking/ready`: claims it once (`-> awaiting_payment`) and creates the Checkout Session → `{ok, client_secret, publishable_key, expires_at}`; `client_secret` is returned once and never stored. `409` not ready / already claimed, `424` Stripe failure (row `abandoned`), `503` payments inactive |
+| POST | `/api/stripe/webhook` | Signature-verified Stripe events (PAYMENT.md Step 5) |
 | POST | `/api/visitors` | Register the server-derived client IP; returns `{unique_visitors: <nonnegative int>}` with `Cache-Control: no-store`. One call per page load; media/heartbeat/health/request calls never hit it. Always 200: an unresolvable identity or disabled counter returns the current count without registering (RADIO §14) |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
 | GET | `/api/station/state` | Cheap station state for DJ-aware clients: `{epoch, revision, current_seq, current_type, current_offset_s, server_time, prepared_cutover, listeners}` (TUI.md §4); `listeners` is the live listener count (§14) |
@@ -753,7 +829,9 @@ phrase jobs are.
 The **public** listener (`station.host:station.port`; `:5000` on the origin)
 serves only the edge-facing routes: `GET /api/station/program`,
 `GET /api/station/state`, `POST /api/station/heartbeat`,
-`GET /api/media/{id}`, `GET|POST /api/requests`, `POST /api/visitors`, and
+`GET /api/media/{id}`, `GET|POST /api/requests`, `POST /api/visitors`, the
+paid routes (`POST /api/paid-requests`, `GET /api/paid-requests/{token}`,
+`POST /api/paid-requests/{token}/checkout`, `POST /api/stripe/webhook`), and
 `GET /api/health`. Its `/api/health` returns only `{"on_air", "time"}` and
 performs no backend or inventory probe — it is the only health shape a browser
 or edge sees. Any other `/api/*` path on the public listener is `404`. The
@@ -818,7 +896,6 @@ deployment's encrypted connection or an SSH tunnel.
 
 ```yaml
 hosts:
-  mlx_serve: http://127.0.0.1:11234
   kokoro: http://192.168.68.89:8001
   litellm: http://<LITELLM_HOST>
   searxng: http://<SEARXNG_HOST>
@@ -831,6 +908,9 @@ models:
   commercials: ornith
   liners: ornith
   field_report: qwen38
+  music: MiniMax-Music-3     # LiteLLM model group for `auth: litellm` song backends
+  context_tokens: {qwen38: 262144}  # calls send max_tokens = context - prompt (no artificial
+                             # limit); omitting it gets the server's 8192 default
 
 voices:
   dj: am_liam
@@ -843,7 +923,7 @@ voices:
 playout:
   committed_lookahead_s: 300   # 5 min ahead: enough slack without delaying requests
   filler_horizon_s: 60     # song drought / spacing-breaking repeats: commit only this far ahead
-  request_hold_max_s: 900  # hold the window for a pending request; cap per request
+  request_hold_max_s: 0    # 0 = off (songs keep airing; ready requests splice); >0 = hold window per request
   weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08,
             field_report: 0.05}
   max_consecutive_non_song: 2
@@ -871,11 +951,17 @@ inventory:
 
 songs:
   min_duration_s: 20         # sanity floor
-  max_duration_s: 360        # sent to mlx-serve as duration_seconds (1-360); song QC ceiling
+  max_duration_s: 360        # sent to the generator as duration_seconds (1-360); song QC ceiling
   abrupt_fade_s: 2.5         # fade-out applied to songs with hard endings
   stock_gap_s: 600           # idle gap between stock song generations; requests skip it
   stock_max_library: 100     # pause stock generation once the library holds this many songs;
                              # listener requests still produce. 0 = no ceiling
+  gen_backends:              # song generator pool (§6.2); C = sum of healthy slots
+    - {name: litellm, slots: 3, auth: litellm}   # url: hosts.litellm minus /v1, plus /vllm
+    # direct mode: one entry per box, e.g. {name: m5, url: "http://127.0.0.1:11234"}
+  free_request_slots: 2      # free requests rendering at once; last slot stays open for paid
+  submit_stagger_s: 5        # min gap between render submissions (LiteLLM only fans out with a delay)
+  backend_cooldown_s: 120    # transport-failed backend sits out (doubling to 600 s)
   genres: {country-americana: 3, jazz-swing-big-band: 3, contemporary-folk-acoustic: 2,
            roots-traditional-global: 2, soul-blues-gospel: 2, dance-pop-disco-funk: 2,
            general-pop-ballad: 2, pop-alternative-rock: 2, traditional-vocal-stage: 2,
@@ -893,10 +979,11 @@ news:
   budget_s: 60
 
 requests:
-  queue_cap: 20          # request-board display size (no eviction on the public line)
+  queue_cap: 50          # request-board display size (no eviction on the public line)
+  free_queue_max: 100    # free requests waiting; new free ones refused beyond (paid never capped)
   max_length: 160
   moderation_model: qwen38
-  moderation_max_tokens: 4096
+  moderation_max_tokens: null  # no output cap (reasoning counts against it)
   per_client_per_10min: 3   # request-line rate limit
 
 # Paid priority requests (PAYMENT.md §2.1). Off by default; also inactive when
@@ -916,12 +1003,21 @@ payments:
   webhook_tolerance_s: 300
   reconcile_after_s: 10
   reconcile_min_interval_s: 5
-  abandon_after_s: 86400
-  paid_max_length: 3600
-  paid_max_lines: 72
+  abandon_after_s: 259200      # 72 h
+  paid_max_length: 6000
+  paid_max_lines: 200
   per_client_per_10min: 6
   max_attempts: 5
   managed_payments: false      # managed_payments[enabled]=false (tax code ineligible)
+  copyright:                   # copied-lyrics screen before Checkout (PAYMENT.md Step 12b)
+    enabled: true
+    engines: startpage         # pinned; bing truncates queries, others rate-limit
+    max_probes: 4
+    min_words: 6
+    min_content_words: 3
+    ngram: 6
+    results: 5
+    timeout_s: 20
 
 visitors:
   enabled: true
@@ -1055,11 +1151,27 @@ worker backs off 15 s doubling to 2 min; only real failures (bad brief, QC)
 count toward the 3-attempt `failed` limit. A request's named genre/style
 overrides `songs.genres`; the list is only a fallback for requests that name
 no style. The public request line does **not** FIFO-evict (`add_request(cap=None)`):
-every accepted request is made; `queue_cap` only bounds the board display.
+every accepted request is made; `queue_cap` (50) only bounds the board display.
+At `requests.free_queue_max` (100) free requests waiting (queued, producing or
+ready), a new free request is refused unstored (`line_full: true`); no waiting
+request is ever dropped, and paid requests are never capped. Paid rows show a
+one-sentence LLM summary (`paid_summary.md`) on the board; labels that fell
+back to raw text are regenerated at startup.
 With >= 3 queued, request briefs ask for a short (60-90 s) song to drain the
 backlog. Every request song gets an intro that opens with a listener-request
 shout-out: two LLM-written tries, then a scripted "Request line! You asked, we
 made it! Here's <title>, by <artist>!" rendered directly.
+
+**Paid requests (PAYMENT.md).** Paid rows have `priority=1` and the payment
+columns (`public_token`, `paid_at`, `amount_cents`, `currency`,
+`checkout_session_id`, `payment_intent_id`, `livemode`, `reconciled_at`,
+`summary`). Step 12b adds `stage TEXT` and `comped INTEGER DEFAULT 0` and the
+pre-payment status `checking` (stages `moderation -> copyright -> ready`):
+`checking -> rejected` (moderation / copied lyrics / crashed check),
+`checking/ready -> awaiting_payment` (checkout claimed once), or, for an
+operator comp, `checking -> queued` with `comped=1`, `amount_cents=0` and no
+Stripe session. `checking` rows are never on the board and are `abandoned` on
+station start (their background task died with the process).
 
 **Visitors.** A separate `visitor_ips(ip TEXT PRIMARY KEY, first_seen REAL)`
 table stores the **raw canonical client IP** (operator decision, 2026-10-01;

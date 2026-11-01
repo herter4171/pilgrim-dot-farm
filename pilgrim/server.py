@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hmac
 import ipaddress
 import json
 import logging
@@ -22,7 +23,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -32,6 +33,7 @@ from starlette.types import Scope
 
 from pilgrim import dj_contracts as dj
 from pilgrim.config import (
+    PAID_OVERRIDE_ENV,
     RNG,
     ROOT,
     Clock,
@@ -39,6 +41,7 @@ from pilgrim.config import (
     ensure_dirs,
     load_api_key,
     load_config,
+    load_secret,
     stripe_env,
 )
 from pilgrim.dj_security import require_dj
@@ -50,13 +53,14 @@ from pilgrim.payments import (
     WebhookError,
     verify_webhook,
 )
+from pilgrim.pipelines.copyright import CopyrightScreen
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.moderation import Moderation
 from pilgrim.pipelines.news import NewsPipeline
 from pilgrim.pipelines.operator_phrase import PhraseManager
 from pilgrim.pipelines.request_filter import prefilter
 from pilgrim.pipelines.sfx import SfxClient, SfxPipeline
-from pilgrim.pipelines.songs import SongPipeline
+from pilgrim.pipelines.songs import SongPipeline, song_backend_health
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
 from pilgrim.producer import Producer
 from pilgrim.scheduler import Scheduler
@@ -80,10 +84,14 @@ class Station:
         self.kokoro = KokoroClient(cfg)
         self.prompts = _load_prompts(cfg)
         self.moderator = Moderation(cfg, self.llm, prompts=self.prompts)
+        self.copyright = CopyrightScreen(cfg, api_key)
         self.voice = VoicePipeline(cfg, self.llm, self.kokoro, self.db, self.media_dir,
                                    prompts=self.prompts)
         self.songs = SongPipeline(cfg, self.llm, self.media_dir,
-                                  prompts=self.prompts, rng=self.rng)
+                                  prompts=self.prompts, rng=self.rng, api_key=api_key)
+        swept = self.songs.sweep_temp()  # render temp files a crash left behind
+        if swept:
+            log.info("song.tmp_swept", extra={"count": swept})
         self.news = NewsPipeline(cfg, self.llm, api_key=api_key,
                                 prompts=self.prompts)
         self.sfx_client = SfxClient(cfg)
@@ -130,6 +138,12 @@ class Station:
         abandoned = self.db.abandon_stale_checkouts(cutoff)
         if abandoned:
             log.info("payment.abandoned_stale", extra={"count": abandoned})
+        # Staged checks run as background tasks; a restart orphans them.
+        orphaned = self.db.abandon_checking_requests()
+        if orphaned:
+            log.info("payment.abandoned_checking", extra={"count": orphaned})
+        # Operator comp secret (PAYMENT.md Step 12b). Never logged or stored.
+        self.override_token = load_secret(PAID_OVERRIDE_ENV)
         self._tasks: list = []
         self._http = httpx.AsyncClient(timeout=4.0)
 
@@ -137,8 +151,8 @@ class Station:
     async def backend_status(self) -> dict:
         def ok(status: int) -> bool:
             return 200 <= status < 500
-        st = {"litellm": False, "kokoro": False, "mlx": False, "searxng": False,
-              "sfx": False}
+        st: dict = {"litellm": False, "kokoro": False, "music": False,
+                    "searxng": False, "sfx": False}
         try:
             r = await self._http.get(
                 self.cfg.hosts.litellm.rstrip("/") + "/models", headers=self._auth)
@@ -150,11 +164,9 @@ class Station:
             st["kokoro"] = ok(r.status_code)
         except Exception:
             st["kokoro"] = False
-        try:
-            r = await self._http.get(self.cfg.hosts.mlx_serve.rstrip("/") + "/v1/models")
-            st["mlx"] = ok(r.status_code)
-        except Exception:
-            st["mlx"] = False
+        st["music_backends"] = await song_backend_health(
+            self.cfg, self._http, self.api_key)
+        st["music"] = any(st["music_backends"].values())
         try:
             r = await self._http.get(self.cfg.hosts.searxng.rstrip("/") + "/health",
                                      headers=self._auth)
@@ -427,6 +439,7 @@ class Station:
         self._tasks.append(asyncio.create_task(self.producer.news_loop()))
         self._tasks.append(asyncio.create_task(self.producer.song_loop()))
         self._tasks.append(asyncio.create_task(self.producer.sfx_loop()))
+        self._tasks.append(asyncio.create_task(_backfill_paid_summaries(self)))
         inv = await self.inventory_levels()
         log.info("station.startup", extra={
             "lookahead_s": self.cfg.playout.committed_lookahead_s, "inventory": inv})
@@ -435,8 +448,8 @@ class Station:
 def _load_prompts(cfg: Config) -> dict:
     pdir = ROOT / cfg.library.prompts_dir
     out = {}
-    for f in ("voice.md", "song_brief.md", "news.md", "moderation.md", "field.md",
-              "sfx_cues.md", "sfx_joke.md", "paid_request.md",
+    for f in ("voice.md", "song_brief.md", "station_song.md", "news.md", "moderation.md",
+              "field.md", "sfx_cues.md", "sfx_joke.md", "paid_request.md",
               "paid_summary.md"):
         p = pdir / f
         if p.exists():
@@ -480,7 +493,7 @@ async def _summarise_paid(station: Station, text: str, max_length: int) -> str:
     started = time.monotonic()
     try:
         raw = await station.llm.chat_text(
-            station.cfg.models.briefs, template, json.dumps(text), max_tokens=512)
+            station.cfg.models.briefs, template, json.dumps(text))
     except Exception as exc:  # noqa: BLE001 - a label must never fail the request
         log.warning("payment.summary_failed",
                     extra={"error": type(exc).__name__})
@@ -488,6 +501,9 @@ async def _summarise_paid(station: Station, text: str, max_length: int) -> str:
     summary = " ".join(raw.split()).strip().strip('"').strip("'")
     summary = summary.lstrip("*").strip()
     if not summary:
+        # An empty answer used to fall back silently (a 512-token cap starved
+        # the reasoning model, Oct 31); say so.
+        log.warning("payment.summary_empty")
         return fallback
     if len(summary) > max_length:
         summary = summary[: max_length - 1] + "…"
@@ -497,11 +513,92 @@ async def _summarise_paid(station: Station, text: str, max_length: int) -> str:
     return summary
 
 
+async def _backfill_paid_summaries(station: Station) -> None:
+    """Regenerate board labels for paid requests on the board (waiting or
+    aired) whose label is missing or just the raw-text fallback (left by the
+    old 512-token cap)."""
+    max_length = station.cfg.requests.max_length
+    for row in station.db.paid_rows_needing_summary():
+        text = str(row.get("text") or "")
+        if row.get("summary") and row["summary"] != _fallback_summary(text, max_length):
+            continue
+        summary = await _summarise_paid(station, text, max_length)
+        if summary != row.get("summary"):
+            station.db.set_request_summary(int(row["id"]), summary)
+            log.info("payment.summary_backfilled", extra={"request_id": row["id"]})
+
+
 def _normalise_paid(text: str) -> str:
     """PAYMENT.md Step 4.2: CRLF -> LF, rstrip lines, strip, 3+ blank -> 2."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = "\n".join(line.rstrip() for line in text.split("\n")).strip()
     return re.sub(r"\n{3,}", "\n\n", text)
+
+
+# Minimum length for the comp secret: a short value could be guessed through
+# the public form, so anything shorter leaves the feature off.
+_MIN_OVERRIDE_LEN = 24
+
+
+def _override_secret(station: Station) -> str:
+    secret = station.override_token or ""
+    return secret if len(secret) >= _MIN_OVERRIDE_LEN else ""
+
+
+def _split_override(text: str, secret: str) -> tuple[bool, str]:
+    """(comped, prompt): the first line equal to the secret (constant-time)
+    marks an operator comp and is removed before anything else sees the text."""
+    if not secret:
+        return False, text
+    first, _, rest = text.partition("\n")
+    if hmac.compare_digest(first.strip().encode(), secret.encode()):
+        return True, _normalise_paid(rest)
+    return False, text
+
+
+def _leaks_secret(text: str, secret: str) -> bool:
+    return bool(secret) and secret in text
+
+
+_LEAK_REASON = "That request can't be accepted."
+_CHECK_FAILED = ("Couldn't finish checking your request. You were not charged; "
+                 "try again.")
+
+
+async def _run_paid_checks(station: Station, request_id: int, text: str,
+                           comped: bool) -> None:
+    """Moderation -> copyright screen -> summary -> ready (or comped into the
+    queue). Runs after the POST has answered; the client polls the stage
+    (PAYMENT.md Step 12b). Any crash rejects the row: nobody is charged."""
+    db = station.db
+    cfg = station.cfg
+    try:
+        t0 = time.monotonic()
+        allowed, reason = await station.moderator.moderate(text)
+        log.info("request.moderated", extra={
+            "request_id": request_id, "allowed": allowed, "reason": reason,
+            "prefilter": False, "paid": True,
+            "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
+        if not allowed:
+            db.reject_checking_request(request_id, reason or "rejected")
+            return
+        if not db.set_request_stage(request_id, "copyright"):
+            return
+        verdict = await station.copyright.check(text, request_id)
+        if not verdict.allowed:
+            db.reject_checking_request(request_id, verdict.reason)
+            return
+        summary = await _summarise_paid(station, text, cfg.requests.max_length)
+        if comped:
+            db.set_request_stage(request_id, "ready", summary=summary)
+            if db.mark_request_comped(request_id):
+                log.info("payment.comped", extra={"request_id": request_id})
+            return
+        db.set_request_stage(request_id, "ready", summary=summary)
+    except Exception as exc:  # noqa: BLE001 - a failed check must never charge
+        log.warning("payment.check_failed",
+                    extra={"request_id": request_id, "error": type(exc).__name__})
+        db.reject_checking_request(request_id, _CHECK_FAILED)
 
 
 def build_station(cfg: Config) -> Station:
@@ -654,6 +751,26 @@ def _add_public_routes(app: FastAPI, station: Station,
         text = payload.text.strip()
         if not text or len(text) > cfg.requests.max_length:
             raise HTTPException(422, "request empty or too long")
+        if _leaks_secret(text, _override_secret(station)):
+            # The comp secret pasted into the free line: never stored, logged,
+            # moderated or put on the board (PAYMENT.md Step 12b).
+            return {"ok": False, "rejected": True, "reason": _LEAK_REASON,
+                    "paid_enabled": station.payments_active}
+        if station.db.waiting_free_requests() >= cfg.requests.free_queue_max:
+            # Free line full (RADIO §14): refuse the new one, never drop a
+            # waiting one. Paid requests are never capped.
+            log.info("request.line_full",
+                     extra={"limit": cfg.requests.free_queue_max})
+            board = station.db.request_board(cfg.requests.queue_cap,
+                                             cfg.requests.max_length,
+                                             stages=station.producer.request_stage)
+            return {"ok": False, "rejected": True, "line_full": True,
+                    "reason": "The request line is full right now. Try again in "
+                              "a little while, or jump the line with a priority "
+                              "request.",
+                    "queue": board["queue"], "recent": board["recent"],
+                    "cap": cfg.requests.queue_cap,
+                    "paid_enabled": station.payments_active}
         t0 = time.monotonic()
         # Deterministic pre-filter first: URLs/contact info never reach the LLM (4.1).
         pref = prefilter(text)
@@ -666,7 +783,8 @@ def _add_public_routes(app: FastAPI, station: Station,
                 "request_id": req["id"], "allowed": False, "reason": pref,
                 "prefilter": True, "duration_ms": 0})
             board = station.db.request_board(cfg.requests.queue_cap,
-                                             cfg.requests.max_length)
+                                             cfg.requests.max_length,
+                                             stages=station.producer.request_stage)
             return {
                 "ok": False, "rejected": True, "request": req, "reason": pref,
                 "queue": board["queue"], "recent": board["recent"],
@@ -683,7 +801,8 @@ def _add_public_routes(app: FastAPI, station: Station,
             "prefilter": False,
             "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
         board = station.db.request_board(cfg.requests.queue_cap,
-                                         cfg.requests.max_length)
+                                         cfg.requests.max_length,
+                                         stages=station.producer.request_stage)
         return {
             "ok": allowed,
             "rejected": not allowed,
@@ -698,29 +817,35 @@ def _add_public_routes(app: FastAPI, station: Station,
     @app.get("/api/requests")
     async def list_requests():
         board = station.db.request_board(cfg.requests.queue_cap,
-                                         cfg.requests.max_length)
+                                         cfg.requests.max_length,
+                                         stages=station.producer.request_stage)
         return JSONResponse({**board, "cap": cfg.requests.queue_cap,
                              "paid_enabled": station.payments_active},
                             headers={"Cache-Control": "public, max-age=2"})
 
     # ------------------------------------------------- paid priority (PAYMENT §4)
     @app.post("/api/paid-requests")
-    async def submit_paid_request(payload: PaidRequestIn, request: Request):
-        if not station.payments_active or station.payment_service is None:
-            return JSONResponse(status_code=503, content={
-                "detail": "Paid requests are closed right now.",
-                "paid_closed": True})
+    async def submit_paid_request(payload: PaidRequestIn, request: Request,
+                                  background: BackgroundTasks):
+        """PAYMENT.md Step 12b: prefilter now, then moderation + copyright in
+        the background; the client polls the stage and asks for Checkout
+        only once the row is `ready`."""
         if _paid_rate_limited(request):
             raise HTTPException(
                 429, "Easy there — a few paid requests every ten minutes, please.")
-        text = _normalise_paid(payload.text)
+        secret = _override_secret(station)
+        comped, text = _split_override(_normalise_paid(payload.text), secret)
+        if not comped and (not station.payments_active
+                           or station.payment_service is None):
+            return JSONResponse(status_code=503, content={
+                "detail": "Paid requests are closed right now.",
+                "paid_closed": True})
         lines = text.count("\n") + 1
         if (not text or len(text) > cfg.payments.paid_max_length
                 or lines > cfg.payments.paid_max_lines):
             raise HTTPException(422, "paid request empty or too long")
-        log.info("payment.requested",
-                 extra={"len": len(text), "lines": lines})
-        t0 = time.monotonic()
+        if _leaks_secret(text, secret):
+            return {"ok": False, "rejected": True, "reason": _LEAK_REASON}
         pref = prefilter(text, phone_mode="runs")
         if pref:
             req = station.db.add_request(text, cap=None, status="rejected",
@@ -729,22 +854,30 @@ def _add_public_routes(app: FastAPI, station: Station,
                 "request_id": req["id"], "allowed": False, "reason": pref,
                 "prefilter": True, "paid": True, "duration_ms": 0})
             return {"ok": False, "rejected": True, "reason": pref}
-        allowed, reason = await station.moderator.moderate(text)
-        log.info("request.moderated", extra={
-            "request_id": None, "allowed": allowed, "reason": reason,
-            "prefilter": False, "paid": True,
-            "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
-        if not allowed:
-            req = station.db.add_request(text, cap=None, status="rejected",
-                                         reason=reason, priority=1)
-            log.info("payment.requested",
-                     extra={"request_id": req["id"], "len": len(text),
-                            "lines": lines})
-            return {"ok": False, "rejected": True, "reason": reason}
-        summary = await _summarise_paid(station, text, cfg.requests.max_length)
-        row = station.db.add_paid_request(text, summary=summary)
+        row = station.db.add_checking_request(text, comped=comped)
         log.info("payment.requested",
-                 extra={"request_id": row["id"], "len": len(text), "lines": lines})
+                 extra={"request_id": row["id"], "len": len(text), "lines": lines,
+                        "comped": comped,
+                        "client_ip": station._client_ip(request) if comped else None})
+        background.add_task(_run_paid_checks, station, int(row["id"]), text, comped)
+        return {"ok": True, "token": row["public_token"], "stage": "moderation"}
+
+    @app.post("/api/paid-requests/{token}/checkout")
+    async def start_paid_checkout(token: str):
+        """Create the Checkout Session for a row that passed every check. The
+        client_secret is returned once and never stored (AGENTS §1.11)."""
+        if not PAID_TOKEN_RE.match(token):
+            raise HTTPException(404, "not found")
+        if not station.payments_active or station.payment_service is None:
+            return JSONResponse(status_code=503, content={
+                "detail": "Paid requests are closed right now.",
+                "paid_closed": True})
+        row = station.db.get_request_by_token(token)
+        if row is None:
+            raise HTTPException(404, "not found")
+        if not station.db.claim_for_checkout(int(row["id"])):
+            return JSONResponse(status_code=409, content={
+                "detail": "That request isn't ready for payment."})
         try:
             session = await station.payment_service.start_checkout(row)
         except StripeError as exc:
@@ -761,7 +894,6 @@ def _add_public_routes(app: FastAPI, station: Station,
                 "detail": "Payments are having a moment. You were not charged."})
         return JSONResponse(content={
             "ok": True,
-            "token": row["public_token"],
             "client_secret": session.client_secret,
             "publishable_key": station.publishable_key,
             "expires_at": session.expires_at
@@ -773,16 +905,21 @@ def _add_public_routes(app: FastAPI, station: Station,
     async def paid_request_status(token: str):
         if not PAID_TOKEN_RE.match(token):
             raise HTTPException(404, "not found")
-        if station.payment_service is None:
-            raise HTTPException(404, "not found")
-        row = await station.payment_service.reconcile(token)
+        if station.payment_service is not None:
+            row = await station.payment_service.reconcile(token)
+        else:
+            row = station.db.get_request_by_token(token)
         if row is None:
             raise HTTPException(404, "not found")
         status = str(row["status"])
         position = (station.db.request_position(int(row["id"]))
                     if status in ("queued", "producing", "ready") else None)
-        return JSONResponse({"status": status, "position": position},
-                            headers={"Cache-Control": "no-store"})
+        body: dict = {"status": status, "position": position,
+                      "stage": row.get("stage") if status == "checking" else None,
+                      "comped": bool(row.get("comped"))}
+        if status == "rejected":
+            body["reason"] = row.get("reason")
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
     # ------------------------------------------------------- Stripe webhook (§5)
     @app.post("/api/stripe/webhook")

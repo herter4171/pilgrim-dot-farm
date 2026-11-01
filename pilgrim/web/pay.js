@@ -1,7 +1,9 @@
-/* Pilgrim Dot Farm — PAID REQUE$T (PAYMENT.md §8.3).
-   Embedded Stripe Checkout inside the request pane. Stripe.js is loaded
-   lazily on the first click; the card fields live in Stripe's iframe, so card
-   data never touches this code or the station. No build step.
+/* Pilgrim Dot Farm — PAID REQUE$T (PAYMENT.md §8.3, Step 12b).
+   Submit -> the station checks the prompt in stages (DJ prefilter, content
+   moderation, copied-lyrics screen) while this polls the stage -> Embedded
+   Stripe Checkout once the request is ready. Stripe.js is loaded lazily; the
+   card fields live in Stripe's iframe, so card data never touches this code
+   or the station. No build step.
 */
 (() => {
   "use strict";
@@ -135,6 +137,92 @@
     }
   }
 
+  const STAGE_MSG = {
+    moderation: "Checking for unseemly content…",
+    copyright: "Checking for existing copyrighted material…",
+  };
+  const CHECK_TIMEOUT_MS = 120000;
+
+  function backToComposing(text) {
+    clearTimers();
+    clearToken();
+    token = null;
+    showMsg(text, false);
+    setState("composing");
+  }
+
+  let checkoutAsked = false;
+
+  async function checkPoll() {
+    if (!token || state !== "checking" || checkoutAsked) return;
+    let d = null;
+    try {
+      const r = await fetch("/api/paid-requests/" + encodeURIComponent(token));
+      if (r.ok) d = await r.json();
+    } catch (e) { /* station down: keep polling */ }
+    // a slower earlier poll must not act after checkout started or the user left
+    if (state !== "checking" || checkoutAsked) return;
+    if (d) {
+      if (d.status === "checking") {
+        if (d.stage === "ready") {
+          checkoutAsked = true;
+          clearTimers();
+          await requestCheckout();
+          return;
+        }
+        if (STAGE_MSG[d.stage]) showMsg(STAGE_MSG[d.stage], true);
+      } else if (d.status === "rejected") {
+        backToComposing("Head's up: " + (d.reason || "that didn't pass the DJ's taste filter."));
+        return;
+      } else if (d.status === "abandoned" || d.status === "failed") {
+        backToComposing("Couldn't finish checking your request. You were not charged; try again.");
+        return;
+      } else if (d.status === "awaiting_payment") {
+        startConfirming(token);   // resumed after a reload mid-checkout
+        return;
+      } else if (["queued", "producing", "ready", "aired"].includes(d.status)) {
+        clearTimers();
+        clearToken();
+        const pos = d.position ? " (#" + d.position + ")" : "";
+        showMsg("✓ You're in the priority line" + pos + ".", true);
+        setState("done");
+        doneTimer = setTimeout(() => setState("idle"), 8000);
+        return;
+      }
+    }
+    if (Date.now() - pollStarted > CHECK_TIMEOUT_MS) {
+      backToComposing("The checks are taking too long. You were not charged; try again.");
+    }
+  }
+
+  function startChecking(tok) {
+    checkoutAsked = false;
+    token = tok;
+    saveToken(tok);
+    pollStarted = Date.now();
+    setState("checking");
+    clearTimers();
+    pollTimer = setInterval(checkPoll, 1000);
+    checkPoll();
+  }
+
+  async function requestCheckout() {
+    try {
+      const r = await fetch("/api/paid-requests/" + encodeURIComponent(token) + "/checkout",
+                            { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) {
+        backToComposing(d.detail || "Payments are having a moment. You were not charged.");
+        return;
+      }
+      clientSecret = d.client_secret;
+      publishableKey = d.publishable_key;
+      await startPaying();
+    } catch (e) {
+      backToComposing("Couldn't reach the station. You were not charged; try again.");
+    }
+  }
+
   function startConfirming(tok) {
     token = tok;
     saveToken(tok);
@@ -193,10 +281,7 @@
         setState("composing");
         return;
       }
-      token = d.token;
-      clientSecret = d.client_secret;
-      publishableKey = d.publishable_key;
-      await startPaying();
+      startChecking(d.token);
     } catch (e) {
       showMsg("Couldn't reach the station. Try again.", false);
       setState("composing");
@@ -241,8 +326,7 @@
 
   const resumed = loadToken();
   if (resumed) {
-    token = resumed;
-    startConfirming(resumed);
+    startChecking(resumed);   // checkPoll routes to the right phase
   } else {
     setState("idle");
   }

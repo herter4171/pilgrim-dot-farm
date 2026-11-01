@@ -139,7 +139,7 @@ http {
             error_page 504 = @request_timeout;
         }
 
-        # PAID REQUE$T (PAYMENT.md Step 10.2): exactly three new paths.
+        # PAID REQUE$T (PAYMENT.md Step 10.2, Step 12b): exactly four paths.
         location = /api/paid-requests {
             limit_except POST { deny all; }
             limit_req zone=paid_req burst=20 nodelay;
@@ -150,6 +150,21 @@ http {
             proxy_set_header X-Real-IP $http_x_real_ip;
             proxy_set_header X-Forwarded-For $http_x_real_ip;
             proxy_read_timeout 270s;
+            proxy_cache off;
+            error_page 502 = @offair;
+            error_page 504 = @request_timeout;
+        }
+
+        location ~ "^/api/paid-requests/[A-Za-z0-9_-]{16,64}/checkout$" {
+            limit_except POST { deny all; }
+            limit_req zone=paid_req burst=20 nodelay;
+            proxy_pass http://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_real_ip;
+            proxy_set_header X-Forwarded-For $http_x_real_ip;
+            proxy_read_timeout 50s;    # < edge's 60s
             proxy_cache off;
             error_page 502 = @offair;
             error_page 504 = @request_timeout;

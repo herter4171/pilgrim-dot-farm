@@ -21,4 +21,4 @@ set -a; . "$STATE/env"; set +a
 "$ROOT/.venv/bin/python" -m pilgrim.tools.split_smoke \
     --state-dir "$STATE" \
     --edge "http://127.0.0.1:$EDGE_PORT" \
-    --gateway "http://127.0.0.1:$GATEWAY_PORT"
+    --gateway "http://127.0.0.1:$GATEWAY_PORT" "$@"

@@ -27,6 +27,10 @@ test("PLAY continues past three clips with sample-contiguous joins", async ({ pa
   const errors: string[] = [];
   page.on("pageerror", e => errors.push(e.message));
   await page.goto("/");
+  // The fixture station keeps playing between tests. Earlier listeners' ledger
+  // entries can have gaps while nobody listens; check this PLAY session only.
+  const before = await page.request.get("/api/test/report").then(r => r.json());
+  const lastEarlierSeq = Math.max(0, ...before.seqs);
   await page.click("#btn-play");
   await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 15_000 });
   await page.waitForTimeout(25_000);
@@ -50,10 +54,11 @@ test("PLAY continues past three clips with sample-contiguous joins", async ({ pa
     expect(o.stop, "overlay is stopped at its host's end").toBeLessThanOrEqual(host.end + 1e-6);
   }
   const report = await page.request.get("/api/test/report").then(r => r.json());
-  expect(report.underrun).toBe(0);
-  expect(report.seqs.length).toBeGreaterThan(8);
-  for (let i = 1; i < report.seqs.length; i++) {
-    expect(report.seqs[i]).toBe(report.seqs[i - 1] + 1);
+  expect(report.underrun - before.underrun).toBe(0);
+  const playedSeqs = report.seqs.filter((seq: number) => seq > lastEarlierSeq);
+  expect(playedSeqs.length).toBeGreaterThan(8);
+  for (let i = 1; i < playedSeqs.length; i++) {
+    expect(playedSeqs[i]).toBe(playedSeqs[i - 1] + 1);
   }
   // The refill loop commits every `refill_interval_s`, so coverage oscillates
   // between the lookahead target and target − one refill interval (§5.3).

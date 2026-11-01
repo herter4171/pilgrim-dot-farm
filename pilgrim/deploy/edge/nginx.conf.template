@@ -18,7 +18,9 @@ http {
     default_type  application/octet-stream;
     access_log    /var/log/nginx/access.log;
     sendfile      on;
-    keepalive_timeout 65;
+    # Longer than the ALB idle timeout (305 s) so the ALB, not nginx, closes
+    # idle upstream connections; otherwise reused-but-closed sockets give 502s.
+    keepalive_timeout 310s;
 
     # 2. Real client IP. In production this include sets real_ip_header
     # CF-Connecting-IP and set_real_ip_from for each Cloudflare range. Locally
@@ -149,7 +151,7 @@ http {
             error_page 504 = @request_timeout;
         }
 
-        # PAID REQUE$T (PAYMENT.md Step 10.1): exactly three new paths.
+        # PAID REQUE$T (PAYMENT.md Step 10.1, Step 12b): exactly four paths.
         location = /api/paid-requests {
             proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
             proxy_http_version 1.1;
@@ -162,6 +164,24 @@ http {
             proxy_ssl_verify on;
             proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
             proxy_read_timeout 300s;   # moderation + Checkout create
+            proxy_cache off;
+            error_page 502 = @offair;
+            error_page 504 = @request_timeout;
+        }
+
+        # Checkout for a request that passed the staged checks (Step 12b).
+        location ~ "^/api/paid-requests/[A-Za-z0-9_-]{16,64}/checkout$" {
+            proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host @@ORIGIN_HOST@@;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_ssl_server_name on;
+            proxy_ssl_name @@ORIGIN_HOST@@;
+            proxy_ssl_verify on;
+            proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
+            proxy_read_timeout 60s;    # one Checkout Session create
             proxy_cache off;
             error_page 502 = @offair;
             error_page 504 = @request_timeout;

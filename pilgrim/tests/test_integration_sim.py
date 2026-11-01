@@ -39,7 +39,7 @@ class FakeSong:
                            title="Tune for " + (request_text or "the night")[:18],
                            artist="The Barn Cats", lyrics="[verse]\nyip")
 
-    async def produce_song(self, brief):
+    async def produce_song(self, brief, prefer="slow"):
         return {"type": "song", "media_path": "/tmp/s.flac", "duration_s": 45.0,
                 "title": brief["title"], "artist": brief["artist"],
                 "genre": brief["genre"], "meta": {"brief": brief, "seed": 1}}

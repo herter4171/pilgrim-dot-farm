@@ -589,6 +589,8 @@ class Scheduler:
         bounded per request by `playout.request_hold_max_s`: a backend outage
         that leaves a request queued forever must not pin the station at a
         shallow lookahead (the stock song fallback resumes after the limit)."""
+        if self.cfg.playout.request_hold_max_s <= 0:
+            return False  # disabled: stock keeps airing; ready requests splice in
         committed = set(self._pending_aired.values())
         pending = [r for r in self.store.pending_requests()
                    if r["id"] not in committed]

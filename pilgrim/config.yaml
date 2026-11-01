@@ -12,7 +12,7 @@ station:
   timezone: America/Detroit  # DJ clock time (OVERHAUL 5.3)
 
 hosts:
-  mlx_serve: http://127.0.0.1:11234
+  # song generators are the pool in songs.gen_backends (RADIO §6.2)
   kokoro: http://localhost:8001
   litellm: http://localhost:4000/v1
   # searxng is reached through the LiteLLM MCP server (web_search-searxng tool),
@@ -27,6 +27,17 @@ models:
   commercials: "Ornith-1.5-9B"
   liners: "Ornith-1.5-9B"
   field_report: qwen38
+  music: MiniMax-Music-3   # LiteLLM model group for songs.gen_backends with auth: litellm
+  # Context window per model. Calls send max_tokens = context - prompt estimate
+  # (no artificial output limit); omitting max_tokens hits qwen38's server
+  # default of 8192, which cut long song briefs off empty (2026-11-01).
+  context_tokens:
+    qwen38: 262144
+  # Largest max_tokens the server admits alongside other calls (it reserves the
+  # whole amount up front; 260k expired waiting for admission, 32k got in).
+  # 4x the 8192 default that cut long briefs off.
+  output_tokens:
+    qwen38: 32768
 
 voices:
   dj: am_liam
@@ -39,7 +50,7 @@ voices:
 playout:
   committed_lookahead_s: 300     # keep >= this much committed audio ahead (5 min: requests air sooner)
   filler_horizon_s: 60           # repeat a liner/spot inside its spacing only below this coverage
-  request_hold_max_s: 900        # hold the window for a pending request (so it airs next); cap per request
+  request_hold_max_s: 0          # 0 = no hold: songs keep airing while a request is written/generated; a ready request splices into the next song slot. >0 = hold the window (talk only) up to this long per request
   window_trim_keep_s: 120        # keep this much committed history behind "now"
   weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08,
             field_report: 0.05}
@@ -72,12 +83,25 @@ inventory:
   station_ids_min: 3             # emergency station IDs (RADIO §8.3), never deleted
 
 songs:
-  # duration_seconds sent to mlx-serve is max_duration_s; the model may end sooner.
+  # duration_seconds sent to the generator is max_duration_s; the model may end sooner.
   min_duration_s: 20    # sanity floor for songs (OVERHAUL 3.2)
   max_duration_s: 360   # sent as duration_seconds (1-360); also the song QC ceiling
   abrupt_fade_s: 2.5    # fade-out for songs with hard endings (OVERHAUL 3.2)
   stock_gap_s: 600      # wait between stock song generations; listener requests skip it (§6.1)
   stock_max_library: 100  # pause stock generation once the library has this many songs; requests still produce
+  # Song generator pool (RADIO §6.2). Through LiteLLM's vLLM pass-through the
+  # router fans renders out over the three MiniMax Music 3 deployments
+  # (two audiocpp GPU boxes + the M5 MLX box, docs/backends.md §2b), so one
+  # entry with 3 slots. Direct mode = one entry per box with slots: 1.
+  gen_backends:
+    # 2026-11-01 03:21-03:28 the LiteLLM /vllm pass-through answered 500 to
+    # every render; it was back by 13:19 (10 s probe: 200, audiocpp). If it
+    # fails again, fall back to the direct M5 tunnel (1 slot):
+    #   - {name: m5, url: "http://127.0.0.1:11234", rtf_hint: 0.6}
+    - {name: litellm, slots: 3, auth: litellm}   # url derived: hosts.litellm minus /v1, plus /vllm
+  free_request_slots: 2   # free requests rendering at once; the last slot always stays open for a paid one
+  submit_stagger_s: 5     # min seconds between render submissions: LiteLLM only fans them out across the boxes with a delay
+  backend_cooldown_s: 120 # unreachable generator sits out this long (doubling to 600 s)
   genres:
     # MiniMax Music 3 style families (prompting guide §5). Ids must exist in
     # pilgrim/genres.py; values are selection weights. Genre is family-level:
@@ -110,10 +134,11 @@ news:
 # Listener request line. FIFO top-N with LLM moderation: clean/playful requests ok,
 # adult *allusion* ok, but explicit/crass/hate/illegal are rejected by the moderator.
 requests:
-  queue_cap: 20          # request-board display size (public line never evicts)
+  queue_cap: 50          # request-board display size (public line never evicts)
+  free_queue_max: 100    # free requests waiting (queued/producing/ready); new ones refused beyond. Paid never capped
   max_length: 160        # chars allowed per request
   moderation_model: qwen38  # stricter reasoning model for the gate
-  moderation_max_tokens: 4096  # cap for the moderation call (OVERHAUL 4.2)
+  moderation_max_tokens: null  # no output cap; reasoning counts against it (docs/backends.md §1)
   per_client_per_10min: 3   # request-line rate limit (OVERHAUL 4.3)
 
 # Persistent unique-visitor counter (COSMETIC_PATCHING §6, RADIO §14).
@@ -249,9 +274,18 @@ payments:
   webhook_tolerance_s: 300     # max age of a signed webhook timestamp
   reconcile_after_s: 10        # status poll may ask Stripe after this long
   reconcile_min_interval_s: 5  # at most one retrieve per row per interval
-  abandon_after_s: 86400       # awaiting_payment rows older than this -> abandoned
-  paid_max_length: 3600
-  paid_max_lines: 72
+  abandon_after_s: 259200      # 72 h: awaiting_payment rows older than this -> abandoned
+  paid_max_length: 6000       # a full MiniMax caption + lyric sheet (PAYMENT.md Step 12c)
+  paid_max_lines: 200
   per_client_per_10min: 6      # rate limit on POST /api/paid-requests
   max_attempts: 5              # production attempts before `failed`
   managed_payments: false      # send managed_payments[enabled]=false (tax code ineligible)
+  copyright:                   # web screen for copied lyrics (PAYMENT.md Step 12b)
+    enabled: true
+    engines: startpage         # bing truncates queries; others rate-limit us
+    max_probes: 4              # lyric lines searched per paid request
+    min_words: 6
+    min_content_words: 3
+    ngram: 6                   # consecutive matching words = a hit
+    results: 5
+    timeout_s: 20

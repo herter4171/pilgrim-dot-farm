@@ -46,7 +46,7 @@ Edit `pilgrim/config.yaml`. Each value and how to verify it:
 
 | Key | Value on the M5 | How to check |
 |---|---|---|
-| `hosts.mlx_serve` | `http://127.0.0.1:11234` | `curl -s http://127.0.0.1:11234/v1/models` |
+| `songs.gen_backends` | `[{name: litellm, slots: 3, auth: litellm}]` (URL derived from `hosts.litellm` + `/vllm`; direct mode lists each box) | `make smoke` prints `music:<name> OK`; `make smoke SMOKE_ARGS=--gen` renders 10 s per slot (only when asked) |
 | `hosts.kokoro` | Kokoro host's LAN address, e.g. `http://192.168.68.89:8001` | `curl -s <kokoro>/health` and `curl -s <kokoro>/voices` |
 | `hosts.litellm` | LiteLLM host's LAN address, e.g. `http://<5090-lan>:4000/v1` | `curl -s -H "Authorization: Bearer $LITELLM_TOKEN" <litellm>/models` |
 | `hosts.searxng` | LiteLLM MCP endpoint, e.g. `http://<5090-lan>:4000/mcp` | MCP `initialize` + `tools/list` per `docs/backends.md` §5 |

@@ -19,6 +19,9 @@ dist/
 .llm-wiki/
 .pi/
 
+# Vim
+*.swp
+
 # Runtime data
 *.bak
 station.db

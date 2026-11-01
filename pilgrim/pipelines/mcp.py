@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json as _json
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -156,5 +157,61 @@ async def searxng_search(cfg: Config, api_key: str, query: str,
     except Exception as e:  # noqa: BLE001 - degraded, never fatal
         log.warning("searxng MCP search failed: %s", err_text(e))
         return []
+    finally:
+        await sess.close()
+
+
+@dataclass
+class SearchOutcome:
+    """One searxng query, keeping "found nothing" apart from "search broken".
+
+    status: ``ok`` (results), ``empty`` (the tool answered "No results found"),
+    or ``degraded`` (engines failed, MCP/HTTP error, no token). Callers that
+    must not mistake an outage for a clean result use this, not
+    `searxng_search` (which flattens all three to a list).
+    """
+    status: str
+    results: list[dict[str, str]] = field(default_factory=list)
+    error: str = ""
+
+
+def parse_results(text: str) -> list[dict[str, str]]:
+    """`Title:` / `Description:` / `URL:` blocks -> dicts (observed format)."""
+    out: list[dict[str, str]] = []
+    cur: dict[str, str] | None = None
+    for line in text.splitlines():
+        for key in ("Title", "Description", "URL"):
+            if line.startswith(key + ":"):
+                if key == "Title":
+                    cur = {"title": "", "description": "", "url": ""}
+                    out.append(cur)
+                if cur is not None:
+                    cur[key.lower()] = line[len(key) + 1:].strip()
+    return out
+
+
+async def searxng_lookup(cfg: Config, api_key: str, query: str, *,
+                         engines: str = "", limit: int = 5) -> SearchOutcome:
+    """Bounded searxng query through the LiteLLM MCP with a tri-state result."""
+    if not api_key:
+        return SearchOutcome("degraded", error="no LiteLLM token")
+    sess = MCPSession(cfg.hosts.searxng, api_key)
+    args: dict[str, Any] = {"query": query, "num_results": limit}
+    if engines:
+        args["engines"] = engines
+    try:
+        await sess.initialize()
+        result = await sess.call_tool("web_search-searxng_web_search", args)
+        text = "\n".join(str(i.get("text") or "") for i in result.get("content", [])
+                         if i.get("type") == "text")
+        results = parse_results(text)
+        if results:
+            return SearchOutcome("ok", results)
+        if "no results found" in text.lower():
+            return SearchOutcome("empty")
+        return SearchOutcome("degraded", error="unrecognised search response")
+    except Exception as e:  # noqa: BLE001 - an outage is an outcome, never fatal
+        msg = err_text(e)
+        return SearchOutcome("degraded", error=msg[:200])
     finally:
         await sess.close()

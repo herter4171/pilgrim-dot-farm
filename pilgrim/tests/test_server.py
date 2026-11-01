@@ -98,7 +98,7 @@ async def test_health_stays_on_air_with_rendered_audio_and_backends_down(tmp_env
     assert station.on_air
 
     async def backends_down():
-        return dict.fromkeys(("litellm", "kokoro", "mlx", "searxng"), False)
+        return dict.fromkeys(("litellm", "kokoro", "music", "searxng"), False)
 
     monkeypatch.setattr(station, "backend_status", backends_down)
     health = await station.health()
@@ -111,7 +111,7 @@ async def test_health_off_air_without_committed_audio(tmp_env, monkeypatch):
     station = create_app(cfg).state.station
 
     async def backends_up():
-        return dict.fromkeys(("litellm", "kokoro", "mlx", "searxng"), True)
+        return dict.fromkeys(("litellm", "kokoro", "music", "searxng"), True)
 
     monkeypatch.setattr(station, "backend_status", backends_up)
     assert (await station.health())["on_air"] is False
@@ -142,7 +142,7 @@ async def test_health_inventory_matches_producer_counts(tmp_env, monkeypatch):
     station = create_app(cfg).state.station
 
     async def backends_up():
-        return dict.fromkeys(("litellm", "kokoro", "mlx", "searxng"), True)
+        return dict.fromkeys(("litellm", "kokoro", "music", "searxng"), True)
 
     monkeypatch.setattr(station, "backend_status", backends_up)
     inv = (await station.health())["inventory"]
@@ -162,7 +162,7 @@ async def test_health_rotation_counts_aired_songs(tmp_env, monkeypatch):
     station = create_app(cfg).state.station
 
     async def backends_up():
-        return dict.fromkeys(("litellm", "kokoro", "mlx", "searxng"), True)
+        return dict.fromkeys(("litellm", "kokoro", "music", "searxng"), True)
 
     monkeypatch.setattr(station, "backend_status", backends_up)
     h = await station.health()

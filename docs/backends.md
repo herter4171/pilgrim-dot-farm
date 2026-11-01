@@ -10,7 +10,8 @@ Services are NOT hosted on this box — they are forwarded via SSH tunnels:
 | Backend | Local endpoint | Tunnel | Status on probe |
 |---------|----------------|--------|-----------------|
 | LiteLLM (LLMs) | `http://localhost:4000/v1` | up | OK |
-| mlx-serve (MiniMax Music 3) | `http://127.0.0.1:11234` | up | OK |
+| mlx-serve (MiniMax Music 3) | `http://127.0.0.1:11234` | up | OK (now one of three; see §2b) |
+| Song pool via LiteLLM | `http://localhost:4000/vllm` | (proxy) | OK, 2026-11-01 (§2b) |
 | Kokoro TTS | `http://localhost:8001` | up | OK (55 voices, 24 kHz mono) |
 | Playwright | `http://localhost:8931` | up (MCP) | browser backend fails (still) |
 
@@ -66,6 +67,20 @@ Implications for the pipelines (AGENTS §5, PLAN §6):
 - A full structured song brief (250–450-word caption + lyrics) needs
   `max_tokens: 16384`: at 4096 the reasoning trace consumes the whole budget and
   `content` comes back empty (verified 2026-10-31; ~125 s wall with streaming).
+- **Correction 2026-11-01: omitting `max_tokens` is NOT "no limit".** Probed
+  with the station down: no `max_tokens` → `finish_reason: length` at exactly
+  **8192** completion tokens (114.7 s); `max_tokens: 16384` → ran to 16384;
+  `max_tokens: 261000` is accepted (`stop` on a short answer). Every long brief
+  had ended empty or mid-JSON at 118.8–123.3 s. The client now sends
+  `max_tokens` = `models.context_tokens[model]` (qwen38: 262144) minus a
+  conservative prompt estimate on every call that doesn't set one. `llm.call`
+  logs `finish_reason` (`length` = cap hit).
+- **No cap at all (earlier finding, short calls only):** with `max_tokens` omitted, both `qwen38`
+  (2.6 s, 104 completion tokens incl. 70 reasoning) and `Ornith-1.5-9B`
+  returned `finish_reason: stop` and valid JSON (probed 2026-10-31). The
+  client omits `max_tokens` by default; moderation at 4096 had failed closed
+  on a harmless request after three empty answers. Streaming keeps the read
+  timeout an inactivity timeout, so long reasoning does not time out.
 - Calls are read as an **SSE stream** (`stream: true`), accumulating
   `delta.content` and ignoring `delta.reasoning_content`. A non-streaming read
   timed out at 120 s / 300 s on long briefs; streaming makes the timeout
@@ -164,6 +179,74 @@ country while its stored caption correctly read `Reggae / Roots Reggae`:
 
 ---
 
+## 2b. Song generation — backend pool (MiniMax Music 3 ×3), probed 2026-11-01
+
+Probed from the EC2 dev box through the proxy, with 10 s instrumental clips
+only (hard rule 6). This box can't reach `192.168.68.x` directly.
+
+### Topology (`GET /model/info`, `/router/settings`, read-only)
+
+One model group, `MiniMax-Music-3`, made of three deployments:
+
+| Deployment | api_base | LiteLLM model | Response marker |
+|---|---|---|---|
+| GPU box | `http://192.168.68.88:8080` | `vllm/MiniMax-Music-3` | `x-generated-by: audiocpp/MiniMax-Music-3` |
+| GPU box | `http://192.168.68.56:8080` | `vllm/MiniMax-Music-3` | `x-generated-by: audiocpp/MiniMax-Music-3` |
+| M5 | `http://192.168.68.51:11234` | `vllm/MiniMax-Music3-MLX-Serve-8bit` | no `x-generated-by`; `access-control-allow-origin: *` |
+
+Router settings: `routing_strategy: least-busy`, `num_retries: 2`,
+`timeout: 6000`, `cooldown_time: 5`, `allowed_fails: 3`. No deployment sets
+`max_parallel_requests` or `rpm`, so **nothing upstream refuses a 4th
+concurrent render**: it goes to an already busy box. The station enforces the
+ceiling itself (`MusicPool`, one lease per slot).
+
+### Endpoint
+
+- `POST /v1/audio/music-generations` on the proxy → **404** (LiteLLM 1.104.2
+  has no music route; `/openapi.json` lists only `/v1/audio/speech` and
+  `/transcriptions`; `/config/pass_through_endpoint` is `[]`).
+- `POST /vllm/v1/audio/music-generations` (generic vLLM pass-through) →
+  **works**. The router picks the deployment from `model` in the body.
+
+```
+POST http://localhost:4000/vllm/v1/audio/music-generations
+Authorization: Bearer $LITELLM_TOKEN
+{"model": "MiniMax-Music-3", "prompt": "...", "instrumental": true,
+ "duration_seconds": 10, "seed": 42}
+→ 200, content-type: audio/wav, raw WAV inline (same shape as §2)
+```
+
+- Output on every box: `pcm_s16le`, 44.1 kHz, stereo, ~9.98–10.0 s for a 10 s
+  request. Single clip: mean −21.6 dB, peak −4.4 dBFS.
+- `GET /vllm/v1/models` and `GET /vllm/health` → **500** (the router needs a
+  `model` in a body). Health in LiteLLM mode = `models.music` appears in the
+  proxy's `GET /v1/models`.
+- No `x-litellm-*` headers on pass-through responses. Only `x-generated-by`
+  tells audiocpp from mlx-serve; the two audiocpp boxes can't be told apart.
+
+### Concurrency (three 10 s calls)
+
+- Fired at the same instant, least-busy can put them on the same box (the
+  router hasn't counted the first as in flight yet; operator observation).
+- **Staggered 2 s apart**, all three ran in parallel on separate boxes:
+  audiocpp 23.6 s and 27.7 s, mlx-serve 39.2 s (call 2). Hence
+  `songs.submit_stagger_s: 5` (operator: at least 5 s).
+- 10 s clips carry fixed overhead; don't extrapolate RTF to full songs
+  (AGENTS §10). `song.produced` logs `backend`, `generator`, `wall_s`, `rtf`
+  for real songs.
+
+### Caveats
+
+- `num_retries: 2` applies to routed calls. Whether it also retries
+  pass-through calls is unverified. If it does, a failed render may silently
+  run again on another box.
+- The vLLM builds differ from the MLX 8-bit build: a seed replays only on the
+  generator that made the song (`meta.generator`).
+- `.56:8080` is also the api_base of `Qwen3-Omni-30B`, which suggests a
+  model-swapping server. Not measured.
+
+---
+
 ## 3. Kokoro TTS — `localhost:8001` (verified)
 
 Tunnel up. `GET /health` → `{"status":"ok","device":"cuda","model_loaded":true,"num_voices":55,"default_voice":"af_heart","queue":{"pending":0}}` (re-probed 2026-10-30: 55, was 54 at first probe).
@@ -217,6 +300,27 @@ POST /mcp
 - `tools/call` `web_search-searxng_web_search` with `{query, limit, result_detail:
   "compact"}` → `result.content[].text` = ranked `Title\nDescription\nURL` blocks.
 - Live search for "top news headlines today" returned real Google News results.
+
+### Engines and the copied-lyrics screen (probed 2026-10-31)
+
+The tool takes `engines` (comma-separated) and `num_results`. Quoted-phrase
+query `"backstroke lover always hidin' neath the covers" lyrics`, per engine:
+
+| engine | result |
+|---|---|
+| google, duckduckgo, brave, qwant, yahoo | tool error "Search Degraded … engines failed" (suspended: too many requests / CAPTCHA / access denied) |
+| bing | answers, but searches only the **first word** ("Backstroke" → swimming pages), quoted or not |
+| mojeek | clean "No results found" (small index) |
+| **startpage** | correct: Musixmatch / Spotify / YouTube lyric pages naming the song |
+
+Startpage also found two other famous songs from one line each, and still found
+the song when one word was changed. A quoted original line gave a clean
+`🔍 No results found for …` (not an error). Unquoted, the same original line
+returned unrelated pages, so the screen always quotes and decides by its own
+word overlap. Three outcomes must stay distinct: results, clean "No results
+found" (text, `isError` false), and degraded (`isError: true` / HTTP / no
+token). `searxng_lookup` (tri-state) is used for the screen; `searxng_search`
+flattens all three to a list and stays for news.
 
 Client: `pilgrim/pipelines/mcp.py` (`MCPSession.searxng_search`, `MCPSession.list_tools`,
 `current_local_time` in `pilgrim/pipelines/clocktime.py` for the DJ's real time).

@@ -7,7 +7,7 @@ import random
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
@@ -18,6 +18,9 @@ ROOT = Path(__file__).resolve().parent
 # requests stay closed (Payments.active).
 STRIPE_ENV_VARS = ("STRIPE_SECRET_KEY", "STRIPE_PUBLISHABLE_KEY",
                    "STRIPE_WEBHOOK_SECRET")
+# Operator comp for paid requests (PAYMENT.md Step 12b): a prompt whose first
+# line is exactly this secret skips Stripe. Unset/empty = feature off.
+PAID_OVERRIDE_ENV = "PAID_OVERRIDE_TOKEN"
 
 
 # --------------------------------------------------------------------------- #
@@ -95,7 +98,7 @@ class RNG:
 # Config models
 # --------------------------------------------------------------------------- #
 class Hosts(BaseModel):
-    mlx_serve: str
+    # Song generation is not a host: it is the backend pool in songs.gen_backends.
     kokoro: str
     litellm: str
     searxng: str
@@ -109,6 +112,18 @@ class Models(BaseModel):
     commercials: str
     liners: str
     field_report: str = "qwen38"  # field reporter copy (SFX.md §4.2)
+    # MiniMax Music 3 model group id, sent only to `auth: litellm` song
+    # backends (the LiteLLM router picks the deployment by it).
+    music: str | None = None
+    # context window per LLM model id. A call with no explicit max_tokens sends
+    # max_tokens = context - prompt estimate, i.e. "let it talk": omitting it
+    # gets the server's default cap (qwen38: exactly 8192, probed 2026-11-01),
+    # which cut long song briefs off. Models not listed omit max_tokens.
+    context_tokens: dict[str, int] = Field(default_factory=dict)
+    # ...but never more than this per model: the server reserves the whole
+    # max_tokens at admission, and a near-context request never got admitted
+    # while other calls ran ("expired while waiting for admission", 2026-11-01)
+    output_tokens: dict[str, int] = Field(default_factory=dict)
 
 
 class Voices(BaseModel):
@@ -170,6 +185,30 @@ class Inventory(BaseModel):
     station_ids_min: int = 3  # emergency station IDs: words between songs from cold start
 
 
+class MusicBackend(BaseModel):
+    """One song generator in the pool (RADIO.md §6.2). `url` is a bare base:
+    code appends /v1/audio/music-generations exactly once."""
+    name: str
+    # empty for `auth: litellm` = derived from hosts.litellm (its base without
+    # /v1, plus /vllm: the proxy's vLLM pass-through)
+    url: str = ""
+    slots: int = 1             # concurrent renders this backend takes
+    # none = direct generator box; litellm = through the proxy (Bearer
+    # LITELLM_TOKEN + models.music in the payload)
+    auth: Literal["none", "litellm"] = "none"
+    rtf_hint: float | None = None  # audio_s / wall_s seed for backend preference
+
+    @model_validator(mode="after")
+    def _validate(self) -> MusicBackend:
+        if self.slots < 1:
+            raise ValueError(f"songs.gen_backends[{self.name}].slots must be >= 1")
+        if self.url and not self.url.startswith(("http://", "https://")):
+            raise ValueError(f"songs.gen_backends[{self.name}].url must be http(s)")
+        if not self.url and self.auth != "litellm":
+            raise ValueError(f"songs.gen_backends[{self.name}].url is required")
+        return self
+
+
 class Songs(BaseModel):
     # max_duration_s is sent to mlx-serve as duration_seconds (the model's ceiling).
     # Keys are style-family ids from pilgrim/genres.py (the MiniMax Music 3
@@ -185,6 +224,17 @@ class Songs(BaseModel):
     # usable (non-retired) songs, stock generation pauses entirely and only
     # listener requests produce. 0 disables the cap (§6.1)
     stock_max_library: int = 100
+    # Song generator pool (RADIO §6.2). Up to sum(slots) of the healthy
+    # backends render at once; listener requests take the fastest idle one.
+    gen_backends: list[MusicBackend] = Field(default_factory=list)
+    # free listener requests rendering at once; they and stock never take the
+    # pool's last slot, which stays open for a paid request (RADIO §6.1)
+    free_request_slots: int = 2
+    # min seconds between render submissions: LiteLLM's least-busy router only
+    # fans concurrent calls out to separate boxes when they arrive staggered
+    submit_stagger_s: float = 5.0
+    # a backend that fails at transport level sits out this long (doubling to 600 s)
+    backend_cooldown_s: float = 120.0
 
     @model_validator(mode="after")
     def _known_families(self) -> Songs:
@@ -194,6 +244,13 @@ class Songs(BaseModel):
             raise ValueError(
                 f"songs.genres has unknown style families {unknown}; "
                 f"use ids from pilgrim/genres.py")
+        names = [b.name for b in self.gen_backends]
+        if len(names) != len(set(names)):
+            raise ValueError("songs.gen_backends names must be unique")
+        if self.free_request_slots < 1:
+            raise ValueError("songs.free_request_slots must be >= 1")
+        if self.submit_stagger_s < 0 or self.backend_cooldown_s <= 0:
+            raise ValueError("songs.submit_stagger_s >= 0 and backend_cooldown_s > 0")
         return self
 
 
@@ -256,11 +313,37 @@ class Visitors(BaseModel):
 
 class Requests(BaseModel):
     """Listener request line (FIFO + LLM moderation)."""
-    queue_cap: int = 20
+    queue_cap: int = 50        # board display size (paid rows never evicted)
+    free_queue_max: int = 100  # free requests waiting; new ones refused beyond
     max_length: int = 160
     moderation_model: str = "qwen38"
-    moderation_max_tokens: int = 4096  # replaces the hardcoded value (OVERHAUL 4.2)
+    # None = no output cap (the default): reasoning counts against it, and a
+    # cap turned a slow verdict into an empty one that fails closed.
+    moderation_max_tokens: int | None = None
     per_client_per_10min: int = 3  # rate limit on the request line (OVERHAUL 4.3)
+
+
+class CopyrightCheck(BaseModel):
+    """Web screen for copied lyrics in paid prompts (PAYMENT.md Step 12b).
+    Deterministic text matching against searxng snippets; no LLM decides."""
+    enabled: bool = True
+    # Pinned engines: the default mix waits on suspended engines and bing
+    # truncates queries to their first word (docs/backends.md).
+    engines: str = "startpage"
+    max_probes: int = 4        # lyric lines searched per request
+    min_words: int = 6         # a probed line has at least this many words
+    min_content_words: int = 3  # ...of which this many are not stopwords
+    ngram: int = 6             # consecutive matching words that count as a hit
+    results: int = 5           # results read per probe
+    timeout_s: float = 20.0    # whole screen, all probes in parallel
+
+    @model_validator(mode="after")
+    def _validate(self) -> CopyrightCheck:
+        if self.max_probes < 1 or self.min_words < 2 or self.ngram < 3:
+            raise ValueError("payments.copyright limits too small")
+        if self.timeout_s <= 0 or self.results < 1:
+            raise ValueError("payments.copyright timeout/results must be positive")
+        return self
 
 
 class Payments(BaseModel):
@@ -288,6 +371,7 @@ class Payments(BaseModel):
     # Managed Payments is on by default for the account; the product tax code
     # is ineligible, so sessions send managed_payments[enabled]=false.
     managed_payments: bool = False
+    copyright: CopyrightCheck = Field(default_factory=CopyrightCheck)
 
     @model_validator(mode="after")
     def _validate_limits(self) -> Payments:
@@ -485,6 +569,21 @@ class Config(BaseModel):
     sfx: Sfx = Field(default_factory=Sfx)
     dj: Dj = Field(default_factory=Dj)
     library: Library = Field(default_factory=Library)
+
+    @model_validator(mode="after")
+    def _validate_song_backends(self) -> Config:
+        """A station with no song generator cannot make songs (RADIO §6.2), and
+        a LiteLLM backend needs the model group id to route on."""
+        if not self.songs.gen_backends:
+            raise ValueError("songs.gen_backends must list at least one generator")
+        if any(b.auth == "litellm" for b in self.songs.gen_backends) and not self.models.music:
+            raise ValueError("models.music is required for an `auth: litellm` song backend")
+        base = self.hosts.litellm.rstrip("/")
+        base = base[:-3] if base.endswith("/v1") else base
+        for b in self.songs.gen_backends:
+            if not b.url:
+                b.url = base + "/vllm"
+        return self
 
     @model_validator(mode="after")
     def _validate_character_voice(self) -> Config:

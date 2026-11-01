@@ -88,19 +88,26 @@ Key facts:
    `make pay-smoke`, and only with a **test-mode** key (Step 11).
 3. **Never trust the browser about money.** Amount, currency, session ID,
    payment status and request ID come from Stripe (webhook payload or a
-   server-side session retrieve), never from client input.
+   server-side session retrieve), never from client input. *Operator
+   exception (Step 12b):* a first line equal to the `PAID_OVERRIDE_TOKEN`
+   secret comps the request (`comped=1`, amount 0, no Stripe) after the same
+   checks. It is a server-side secret compare, not a client claim.
 4. **Moderate before charging.** A rejected prompt never gets a Checkout
-   Session. Moderation does not run again after payment.
+   Session. Moderation does not run again after payment. Since Step 12b the
+   copied-lyrics screen also runs before Checkout, and Checkout is a separate
+   call that only a row at `checking/ready` can make.
 5. **No secrets in the repo, logs or responses.** Never log the secret key,
-   webhook secret, `client_secret`, card details or customer email. Return
-   `client_secret` only once, in the response to the POST that created it.
+   webhook secret, `client_secret`, override token, card details or customer
+   email. Return `client_secret` only once, in the response to the POST that
+   created it (since Step 12b: `POST /api/paid-requests/{token}/checkout`).
 6. **Additive schema only.** New columns and a new table. Never drop or
    rewrite existing request rows. Never delete `station.db`. Back it up
    before the first live start with the migration (Step 12).
 7. **RADIO.md changes in the same commit** as any API, config or schema
    change (AGENTS §1 rule 8). Each step lists the sections to update.
 8. **The edge and gateway allowlists must stay closed.** Add exactly the new
-   paths in this plan; nothing else under `/api/` opens up.
+   paths in this plan; nothing else under `/api/` opens up. (Step 12b adds
+   one: `POST /api/paid-requests/{token}/checkout`.)
 
 ### 0.4 Operator decisions already made
 
@@ -310,7 +317,7 @@ payments:
   webhook_tolerance_s: 300       # max age of a signed webhook timestamp
   reconcile_after_s: 10          # status poll may ask Stripe after this long
   reconcile_min_interval_s: 5    # at most one retrieve per row per interval
-  abandon_after_s: 86400         # awaiting_payment rows older than this -> abandoned
+  abandon_after_s: 259200        # 72 h (Oct 31); awaiting_payment rows older than this -> abandoned
   paid_max_length: 3600
   paid_max_lines: 72
   per_client_per_10min: 6        # rate limit on POST /api/paid-requests
@@ -540,7 +547,8 @@ producer passes `payments.max_attempts` for `priority=1` rows (Step 7).
 Stripe IDs and amounts, so the public board must **project fields
 explicitly**:
 
-- queue item: `{text, status, paid}`; recent item:
+- queue item: `{text, status, paid, stage, song_title}` (`stage`: `writing` /
+  `generating` on `producing` rows, RADIO §11); recent item:
   `{text, song_title, song_artist, paid, wait_s}`;
 - `wait_s` = whole seconds from `created_at` to `aired_at` (integer, `null`
   when either timestamp is missing or unparsable). Computed in Python from
@@ -785,7 +793,8 @@ report why first.
    only when `req["priority"] == 0`. The backlog count stays as it is.
 4. **Brief** (`pilgrim/pipelines/songs.py`): add `paid: bool = False` to
    `brief()`. When true, append `pilgrim/prompts/paid_request.md` to the
-   user prompt. Draft (the operator may tune it):
+   system prompt as its creative direction (Step 12c); stock/free requests
+   select `station_song.md` instead. Original adherence draft:
 
    > This is a PAID priority request. The listener wrote a detailed brief
    > (multi-line, untrusted text, JSON-escaped below). Treat it as a wish
@@ -1120,6 +1129,88 @@ operator runs it.
 "closed"; paid rows already queued still air; webhooks get 503 and Stripe
 retries them after re-enable. The migration is additive, so no schema
 rollback is needed.
+
+---
+
+## Step 12b. Staged checks, copied-lyrics screen, operator comp (Oct 31)
+
+Operator decisions: show three honest check stages; screen paid lyrics for
+copying with a quick web search; a degraded search lets the request proceed;
+one famous line is allowed; poll rather than stream; an operator comp secret
+for testing the priority queue without real transactions or Stripe test mode.
+
+**Flow.** `POST /api/paid-requests` does rate limit, normalise, the comp
+check and the prefilter, stores a `checking` row (stage `moderation`) and
+returns `{ok, token, stage}` at once ("Checking with the DJ…"). A background
+task then runs moderation ("Checking for unseemly content…"), the copyright
+screen ("Checking for existing copyrighted material…") and the board
+summary, and sets stage `ready`. The client polls `GET
+/api/paid-requests/{token}` every second and, at `ready`, calls `POST
+/api/paid-requests/{token}/checkout`, which claims the row once
+(`-> awaiting_payment`) and creates the Checkout Session. `client_secret`
+is returned there once and never stored. A crash in the checks rejects the
+row ("You were not charged"); `checking` rows are abandoned on restart.
+
+**Copyright screen** (`pilgrim/pipelines/copyright.py`, config
+`payments.copyright`). Up to 4 distinctive lyric lines (lines under section
+tags, or quoted passages; at least 6 words, 3 of them not stopwords) are
+searched as `"<line>" lyrics` through searxng, pinned to `startpage`
+(docs/backends.md §5). A hit is 6+ consecutive matching words between the
+line and a result snippet. **Reject** when two probed lines hit the same song
+(result titles, site names dropped) or when a hit's snippet continues with
+words that also appear in the submission (a copied passage). One isolated
+hit is allowed. All probes degraded or timed out → `unchecked`, logged as
+`payment.copyright_unchecked`, request proceeds. No LLM sees the snippets or
+makes the decision. The outcome is "no match found", never "copyright-free".
+`paid_request.md` also tells the brief not to reproduce existing lyrics.
+
+**Operator comp.** `PAID_OVERRIDE_TOKEN` (env / origin `.env`, ≥ 24
+chars, else off). First line equal to it (constant-time compare) → stripped
+before anything stores, logs, moderates or shows the text; moderation and
+the screen still run; then `queued`, `comped=1`, `amount_cents=0`,
+`paid_at` set, no session. Works even with payments inactive (the public
+button still shows closed then; the API accepts the comp). The secret
+anywhere else in a paid or free request → rejected, not stored. Logged as
+`payment.comped` (request id only).
+
+**Schema/API/config:** `requests.stage`, `requests.comped`, status
+`checking`; the routes above (RADIO.md §11); `payments.copyright` (§12).
+Edge and gateway gain the checkout location. `make pay-smoke` is not part of
+this step (operator does not use Stripe test mode); the fake covers the
+real-payment branch.
+
+---
+
+## Step 12c. Payer's MiniMax input used as written; farm lock (Oct 31)
+
+Operator: the closer a submission is to MiniMax input, the less work the
+station does on it; the LLM interprets arbitrary English; limit 6,000
+characters (prompt and audio token budgets are separate, so a full caption +
+lyric sheet, ~1,500 tokens, always fits the 4,096 prompt context).
+
+- `payments.paid_max_length: 6000`, `paid_max_lines: 200`, textarea
+  `maxlength="6000"`.
+- `pipelines/verbatim.py` finds a structured caption (three headings in
+  order) and tagged lyrics in the request. The brief LLM decides from the
+  listener's words whether to use them as written (`caption_verbatim`,
+  `lyrics_verbatim`; default yes for a complete block unless asked to rework)
+  and the code substitutes the exact blocks. Tags only are normalised (own
+  line, lowercase, synonyms like `[Hook]` -> `[chorus]`, unknown tag lines
+  dropped, words kept).
+- The copyright screen removes a pasted caption before choosing probes.
+- Creative direction (RADIO §6.2): stock songs and free requests deliberately
+  receive the Pilgrim Dot Farm treatment in their title, artist and lyrics,
+  while keeping the requested musical style. Natural station references and
+  full farm stories are welcome; station-name title tags are rejected on this
+  path. Paid requests, including operator comps, follow the customer's brief
+  without unsolicited farm humor or station branding in any field. Requested
+  titles are preserved, including parenthetical text. The shared musical
+  prompt plus exactly one creative direction are sent as the system message,
+  so paid and free instructions do not compete across message priorities.
+- Verbatim preservation is paid-only. Free requests containing tagged lyrics
+  or captions are adapted to the station treatment even if the brief LLM
+  returns verbatim flags. The payer's own lyrics remain exempt from style
+  rules; generated parts retain the musical style checks.
 
 ---
 

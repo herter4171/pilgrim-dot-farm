@@ -1,0 +1,56 @@
+# Pilgrim Dot Farm — INTERIM SINGLE-HOST SPLIT (SPLIT_PLAN §0.1, RUNBOOK "Interim")
+#
+# The STATELESS half of the split, running on the EC2 that still hosts the
+# origin (pilgrim.server on 127.0.0.1:5000) until it migrates to the M5:
+#
+#   ALB (TLS) ─▶ edge    0.0.0.0:8080    serves pilgrim/web/, caches, proxies /api/*
+#             ─▶ gateway 127.0.0.1:8090  allowlist + rate limits (moves to the M5)
+#             ─▶ origin  127.0.0.1:5000  the live station (not managed here)
+#
+# Same pinned image, hardening and rendered templates as production; only the
+# addresses differ. up.sh renders the configs into $PILGRIM_INTERIM_STATE and
+# runs:  docker compose -f interim/compose.yaml --env-file <state>/env up -d
+#
+# Project name is fixed so it never collides with pilgrim-nginx (the current
+# :443 site) or pilgrim-split-local (make split-smoke / e2e-split).
+
+name: pilgrim-interim
+
+services:
+  gateway:
+    image: nginx:1.30.6-alpine
+    container_name: pilgrim-interim-gateway
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    user: "101:101"
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    tmpfs:
+      - /var/cache/nginx:uid=101,gid=101,mode=0700
+      - /var/run:uid=101,gid=101,mode=0755
+      - /var/log/nginx:uid=101,gid=101,mode=0700
+      - /tmp:uid=101,gid=101,mode=0700
+    volumes:
+      - ${PILGRIM_GATEWAY_CONF:?up.sh must export PILGRIM_GATEWAY_CONF}:/etc/nginx/nginx.conf:ro
+      - ${PILGRIM_EXTRA_CONF:?up.sh must export PILGRIM_EXTRA_CONF}:/etc/nginx/extra.conf:ro
+
+  edge:
+    image: nginx:1.30.6-alpine
+    container_name: pilgrim-interim-edge
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    # Invoking user owns the host-mounted cache dir.
+    user: "${PILGRIM_UID:?}:${PILGRIM_GID:?}"
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    tmpfs:
+      - /var/cache/nginx:mode=1777
+      - /var/run:mode=1777
+      - /var/log/nginx:mode=1777
+      - /tmp:mode=1777
+    volumes:
+      - ${PILGRIM_EDGE_CONF:?up.sh must export PILGRIM_EDGE_CONF}:/etc/nginx/nginx.conf:ro
+      - ${PILGRIM_REALIP_CONF:?up.sh must export PILGRIM_REALIP_CONF}:/etc/nginx/realip.conf:ro
+      - ${PILGRIM_EXTRA_CONF:?up.sh must export PILGRIM_EXTRA_CONF}:/etc/nginx/extra.conf:ro
+      - ${PILGRIM_WEB_ROOT:?up.sh must export PILGRIM_WEB_ROOT}:/web:ro
+      - ${PILGRIM_CACHE_DIR:?up.sh must export PILGRIM_CACHE_DIR}:/cache

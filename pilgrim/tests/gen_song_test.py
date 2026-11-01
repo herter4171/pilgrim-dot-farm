@@ -9,6 +9,7 @@ Run:  LITELLM_TOKEN=... .venv/bin/python -m pilgrim.tests.gen_song_test [outdir]
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -83,14 +84,19 @@ def main() -> int:
     cfg = load_config()
     outdir = Path(sys.argv[1] if len(sys.argv) > 1 else "library/_gen_probe")
     outdir.mkdir(parents=True, exist_ok=True)
-    url = cfg.hosts.mlx_serve.rstrip("/") + "/v1/audio/music-generations"
-    payload = {"prompt": CAPTION, "lyrics": LYRICS}
+    b = cfg.songs.gen_backends[0]
+    url = b.url.rstrip("/") + "/v1/audio/music-generations"
+    payload: dict = {"prompt": CAPTION, "lyrics": LYRICS}
+    headers = {}
+    if b.auth == "litellm":
+        payload["model"] = cfg.models.music
+        headers["Authorization"] = f"Bearer {os.environ.get('LITELLM_TOKEN', '')}"
     print(f"POST {url}")
     print(f"  lyrics tags: {[t for t in LYRICS.splitlines() if t.startswith('[')]}")
     print(f"  caption words: {len(CAPTION.split())}")
     t0 = time.monotonic()
     with httpx.Client(timeout=httpx.Timeout(1800.0, connect=10.0)) as c:
-        r = c.post(url, json=payload)
+        r = c.post(url, json=payload, headers=headers)
     wall = time.monotonic() - t0
     print(f"HTTP {r.status_code} in {wall:.1f}s")
     if r.status_code != 200:

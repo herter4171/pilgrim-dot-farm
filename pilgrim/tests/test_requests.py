@@ -252,7 +252,8 @@ def test_request_board_queue_and_recent(cfg):
     # projected rows only: {text, status, paid} (PAYMENT.md §3.4)
     assert [x["text"] for x in q] == ["play mittens a song", "alien abductions"]
     assert q[0]["status"] == "producing" and q[1]["status"] == "ready"
-    assert set(q[0]) == {"text", "status", "paid"}
+    assert set(q[0]) == {"text", "status", "paid", "stage", "song_title"}
+    assert q[0]["stage"] == "writing" and q[1]["stage"] == ""
     recent = board["recent"]
     assert any(r["song_title"] == "Night Shift" for r in recent)
     assert set(recent[0]) == {"text", "song_title", "song_artist", "paid", "wait_s"}

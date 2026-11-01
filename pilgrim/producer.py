@@ -1,14 +1,20 @@
 """Producer (RADIO.md §6): demand-driven inventory refill.
 
 Loops keep inventory at low-water targets using real pipelines. Slow work
-(songs via mlx) runs in its own background task so voice inventory never stalls.
+(songs on the generator pool) runs in its own background task so voice
+inventory never stalls; up to the pool's capacity song jobs run concurrently.
 Playout never waits on production: the scheduler only commits rendered items.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import heapq
+import itertools
 import json
 import logging
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -18,7 +24,7 @@ from pilgrim import genres
 from pilgrim.config import RNG, Clock, Config
 from pilgrim.logging_setup import err_text
 from pilgrim.pipelines.clocktime import current_local_time, spoken_time
-from pilgrim.pipelines.llm import LLM
+from pilgrim.pipelines.llm import LLM, LLMTruncated
 from pilgrim.pipelines.news import NewsPipeline
 from pilgrim.pipelines.sfx import SFX_HOST_TYPES, SfxPipeline, beat_offset
 from pilgrim.pipelines.songs import SongPipeline
@@ -26,6 +32,74 @@ from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
 from pilgrim.store import Store
 
 log = logging.getLogger("radio.producer")
+
+# cut-off song briefs re-queued without spending a request attempt, per
+# request; after that they count like any failure (a request that always cuts
+# off must still end, and a paid one get its refund flag)
+LLM_FREE_CUTS = 4
+
+
+class PriorityGate:
+    """One holder at a time, granted to the waiter with the LOWEST key, not
+    the earliest (asyncio.Lock is FIFO: a paid request re-queued after a
+    cut-off brief waited behind a free one, 2026-11-01)."""
+
+    def __init__(self) -> None:
+        self._busy = False
+        self._waiters: list[tuple[tuple, int, asyncio.Future]] = []
+        self._seq = itertools.count()
+
+    def _release(self) -> None:
+        while self._waiters:
+            _, _, fut = heapq.heappop(self._waiters)
+            if not fut.done():
+                fut.set_result(None)  # hand off: stays busy for the new holder
+                return
+        self._busy = False
+
+    @contextlib.asynccontextmanager
+    async def hold(self, key: tuple) -> AsyncIterator[None]:
+        if self._busy:
+            fut = asyncio.get_running_loop().create_future()
+            heapq.heappush(self._waiters, (key, next(self._seq), fut))
+            try:
+                await fut
+            except asyncio.CancelledError:
+                if fut.done() and not fut.cancelled():
+                    self._release()  # granted as we were cancelled: pass it on
+                raise
+        else:
+            self._busy = True
+        try:
+            yield
+        finally:
+            self._release()
+
+
+# stock briefs queue behind every request brief (keys sort by first element)
+STOCK_BRIEF_KEY = (1,)
+
+
+@dataclass
+class SongJob:
+    """One unit of song work: brief -> render -> intro -> store (RADIO §6.1)."""
+    kind: str                      # "request" | "stock"
+    req: dict | None = None
+    genre: str | None = None       # set once the brief exists (genre context)
+    # set when the job ends (ready, failed or re-queued): releases later
+    # requests held behind it
+    finished: asyncio.Event = field(default_factory=asyncio.Event)
+
+    @property
+    def paid(self) -> bool:
+        return bool(self.req and self.req.get("priority"))
+
+    def queue_key(self) -> tuple:
+        """Position in queue order (store.QUEUE_ORDER: paid first, then by
+        paid_at / created_at, then id)."""
+        r = self.req or {}
+        return (-int(r.get("priority") or 0),
+                str(r.get("paid_at") or r.get("created_at") or ""), int(r.get("id") or 0))
 
 # Copy brief for the emergency station IDs (RADIO §8.3): timeless on purpose,
 # since they may air any hour, any day.
@@ -61,6 +135,21 @@ class Producer:
         self._last_stock_song_at: float | None = None
         # one-shot log so a capped stock worker doesn't spam every 20 s
         self._stock_cap_logged = False
+        # song jobs in flight under song_loop (RADIO §6.1): task -> job
+        self._jobs: dict[asyncio.Task, SongJob] = {}
+        # song briefs one at a time (requests and stock): parallel briefs
+        # slowed qwen38 into its ~120 s cutoff, and each brief sees the last
+        # one's genre
+        self._brief_gate = PriorityGate()
+        # request_id -> cut-off briefs so far; the first few are free retries
+        self._llm_cuts: dict[int, int] = {}
+        # injectable wait for song_loop: tests drive it without wall time
+        self._sleep = asyncio.sleep
+        # request_id -> "waiting" (its turn at the brief LLM) | "writing"
+        # (brief/lyrics) | "generating" (song model, then intro); only for
+        # `producing` rows. In memory on purpose: a
+        # restart re-queues producing requests anyway (RADIO §11 board stage)
+        self.request_stage: dict[int, str] = {}
 
     # --------------------------------------------------------------- counts
     def counts(self) -> dict[str, int]:
@@ -460,40 +549,118 @@ class Producer:
             await asyncio.sleep(5.0)
 
     async def song_loop(self) -> None:
-        """Slow worker: keeps generating songs (very expensive on mlx). Listener
-        requests are produced FIRST (they jump ahead of stock), then stock songs
-        fill to the fresh target (OVERHAUL 4.5)."""
+        """Song decider (RADIO §6.1/§6.2). Keeps up to `songs.capacity()` song
+        jobs in flight, each one brief -> render -> intro -> store:
+        - the next listener request first (queue order: paid, then FIFO). Up to
+          songs.free_request_slots free requests render at once, paid ones in any
+          free slot;
+          a finished request waits (`_wait_turn`) until those ahead of it are
+          ready, because ready order is air order;
+        - free requests and stock never take the last slot, which stays open for
+          a paid request (with capacity 1 they use it when it is idle);
+        - a backend outage (transport error) pauses new jobs 15 s doubling to
+          2 min; any other failure pauses 15 s (a dead LLM must not spin briefs).
+        Jobs are never cancelled for a request: a generator doesn't abort on
+        disconnect, so cancelling only wastes the render."""
         log.info("song worker started")
         outage_s = 15.0
-        while True:
-            try:
-                did = await self.song_step()
-                outage_s = 15.0
-                if not did:
-                    await asyncio.sleep(20.0)
+        try:
+            while True:
+                pause = 0.0
+                for task in [t for t in self._jobs if t.done()]:
+                    outcome = self._reap(task, self._jobs.pop(task))
+                    if outcome == "outage":
+                        pause = max(pause, outage_s)
+                        outage_s = min(outage_s * 2, 120.0)
+                    elif outcome == "failed":
+                        pause = max(pause, 15.0)
+                    else:
+                        outage_s = 15.0
+                if pause:
+                    await self._sleep(pause)
                     continue
-            except httpx.TransportError as e:
-                # backend unreachable: back off (15 s doubling to 2 min) so an
-                # outage doesn't spin briefs against a dead generator
-                log.warning("song backend unavailable, retry in %.0fs: %s",
-                            outage_s, err_text(e))
-                await asyncio.sleep(outage_s)
-                outage_s = min(outage_s * 2, 120.0)
-            except Exception as e:
-                log.warning("song production failed: %s", err_text(e))
-                await asyncio.sleep(15.0)
-            await asyncio.sleep(2.0)
+                while (job := self._next_job()) is not None:
+                    self._spawn(job)
+                tick = asyncio.ensure_future(self._sleep(20.0))
+                try:
+                    await asyncio.wait({tick, *self._jobs},
+                                       return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    tick.cancel()
+        finally:
+            for task in self._jobs:
+                task.cancel()
 
-    async def song_step(self) -> bool:
-        """One pass of the song worker. Returns True if it did work.
-        1) Oldest queued listener request gets produced (even at stock target
-           and even when stock generation is capped by songs.stock_max_library).
-        2) Otherwise, a stock song if fresh stock is below target, the library
-           is under songs.stock_max_library, and songs.stock_gap_s has passed
-           since the last stock song (§6.1)."""
-        req = self.store.next_request_to_produce()
-        if req:
-            return await self._produce_request_song(req)
+    def _spawn(self, job: SongJob) -> None:
+        if job.req is not None:
+            # claim it now: the next _next_job() runs before the task does
+            self.store.mark_request_producing(job.req["id"])
+            self.request_stage[job.req["id"]] = "waiting"
+        task = asyncio.create_task(self._run_job(job))
+        self._jobs[task] = job
+        log.info("song.job.spawned", extra={
+            "kind": job.kind, "paid": job.paid,
+            "request_id": job.req["id"] if job.req else None,
+            "jobs": len(self._jobs), "capacity": self._capacity()})
+
+    def _reap(self, task: asyncio.Task, job: SongJob) -> str:
+        """Observe a finished job (no task dies unobserved): ok | outage | failed."""
+        rid = job.req["id"] if job.req else None
+        if task.cancelled():
+            return "failed"
+        exc = task.exception()
+        if exc is None:
+            outcome = "ok"
+        elif isinstance(exc, (httpx.TransportError, LLMTruncated)):
+            outcome = "outage"
+            log.warning("song backend unavailable: %s", err_text(exc))
+        else:
+            outcome = "failed"
+            log.warning("song production failed: %s", err_text(exc))
+        log.info("song.job.reaped", extra={
+            "kind": job.kind, "request_id": rid, "outcome": outcome,
+            "jobs": len(self._jobs)})
+        return outcome
+
+    def _capacity(self) -> int:
+        """Concurrent song jobs allowed now: the generator pool's healthy
+        slots (1 for a pipeline without a pool)."""
+        cap = getattr(self.songs, "capacity", None)
+        return max(0, int(cap())) if callable(cap) else 1
+
+    def _next_job(self) -> SongJob | None:
+        """Pick the next song job given what is in flight (sync, no awaits).
+        Same gates as ever for the serial path (`song_step`, nothing in flight):
+        a queued request first, even at stock target or library cap; else stock
+        if fresh (+ in-flight stock) is below target, the library is under
+        songs.stock_max_library and songs.stock_gap_s has passed (§6.1)."""
+        jobs = list(self._jobs.values())
+        cap = self._capacity()
+        if len(jobs) >= cap:
+            return None
+        # free requests and stock together never fill every slot: one stays
+        # open for a paid request. Paid jobs don't count against that, so with
+        # two paid rendering a free one may take the third. (Capacity 1: they
+        # use the slot when it is idle.)
+        unpaid = sum(1 for j in jobs if not j.paid)
+        room = unpaid < cap - 1 if cap > 1 else not jobs
+        # first eligible queued request in queue order: paid may take any slot
+        # (several at once); free only a non-last slot, up to
+        # songs.free_request_slots. Finished songs still air in queue order
+        # (_wait_turn), so starting a later request early is safe.
+        free_busy = sum(1 for j in jobs if j.kind == "request" and not j.paid)
+        free_ok = room and free_busy < self.cfg.songs.free_request_slots
+        claimed = {j.req["id"] for j in jobs if j.req is not None}
+        for req in self.store.queued_requests():
+            if req["id"] in claimed:
+                continue
+            if req.get("priority") or free_ok:
+                return SongJob("request", req)
+        if room and self._stock_due(sum(1 for j in jobs if j.kind == "stock")):
+            return SongJob("stock")
+        return None
+
+    def _stock_due(self, in_flight: int) -> bool:
         if self.stock_capped():
             if not self._stock_cap_logged:
                 log.info("song.stock_capped", extra={
@@ -502,15 +669,74 @@ class Producer:
                 self._stock_cap_logged = True
             return False
         self._stock_cap_logged = False
-        fresh = self.store.count_fresh_of_type("song")
+        # in-flight stock counts toward the target, or cold start overshoots
+        fresh = self.store.count_fresh_of_type("song") + in_flight
         if fresh >= self.cfg.inventory.fresh_songs_ready:
             return False
-        if self._last_stock_song_at is not None and (
-                self.clock.now() - self._last_stock_song_at < self.cfg.songs.stock_gap_s):
+        return self._last_stock_song_at is None or (
+            self.clock.now() - self._last_stock_song_at >= self.cfg.songs.stock_gap_s)
+
+    async def _run_job(self, job: SongJob) -> bool:
+        try:
+            if job.req is not None:
+                return await self._produce_request_song(job.req, job)
+            return await self._produce_stock_song(job)
+        finally:
+            if job.req is not None:
+                self.request_stage.pop(job.req["id"], None)
+            job.finished.set()
+
+    async def _wait_turn(self, job: SongJob | None) -> None:
+        """Hold a finished request song until every request AHEAD of it in
+        queue order that is still in flight has ended. Ready order is air
+        order (the splice, §5.2), so parallel requests must become ready in
+        queue order. The song waits outside the library: stored now, the
+        scheduler could air it as stock. If the one ahead fails or is
+        re-queued, this one goes."""
+        if job is None:
+            return
+        while True:
+            ahead = [j for j in self._jobs.values()
+                     if j is not job and j.req is not None and not j.finished.is_set()
+                     and j.queue_key() < job.queue_key()]
+            if not ahead:
+                return
+            log.info("request.held", extra={
+                "request_id": job.req["id"] if job.req else None,
+                "behind": [j.req["id"] for j in ahead if j.req]})
+            waits = {asyncio.ensure_future(j.finished.wait()) for j in ahead}
+            try:
+                await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for w in waits:
+                    w.cancel()
+
+    async def song_step(self) -> bool:
+        """One song job, run to completion inline (seed, tests, the sim).
+        Returns True if it did work. Gates: `_next_job`."""
+        job = self._next_job()
+        if job is None:
             return False
-        prev_genres = self._recent_genres()
-        brief = await self.songs.brief(prev_genres)
-        item = await self.songs.produce_song(brief)
+        return await self._run_job(job)
+
+    def _genre_context(self) -> list[str]:
+        """`_recent_genres()` plus the genres of in-flight jobs whose brief is
+        written: a parallel render isn't in the store yet, but it will air
+        next to this one (§5.2 genre_no_repeat)."""
+        n = self.cfg.playout.genre_no_repeat
+        out = self._recent_genres()
+        for j in self._jobs.values():
+            if j.genre:
+                if j.genre in out:
+                    out.remove(j.genre)
+                out.append(j.genre)
+        return out[-n:]
+
+    async def _produce_stock_song(self, job: SongJob) -> bool:
+        async with self._brief_gate.hold(STOCK_BRIEF_KEY):
+            brief = await self.songs.brief(self._genre_context())
+            job.genre = brief.get("genre")
+        item = await self.songs.produce_song(brief, prefer="slow")
         # render the intro BEFORE the song enters the library: the scheduler
         # shares this event loop and would air the song bare in the gap
         intro = await self._render_intro(item, None)  # stock intros are non-fatal
@@ -528,31 +754,43 @@ class Producer:
 
     def stock_capped(self) -> bool:
         """True when the library already holds songs.stock_max_library usable
-        (non-retired) songs: stock generation pauses so the expensive mlx song
+        (non-retired) songs: stock generation pauses so the expensive song
         model only runs for listener requests (§6.1). 0 disables the cap."""
         cap = self.cfg.songs.stock_max_library
         return cap > 0 and self.store.count_usable_of_type("song") >= cap
 
-    async def _produce_request_song(self, req: dict) -> bool:
+    async def _produce_request_song(self, req: dict, job: SongJob | None = None) -> bool:
         """Turn one queued listener request into a song (+ short intro). On a
         hard failure, record the attempt (3 max -> failed) and re-raise so the
         loop backs off; a failing intro never blocks the request (4.5/4.6)."""
         log.info("request.producing", extra={"request_id": req["id"]})
         self.store.mark_request_producing(req["id"])
+        self.request_stage[req["id"]] = "waiting"  # for its turn at the brief LLM
         paid = bool(req.get("priority"))
         try:
-            prev_genres = self._recent_genres()
             backlog = len(self.store.queued_requests())
             # Paid requests are never shortened by the backlog rule (§0.5).
             short = backlog >= 3 and not paid
-            brief = await self.songs.brief(prev_genres, request_text=req["text"],
-                                           short=short, paid=paid)
+            # turns go in queue order (paid first, then oldest), whoever asked first
+            async with self._brief_gate.hold(SongJob("request", req).queue_key()):
+                self.request_stage[req["id"]] = "writing"
+                brief = await self.songs.brief(self._genre_context(),
+                                               request_text=req["text"],
+                                               short=short, paid=paid)
+                if job is not None:  # inside the lock: the next brief sees it
+                    job.genre = brief.get("genre")
             brief["request_id"] = req["id"]
-            item = await self.songs.produce_song(brief)
+            # requests take the fastest idle generator (RADIO §6.2)
+            self.request_stage[req["id"]] = "generating"
+            item = await self.songs.produce_song(brief, prefer="fast")
+            # the generator is done; what is left (intro, waiting behind the
+            # requests ahead of it) must not read "being generated"
+            self.request_stage[req["id"]] = "rendered"
             # Everything awaited is done before the song is stored: song, intro
             # and 'ready' land with no await between them, so the scheduler can
             # never air a request song bare, as stock, before its intro exists.
             intro = await self._render_intro(item, req)
+            await self._wait_turn(job)
             song_id = self.store.add_item(
                 type_="song", media_path=item["media_path"], duration_s=item["duration_s"],
                 sample_rate=item.get("sample_rate"), channels=item.get("channels"),
@@ -565,6 +803,18 @@ class Producer:
                 "request_id": req["id"], "song_item_id": song_id,
                 "title": item.get("title"), "intro_item_id": intro_id})
             return True
+        except LLMTruncated as e:
+            # the brief model was cut off (overload/limit), not the request's
+            # fault: re-queue for free a few times, then count attempts again
+            cuts = self._llm_cuts.get(req["id"], 0) + 1
+            self._llm_cuts[req["id"]] = cuts
+            if cuts <= LLM_FREE_CUTS:
+                self.store.requeue_request(req["id"])
+                log.warning("request.llm_cut", extra={
+                    "request_id": req["id"], "cuts": cuts, "error": err_text(e)})
+                raise
+            self._fail_request_attempt(req, paid, e)
+            raise
         except httpx.TransportError as e:
             # backend down/dropped the connection: not the request's fault
             self.store.requeue_request(req["id"])
@@ -572,15 +822,18 @@ class Producer:
                 "request_id": req["id"], "error": err_text(e)})
             raise
         except Exception as e:
-            max_attempts = self.cfg.payments.max_attempts if paid else 3
-            n = self.store.request_failed_attempt(req["id"], max_attempts=max_attempts)
-            log.warning("request.failed", extra={
-                "request_id": req["id"], "attempt": n, "error": err_text(e)})
-            if paid and n >= max_attempts:
-                log.warning("payment.refund_due", extra={
-                    "request_id": req["id"],
-                    "payment_intent_id": req.get("payment_intent_id")})
+            self._fail_request_attempt(req, paid, e)
             raise
+
+    def _fail_request_attempt(self, req: dict, paid: bool, e: BaseException) -> None:
+        max_attempts = self.cfg.payments.max_attempts if paid else 3
+        n = self.store.request_failed_attempt(req["id"], max_attempts=max_attempts)
+        log.warning("request.failed", extra={
+            "request_id": req["id"], "attempt": n, "error": err_text(e)})
+        if paid and n >= max_attempts:
+            log.warning("payment.refund_due", extra={
+                "request_id": req["id"],
+                "payment_intent_id": req.get("payment_intent_id")})
 
     async def _render_intro(self, item: dict, req: dict | None) -> dict | None:
         """Render a short DJ intro naming the just-created song, crediting the

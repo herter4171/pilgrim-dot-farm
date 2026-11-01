@@ -6,6 +6,7 @@ caption (prompting guide §3/§7) over the guide's 18 style families.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from pilgrim import genres
@@ -18,16 +19,22 @@ from pilgrim.tests.conftest import VALID_CAPTION, valid_brief
 class _Resp:
     status_code = 200
     content = b"FAKEWAV"
+    text = ""
+    headers: dict = {}
 
 
 class _FakePost:
-    """Captures the mlx payload; returns a fake 200 WAV response."""
+    """Captures the generator payload; returns a fake 200 WAV response."""
 
     def __init__(self):
         self.payload = None
+        self.url = None
+        self.headers = None
 
-    async def post(self, url, json):
+    async def post(self, url, json, headers=None):
         self.payload = json
+        self.url = url
+        self.headers = headers
         return _Resp()
 
 
@@ -39,12 +46,14 @@ class _Rec:
     """
 
     def __init__(self, brief=None, replies=None):
+        self.system = ""
         self.user = ""
         self.calls = 0
         self._brief = brief
         self._replies = list(replies or [])
 
     async def chat_json(self, model, system, user, max_tokens=800):
+        self.system = system
         self.user = user
         self.calls += 1
         if self._replies:
@@ -71,7 +80,9 @@ def _pipeline(cfg, tmp_path):
 def _brief_pipeline(cfg, llm, seed=1):
     sp = SongPipeline.__new__(SongPipeline)
     sp.cfg = cfg
-    sp.prompts = {"song_brief": "write a song"}
+    pdir = Path(__file__).resolve().parents[1] / "prompts"
+    sp.prompts = {name: (pdir / f"{name}.md").read_text()
+                  for name in ("song_brief", "station_song", "paid_request")}
     sp.llm = llm
     sp.rng = RNG(seed)
     return sp
@@ -291,7 +302,7 @@ We got rhythm in the evening light
 Mama says the bass is right
 [chorus]
 Barnstorm reggae jam
-Everybody in the yard can
+Every goat in the yard can
 Feel the beat come in and out
 Ain't no worry what it's about
 [outro]"""
@@ -426,7 +437,7 @@ def test_country_family_may_use_country_idiom(cfg):
     cfg2 = cfg.model_copy(update={"songs": songs})
     llm = _Rec(valid_brief("country-americana",
                            lyrics="[verse]\nDown the dirt road to the county line\n"
-                                  "[chorus]\nY'all come back"))
+                                  "[chorus]\nY'all come back to the barn"))
     sp = _brief_pipeline(cfg2, llm, seed=3)
     assert asyncio.run(sp.brief([]))["genre"] == "country-americana"
 
@@ -515,3 +526,58 @@ def test_station_name_is_allowed_in_any_style(cfg):
     sp = _brief_pipeline(cfg, llm)
     out = asyncio.run(sp.brief([], request_text="Barnstorm reggae jam"))
     assert "Pilgrim Dot Farm" in out["lyrics"]
+
+
+def test_paid_brief_gets_customer_direction_at_system_priority(cfg):
+    """The real shared system prompt must carry only the paid direction."""
+    llm = _Rec(valid_brief("general-pop-ballad"))
+    sp = _brief_pipeline(cfg, llm)
+    asyncio.run(sp.brief([], request_text="a wedding song for Sam and Ari", paid=True))
+    assert sp.prompts["paid_request"].strip() in llm.system
+    assert sp.prompts["station_song"].strip() not in llm.system + llm.user
+    assert "NO farm or station references" in llm.system
+
+
+@pytest.mark.parametrize("request_text", [None, "a wedding song for Sam and Ari"])
+def test_stock_and_free_briefs_get_station_direction(cfg, request_text):
+    llm = _Rec()
+    sp = _brief_pipeline(cfg, llm)
+    asyncio.run(sp.brief([], request_text=request_text))
+    assert sp.prompts["station_song"].strip() in llm.system
+    assert sp.prompts["paid_request"].strip() not in llm.system + llm.user
+    assert "NO farm or station references" not in llm.system + llm.user
+
+
+@pytest.mark.parametrize("paid, missing", [(True, "paid_request"), (False, "station_song")])
+def test_missing_creative_direction_stops_before_llm(cfg, paid, missing):
+    llm = _Rec()
+    sp = _brief_pipeline(cfg, llm)
+    del sp.prompts[missing]
+    with pytest.raises(LLMError, match=f"{missing} prompt template missing"):
+        asyncio.run(sp.brief([], request_text="a wedding song", paid=paid))
+    assert llm.calls == 0
+
+
+@pytest.mark.parametrize("entrypoint", ["server", "seed"])
+def test_entrypoints_load_the_stock_creative_direction(cfg, entrypoint):
+    from pilgrim.seed import _prompts
+    from pilgrim.server import _load_prompts
+
+    llm = _Rec()
+    sp = _brief_pipeline(cfg, llm)
+    sp.prompts = (_load_prompts if entrypoint == "server" else _prompts)(cfg)
+    assert asyncio.run(sp.brief([]))["genre"]
+    assert sp.prompts["station_song"].strip() in llm.system
+
+
+@pytest.mark.parametrize("subject", ["hayride", "cornbread", "cowboy", "rodeo",
+                                    "moonshine", "barn dance", "square dance"])
+def test_rural_subjects_are_allowed_in_reggae(cfg, subject):
+    lyrics = (f"[verse]\nThe goats invite a {subject} to Pilgrim Dot Farm\n"
+              "[chorus]\nWe gather in the yard tonight")
+    llm = _Rec(valid_brief("roots-traditional-global", style_prompt=REGGAE_CAPTION,
+                           lyrics=lyrics))
+    sp = _brief_pipeline(cfg, llm)
+    out = asyncio.run(sp.brief([], request_text=f"reggae about a {subject}"))
+    assert out["lyrics"] == lyrics
+

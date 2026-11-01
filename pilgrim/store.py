@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,9 @@ from typing import Any
 # Queue order everywhere (PAYMENT.md §3.2): paid first, FIFO within each class
 # (paid by payment time, free by creation time).
 QUEUE_ORDER = "ORDER BY priority DESC, COALESCE(paid_at, created_at) ASC, id ASC"
+# The same order for queries that alias requests as `r` (joined with items).
+QUEUE_ORDER_R = ("ORDER BY r.priority DESC, COALESCE(r.paid_at, r.created_at) ASC, "
+                 "r.id ASC")
 
 
 
@@ -51,11 +55,18 @@ def _wait_s(created_at: str | None, aired_at: str | None) -> int | None:
     return max(0, int(round(end - start)))
 
 
-def _project_queue_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
+def _project_queue_row(row: dict[str, Any], max_length: int,
+                       stages: Mapping[int, str] | None = None) -> dict[str, Any]:
     paid = bool(row.get("priority"))
+    stage = ""
+    if row["status"] == "producing":
+        # writing = lyrics/brief, generating = song model (RADIO §11)
+        stage = (stages or {}).get(int(row["id"]), "writing")
     return {"text": _project_text(row["text"], paid, max_length,
                                   row.get("summary")),
-            "status": row["status"], "paid": paid}
+            "status": row["status"], "paid": paid, "stage": stage,
+            # the song exists from `ready` on (title shown in the board table)
+            "song_title": row.get("song_title") or ""}
 
 
 def _project_recent_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
@@ -190,7 +201,10 @@ class Store:
                              ("livemode", "INTEGER"),
                              ("reconciled_at", "REAL"),
                              ("aired_at", "TEXT"),
-                             ("summary", "TEXT")):
+                             ("summary", "TEXT"),
+                             # PAYMENT.md Step 12b: staged checks + operator comp
+                             ("stage", "TEXT"),
+                             ("comped", "INTEGER DEFAULT 0")):
                 if col not in req_cols:
                     self._conn.execute(f"ALTER TABLE requests ADD COLUMN {col} {ddl}")
             self._conn.execute(
@@ -682,14 +696,17 @@ class Store:
                 "WHERE status='producing'", (_now_iso(),))
             self._conn.commit()
 
-    def request_board(self, cap: int, max_length: int = 160) -> dict[str, Any]:
+    def request_board(self, cap: int, max_length: int = 160,
+                      stages: Mapping[int, str] | None = None) -> dict[str, Any]:
         """Board for the UI: live queue (queued+producing+ready, queue order,
         <= cap) plus the 5 most recent aired requests with song titles and how
         long they waited. Rows are projected — never raw (PAYMENT.md §3.4)."""
         with self._lock:
             queue = [dict(r) for r in self._conn.execute(
-                "SELECT * FROM requests WHERE status IN ('queued','producing','ready') "
-                f"{QUEUE_ORDER} LIMIT ?", (cap,)).fetchall()]
+                "SELECT r.*, i.title AS song_title FROM requests r "
+                "LEFT JOIN items i ON i.id = r.song_item_id "
+                "WHERE r.status IN ('queued','producing','ready') "
+                f"{QUEUE_ORDER_R} LIMIT ?", (cap,)).fetchall()]
             recent = [dict(r) for r in self._conn.execute(
                 "SELECT r.id, r.text, r.summary, r.created_at, r.aired_at, r.priority, "
                 "i.title AS song_title, i.artist AS song_artist FROM requests r "
@@ -697,7 +714,7 @@ class Store:
                 "WHERE r.status IN ('aired','serviced') "
                 "ORDER BY r.id DESC LIMIT 5").fetchall()]
         return {
-            "queue": [_project_queue_row(r, max_length) for r in queue],
+            "queue": [_project_queue_row(r, max_length, stages) for r in queue],
             "recent": [_project_recent_row(r, max_length) for r in recent],
         }
 
@@ -728,6 +745,102 @@ class Store:
         row = self.get_request(rid)
         assert row is not None
         return row
+
+    def waiting_free_requests(self) -> int:
+        """Free requests not yet aired (queued/producing/ready): the number the
+        free line caps at `requests.free_queue_max`. Paid rows never count."""
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT COUNT(*) FROM requests WHERE COALESCE(priority, 0)=0 "
+                "AND status IN ('queued','producing','ready')").fetchone()
+        return int(r[0])
+
+    def paid_rows_needing_summary(self) -> list[dict[str, Any]]:
+        """Paid rows the board can show (waiting, or among the aired) —
+        candidates for a summary regenerated after the 512-token cap left
+        raw-text labels (Oct 31)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM requests WHERE priority=1 AND status IN "
+                "('queued','producing','ready','aired') "
+                "ORDER BY id DESC LIMIT 100").fetchall()
+        return [dict(r) for r in rows]
+
+    def set_request_summary(self, request_id: int, summary: str) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE requests SET summary=?, updated_at=? WHERE id=?",
+                               (summary, _now_iso(), request_id))
+            self._conn.commit()
+
+    def add_checking_request(self, text: str, *, comped: bool = False) -> dict[str, Any]:
+        """Insert a prefiltered paid request whose checks run in the background
+        (PAYMENT.md Step 12b): status `checking`, stage `moderation`, priority 1,
+        unguessable public token. Not in any queue, not on the board."""
+        token = secrets.token_urlsafe(24)
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO requests (text, status, stage, created_at, updated_at, "
+                "priority, public_token, comped) VALUES (?,?,?,?,?,?,?,?)",
+                (text, "checking", "moderation", _now_iso(), _now_iso(), 1, token,
+                 1 if comped else 0))
+            self._conn.commit()
+            rid = int(cur.lastrowid or 0)
+        row = self.get_request(rid)
+        assert row is not None
+        return row
+
+    def set_request_stage(self, request_id: int, stage: str,
+                          summary: str | None = None) -> bool:
+        """Advance a `checking` row to its next stage (moderation -> copyright
+        -> ready). False when the row is no longer checking."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET stage=?, summary=COALESCE(?, summary), "
+                "updated_at=? WHERE id=? AND status='checking'",
+                (stage, summary, _now_iso(), request_id))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def reject_checking_request(self, request_id: int, reason: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET status='rejected', reason=?, stage=NULL, "
+                "updated_at=? WHERE id=? AND status='checking'",
+                (reason, _now_iso(), request_id))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def claim_for_checkout(self, request_id: int) -> bool:
+        """`checking`/`ready` -> `awaiting_payment`, exactly once, so a double
+        click cannot create two Checkout Sessions. Comped rows never pay."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET status='awaiting_payment', stage=NULL, "
+                "updated_at=? WHERE id=? AND status='checking' AND stage='ready' "
+                "AND COALESCE(comped, 0)=0", (_now_iso(), request_id))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def mark_request_comped(self, request_id: int) -> bool:
+        """Operator comp (PAYMENT.md Step 12b): a checked `comped` row joins
+        the priority queue with no Stripe session and amount 0."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET status='queued', stage=NULL, paid_at=?, "
+                "amount_cents=0, livemode=0, updated_at=? WHERE id=? "
+                "AND status='checking' AND comped=1", (_now_iso(), _now_iso(), request_id))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def abandon_checking_requests(self) -> int:
+        """At startup: a `checking` row's background task died with the old
+        process, so nothing will ever advance it."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE requests SET status='abandoned', stage=NULL, updated_at=? "
+                "WHERE status='checking'", (_now_iso(),))
+            self._conn.commit()
+            return cur.rowcount
 
     def attach_checkout(self, request_id: int, session_id: str) -> None:
         with self._lock:

@@ -29,7 +29,7 @@ def _no_repo_secrets(monkeypatch):
     """
     monkeypatch.setenv("PILGRIM_ENV_FILE", "")
     for name in ("STRIPE_SECRET_KEY", "STRIPE_PUBLISHABLE_KEY",
-                 "STRIPE_WEBHOOK_SECRET"):
+                 "STRIPE_WEBHOOK_SECRET", "PAID_OVERRIDE_TOKEN"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -151,6 +151,6 @@ def valid_brief(genre="jazz-swing-big-band", **over):
     brief = {"title": "The Cheese Got Cuffed",
              "artist": "Sergeant Biscuit & the County Jive Department",
              "genre": genre, "style_prompt": VALID_CAPTION,
-             "lyrics": "[verse]\nMoon over the co-op\n[chorus]\nOh the cheese got cuffed"}
+             "lyrics": "[verse]\nMoon over the hen coop\n[chorus]\nOh the cheese got cuffed"}
     brief.update(over)
     return brief

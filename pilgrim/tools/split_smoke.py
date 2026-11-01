@@ -370,10 +370,19 @@ def run(edge_url: str, gateway_url: str, state: Path,
                     and "off_air" not in body,
                     f"{r.status_code} {body}")
 
+        def check_15():
+            r = edge.post("/api/paid-requests/" + "A" * 24 + "/checkout")
+            is_json = r.headers.get("content-type", "").startswith("application/json")
+            body = r.json() if is_json else {}
+            # route open end to end; payments disabled locally -> paid_closed
+            return (r.status_code == 503 and body.get("paid_closed") is True,
+                    f"{r.status_code} {body}")
+
         record("11 webhook path open, payments disabled -> 503", check_11)
         record("12 paid status unknown token -> 404", check_12)
         record("13 malformed paid token -> 404 at edge", check_13)
         record("14 paid request closed -> 503 paid_closed", check_14)
+        record("15 paid checkout path open, payments disabled -> 503", check_15)
 
     edge.close()
     gateway.close()
@@ -388,8 +397,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gateway", default="http://127.0.0.1:18090")
     ap.add_argument("--state-dir", type=Path,
                     default=Path("/tmp/pilgrim-split-local"))
-    ap.add_argument("--max-check", type=int, default=10, choices=range(1, 15),
-                    metavar="1..14",
+    ap.add_argument("--max-check", type=int, default=10, choices=range(1, 16),
+                    metavar="1..15",
                     help="stop after this check (production cutover uses 7)")
     args = ap.parse_args(argv)
     return run(args.edge, args.gateway, args.state_dir, args.max_check)
