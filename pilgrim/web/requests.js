@@ -112,8 +112,10 @@
   }
 
   function waitLabel(seconds) {
-    // the column is headed "Prep Time": submission -> on air
-    if (typeof seconds !== "number" || !isFinite(seconds)) return "";
+    // the column is headed "Prep Time": lyrics writing -> on air. Rows that
+    // never recorded a writing start (aired before that column existed) get
+    // an em dash: measured-or-nothing, never queue idle dressed up as prep.
+    if (typeof seconds !== "number" || !isFinite(seconds)) return "—";
     const mins = Math.round(seconds / 60);
     if (mins < 60) return Math.max(1, mins) + " min";
     const hours = Math.floor(mins / 60), rem = mins % 60;

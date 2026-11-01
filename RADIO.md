@@ -801,7 +801,7 @@ refill target.
 | GET | `/api/media/<id>` | FLAC file |
 | GET | `/api/health` | Backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
-| GET | `/api/requests` | Request board: `{queue: [{text, status, paid, stage, song_title}], recent: [{text, song_title, song_artist, paid, wait_s}], cap}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); recent = **last 5** aired. The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `POST` answers `line_full: true` when the free line is at `free_queue_max` |
+| GET | `/api/requests` | Request board: `{queue: [{text, status, paid, stage, song_title}], recent: [{text, song_title, song_artist, paid, wait_s}], cap}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); recent = **last 5** aired. The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `wait_s` (Prep Time) is whole seconds from `prep_started_at` — the moment lyrics/brief writing began — to `aired_at`; time spent in line or waiting for the station to come back is not prep, and a row with no recorded writing start (aired before that column existed) sends `null`, which the page renders as an em dash (`—`) — measured-or-nothing, never queue idle dressed up as prep. `POST` answers `line_full: true` when the free line is at `free_queue_max` |
 | POST | `/api/paid-requests` | Paid priority request `{text}` (PAYMENT.md Step 12b): rate limit -> normalise -> operator-comp check (first line == `PAID_OVERRIDE_TOKEN`, stripped) -> prefilter. Prefilter reject: `{ok:false, rejected:true, reason}`. Otherwise the row is stored as `checking` and `{ok:true, token, stage:"moderation"}` returns at once; moderation, the copied-lyrics screen and the board summary run in the background. `503 {paid_closed:true}` when payments are inactive (comps still accepted) |
 | GET | `/api/paid-requests/{token}` | `{status, position, stage, comped, reason?}` (`no-store`): `stage` is `moderation\|copyright\|ready` while `status=checking`; `reason` only when `rejected`. Reconciles an `awaiting_payment` row with Stripe when payments are active |
 | POST | `/api/paid-requests/{token}/checkout` | Only for a non-comped row at `checking/ready`: claims it once (`-> awaiting_payment`) and creates the Checkout Session → `{ok, client_secret, publishable_key, expires_at}`; `client_secret` is returned once and never stored. `409` not ready / already claimed, `424` Stripe failure (row `abandoned`), `503` payments inactive |
@@ -1139,9 +1139,17 @@ them. The flag is set by `python -m pilgrim.tools.audit_library` (OVERHAUL 2.2)
 or `store.retire_item(id, reason)` (reason merged into `meta_json`).
 
 The `requests` table carries lifecycle columns (`attempts`, `song_item_id`,
-`intro_item_id`, `updated_at`) and statuses `queued -> producing -> ready ->
+`intro_item_id`, `updated_at`, `prep_started_at`) and statuses `queued -> producing -> ready ->
 aired`, plus `rejected`, `evicted`, `failed` (legacy `serviced` reads as
-`aired`; OVERHAUL 4.4). A request becomes `aired` when the playhead reaches
+`aired`; OVERHAUL 4.4). `prep_started_at` is stamped by `mark_request_writing`
+when the request gets its turn at the brief LLM and the lyrics/brief are
+written (the producer's `writing` stage), and again on every retry, so the
+board's Prep Time (`aired_at - prep_started_at`) measures prep work, not
+queue idle: a request that sat in line overnight no longer reads as a
+multi-hour prep. A row that never recorded a writing start (aired before the
+column existed) sends `wait_s: null` and the page shows an em dash (`—`): the
+measurement is missing, not zero, and not the queue wait.
+A request becomes `aired` when the playhead reaches
 its song, not when the song is committed; until then it stays `ready` ("up
 next"). The request's song and intro enter the library together with the
 `ready` flag, so the song can never air bare as stock first. Only `queued` rows are ever FIFO-evicted; a crash

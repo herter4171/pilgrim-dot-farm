@@ -274,6 +274,7 @@ def test_request_board_recent_shows_latest_five(cfg):
     s = _store()
     for i in range(7):
         rid = s.add_request(f"played {i}", cap=10)["id"]
+        s.mark_request_writing(rid)
         s.mark_request_aired(rid)
     board = s.request_board(cap=10)
     recent = board["recent"]
@@ -281,6 +282,58 @@ def test_request_board_recent_shows_latest_five(cfg):
     assert [r["text"] for r in recent] == [f"played {i}" for i in (6, 5, 4, 3, 2)]
     assert all(isinstance(r["wait_s"], int) for r in recent)
     assert board["queue"] == []
+
+
+def _set_request_times(s, rid, *, created=None, prep=None, aired=None):
+    """Pin ISO timestamps so Prep Time math is deterministic (the store
+    stamps real wall-clock time)."""
+    with s._lock:
+        s._conn.execute(
+            "UPDATE requests SET created_at=COALESCE(?, created_at), "
+            "prep_started_at=COALESCE(?, prep_started_at), "
+            "aired_at=COALESCE(?, aired_at) WHERE id=?",
+            (created, prep, aired, rid))
+        s._conn.commit()
+
+
+def test_prep_time_starts_when_lyrics_are_written(cfg):
+    """RADIO §11/§14: Prep Time is aired_at - prep_started_at (the writing
+    start), so a request that sat in line overnight reads as minutes of prep,
+    not as the 11.5 hours between submission and air."""
+    s = _store()
+    rid = s.add_request("sat in line overnight", cap=10)["id"]
+    s.mark_request_ready(rid, song_item_id=1)
+    s.mark_request_aired(rid)
+    _set_request_times(s, rid, created="2026-11-01T02:04:22+00:00",
+                       prep="2026-11-01T13:20:00+00:00",
+                       aired="2026-11-01T13:35:07+00:00")
+    recent = s.request_board(cap=10)["recent"]
+    assert recent[0]["wait_s"] == 907        # 15 min 7 s of prep
+
+
+def test_prep_time_null_without_a_writing_start(cfg):
+    """Rows aired before prep_started_at existed carry no writing start: the
+    board sends null (blank cell) rather than queue idle time (PAYMENT §3.4)."""
+    s = _store()
+    rid = s.add_request("legacy row", cap=10)["id"]
+    s.mark_request_aired(rid)
+    assert s.request_board(cap=10)["recent"][0]["wait_s"] is None
+
+
+def test_mark_request_writing_stamps_and_restarts_the_clock(cfg):
+    """The prep clock starts at the writing stage and is re-stamped on a
+    retry, so an outage between attempts is not counted as prep work."""
+    s = _store()
+    rid = s.add_request("retry me", cap=10)["id"]
+    s.mark_request_producing(rid)
+    assert s.get_request(rid)["prep_started_at"] is None
+    s.mark_request_writing(rid)
+    first = s.get_request(rid)["prep_started_at"]
+    assert first
+    # a retry re-stamps the clock instead of keeping the first attempt's start
+    _set_request_times(s, rid, prep="2020-01-01T00:00:00+00:00")
+    s.mark_request_writing(rid)
+    assert s.get_request(rid)["prep_started_at"] > "2020-01-01T00:00:00+00:00"
 
 
 def test_request_board_recent_zero_to_two_renders(cfg):

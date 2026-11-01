@@ -243,6 +243,31 @@ def test_two_requests_produced_oldest_first(cfg, tmp_env):
     assert store.get_request(b["id"])["status"] == "ready"
 
 
+def test_request_production_starts_prep_clock_at_writing(cfg, tmp_env):
+    """RADIO §11/§14: the prep clock is running by the time the brief/lyrics
+    are written, not at submission (queue idle is not prep work)."""
+    _, store, _ = tmp_env
+    req = store.add_request("start the clock", cap=10)
+
+    class _BriefSpy(FakeSong):
+        def __init__(self):
+            super().__init__()
+            self.prep_at_brief = None
+
+        async def brief(self, genres, request_text=None, short=False, paid=False):
+            self.prep_at_brief = store.get_request(req["id"])["prep_started_at"]
+            return await super().brief(genres, request_text, short, paid)
+
+    songs = _BriefSpy()
+    prod = make_song_producer(cfg, store, FakeVoice(), songs)
+    import asyncio
+    assert asyncio.run(prod.song_step()) is True
+    row = store.get_request(req["id"])
+    assert songs.prep_at_brief, "prep clock must start before lyrics are written"
+    assert row["status"] == "ready"
+    assert row["prep_started_at"] >= row["created_at"]
+
+
 def test_request_song_fails_after_3_attempts(cfg, tmp_env):
     _, store, _ = tmp_env
     req = store.add_request("doomed request", cap=10)

@@ -774,6 +774,9 @@ class Producer:
             # turns go in queue order (paid first, then oldest), whoever asked first
             async with self._brief_gate.hold(SongJob("request", req).queue_key()):
                 self.request_stage[req["id"]] = "writing"
+                # Prep Time on the board starts here: lyrics/brief writing, not
+                # submission (RADIO §11) — queue idle is not prep work.
+                self.store.mark_request_writing(req["id"])
                 brief = await self.songs.brief(self._genre_context(),
                                                request_text=req["text"],
                                                short=short, paid=paid)

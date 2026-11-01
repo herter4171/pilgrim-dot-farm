@@ -550,9 +550,15 @@ explicitly**:
 - queue item: `{text, status, paid, stage, song_title}` (`stage`: `writing` /
   `generating` on `producing` rows, RADIO §11); recent item:
   `{text, song_title, song_artist, paid, wait_s}`;
-- `wait_s` = whole seconds from `created_at` to `aired_at` (integer, `null`
-  when either timestamp is missing or unparsable). Computed in Python from
-  `datetime.fromisoformat`, never rendered by the server;
+- `wait_s` = whole seconds from `prep_started_at` to `aired_at` (integer,
+  `null` when either timestamp is missing or unparsable). Computed in Python
+  from `datetime.fromisoformat`, never rendered by the server. The prep clock
+  starts when the lyrics/brief are written (`mark_request_writing`, called by
+  the producer as it enters the `writing` stage — RADIO §14), **not** at
+  `created_at`: time spent queued, or while the station was down, is not prep
+  work and must not show up as a multi-hour "Prep Time". Rows aired before
+  `prep_started_at` existed have no writing start and read `null`, which the
+  page renders as an em dash (`—`);
 - `text` for a paid row: the generated `summary` when present, else the
   first non-tag line, whitespace collapsed, cut to `requests.max_length`
   (160) with `…` added if cut;
@@ -938,7 +944,8 @@ Details:
 - **RECENTLY PLAYED FOR YOU** (`requests.js`): render up to **5** rows
   (`.slice(0, 5)`, the server sends 5), text-only. When `wait_s` is a number,
   append a dim `aired in …` label (`< 60 min` → `42 min`; hours → `3 h 10 m`;
-  `≥ 48 h` → `2 d 4 h`); omit the label when `wait_s` is `null`. Built with
+  `≥ 48 h` → `2 d 4 h`); render `—` when `wait_s` is `null` (unmeasured, e.g.
+  a row aired before the prep clock existed). Built with
   `createElement` + `textContent`.
 - The board (`requests.js`): render `#N`, then — when a queue item has
   `paid: true` — an `<img class="req-paid-icon" src="img/cornucopia.png"

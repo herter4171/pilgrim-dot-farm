@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 const root = resolve(__dirname, "../../..");
@@ -21,13 +23,27 @@ const station = JSON.parse(stationJSON);
 // config behaves exactly as before.
 const externalBaseURL = process.env.PILGRIM_E2E_BASE_URL;
 const baseURL = externalBaseURL || `http://${station.host}:${station.port}`;
+// Browser under test: system Chrome stable when installed (what listeners
+// run), else Playwright's pinned Chromium build (same Blink engine, pinned
+// version). PILGRIM_E2E_CHANNEL=chrome|chromium forces either one.
+const CHROME_PATHS = [
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  resolve(homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+  "/usr/bin/google-chrome",
+  "/usr/bin/google-chrome-stable",
+  "/opt/google/chrome/chrome",
+  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+];
+const channel = process.env.PILGRIM_E2E_CHANNEL
+  || (CHROME_PATHS.some((p) => existsSync(p)) ? "chrome" : "chromium");
+console.log(`e2e browser channel: ${channel}`);
 
 export default defineConfig({
   testDir: "./",
   timeout: 60_000,
   retries: 0,
   workers: 1,
-  use: { baseURL, viewport: { width: 480, height: 400 }, headless: true, channel: "chrome" },
+  use: { baseURL, viewport: { width: 480, height: 400 }, headless: true, channel },
   webServer: externalBaseURL ? undefined : {
     command: `.venv/bin/python -m uvicorn pilgrim.tests.e2e.e2e_server:app --host ${station.host} --port ${station.port}`,
     cwd: root,

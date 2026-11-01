@@ -74,6 +74,8 @@ test("aired requests table shows up to five with a prep time", async ({ page }) 
   const waits = await page.$$eval(".req-wait", els => els.map(e => e.textContent));
   expect(waits.length).toBeGreaterThan(0);
   expect(waits[0]).toMatch(/^\d+ (min|h|d)/);   // column is headed "Prep Time"
+  // an unmeasured row (wait_s null) reads as an em dash, not a blank cell
+  expect(waits[4]).toBe("—");
   const airedTable = page.locator(".req-table").filter({ has: page.locator("#req-recent") });
   await expect(airedTable.getByRole("columnheader")).toHaveText(["Prompt", "Title", "Prep Time"]);
   // the queue table's header row stays pinned while its box scrolls

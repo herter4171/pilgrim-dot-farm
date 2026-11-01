@@ -47,8 +47,13 @@ def _project_text(text: str, paid: bool, max_length: int,
     return first
 
 
-def _wait_s(created_at: str | None, aired_at: str | None) -> int | None:
-    start = _parse_epoch(created_at)
+def _wait_s(prep_started_at: str | None, aired_at: str | None) -> int | None:
+    """Prep time on the board: the prep clock starts when the lyrics/brief
+    are first written (`prep_started_at`), NOT at submission — time spent in
+    line or waiting for the station to come back is not prep work. Rows that
+    never recorded a writing start (aired before this column existed) read
+    null, so the UI omits the label rather than showing queue idle time."""
+    start = _parse_epoch(prep_started_at)
     end = _parse_epoch(aired_at)
     if start is None or end is None:
         return None
@@ -76,7 +81,7 @@ def _project_recent_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
             "song_title": row.get("song_title") or "",
             "song_artist": row.get("song_artist") or "",
             "paid": paid,
-            "wait_s": _wait_s(row.get("created_at"), row.get("aired_at"))}
+            "wait_s": _wait_s(row.get("prep_started_at"), row.get("aired_at"))}
 
 
 class Store:
@@ -201,6 +206,9 @@ class Store:
                              ("livemode", "INTEGER"),
                              ("reconciled_at", "REAL"),
                              ("aired_at", "TEXT"),
+                             # board "Prep Time" starts here (first lyrics write),
+                             # not at created_at (queue idle must not count)
+                             ("prep_started_at", "TEXT"),
                              ("summary", "TEXT"),
                              # PAYMENT.md Step 12b: staged checks + operator comp
                              ("stage", "TEXT"),
@@ -630,6 +638,18 @@ class Store:
                 (_now_iso(), request_id))
             self._conn.commit()
 
+    def mark_request_writing(self, request_id: int) -> None:
+        """The request got its turn at the brief LLM and lyrics/brief writing
+        begins: start the board's Prep Time clock (RADIO §11). Set again on a
+        retry so a request that sat out an outage or a failed attempt does not
+        count that idle time as prep."""
+        now = _now_iso()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET prep_started_at=?, updated_at=? WHERE id=?",
+                (now, now, request_id))
+            self._conn.commit()
+
     def mark_request_ready(self, request_id: int, song_item_id: int | None,
                            intro_item_id: int | None = None) -> None:
         with self._lock:
@@ -708,7 +728,8 @@ class Store:
                 "WHERE r.status IN ('queued','producing','ready') "
                 f"{QUEUE_ORDER_R} LIMIT ?", (cap,)).fetchall()]
             recent = [dict(r) for r in self._conn.execute(
-                "SELECT r.id, r.text, r.summary, r.created_at, r.aired_at, r.priority, "
+                "SELECT r.id, r.text, r.summary, r.created_at, r.aired_at, "
+                "r.prep_started_at, r.priority, "
                 "i.title AS song_title, i.artist AS song_artist FROM requests r "
                 "LEFT JOIN items i ON i.id = r.song_item_id "
                 "WHERE r.status IN ('aired','serviced') "

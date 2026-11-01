@@ -24,6 +24,8 @@ dist/
 
 # Runtime data
 *.bak
+*.bak-shm
+*.bak-wal
 station.db
 station.db-wal
 station.db-shm
@@ -55,3 +57,7 @@ pilgrim/deploy/edge/nginx.conf
 # Playwright MCP scratch (page snapshots can contain typed card data)
 .playwright-mcp/
 pay*.jpeg
+
+
+
+*.mjs
