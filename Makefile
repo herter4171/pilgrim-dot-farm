@@ -43,8 +43,9 @@ e2e-split:
 split-smoke:
 	bash pilgrim/deploy/local/smoke.sh
 
-# --- EC2 stateless half (edge :8080 behind the ALB, + local gateway until the
-# origin moves to the M5). Env passes through: LOCAL_GATEWAY, ORIGIN_SCHEME,
+# --- EC2 stateless half (edge :8080 behind the ALB). Production runs with
+# LOCAL_GATEWAY=0 and the M5's tailnet name as ORIGIN_HOST (pilgrim/deploy/
+# README.md "Current production"). Env passes through: LOCAL_GATEWAY, ORIGIN_SCHEME,
 # ORIGIN_HOST, ORIGIN_HOSTPORT, MEDIA_CACHE_MAX, TRUSTED_PROXY_CIDR (default:
 # this instance's VPC CIDR). See pilgrim/deploy/interim/up.sh.
 edge-up:

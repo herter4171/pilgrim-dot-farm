@@ -1,4 +1,8 @@
-# Pilgrim Dot Farm — INTERIM SINGLE-HOST SPLIT (SPLIT_PLAN §0.1, RUNBOOK "Interim")
+# Pilgrim Dot Farm — EC2 EDGE compose (SPLIT_PLAN §0.1)
+#
+# PRODUCTION (since 2026-11-01): up.sh runs only `edge` (LOCAL_GATEWAY=0),
+# proxying to the M5 origin over Tailscale serve; the EC2 holds no state.
+# The diagram below is the original single-host mode (LOCAL_GATEWAY=1).
 #
 # The STATELESS half of the split, running on the EC2 that still hosts the
 # origin (pilgrim.server on 127.0.0.1:5000) until it migrates to the M5:

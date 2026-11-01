@@ -8,6 +8,41 @@ edge may use. The origin's admin listener is never exposed.
 Only `make deploy-check` is run by this repo's checks (render + `nginx -t` in a
 throwaway container). Everything else is for the operator.
 
+## Current production (since 2026-11-01)
+
+```
+Cloudflare → ALB → EC2 edge  0.0.0.0:8080   (interim/up.sh, LOCAL_GATEWAY=0; stateless)
+          → https://justins-mac-studio.tail063158.ts.net:443   (tailscale serve on the M5)
+          → M5 gateway 127.0.0.1:8090   (Homebrew nginx, launchd farm.pilgrim.gateway)
+          → M5 station 127.0.0.1:5080   (launchd farm.pilgrim.station; admin 127.0.0.1:5081)
+```
+
+No SSH port forwarding. All state (`station.db`, `pilgrim/library/`, `.env`)
+is on the M5.
+
+**M5 (origin):** `pilgrim/deploy/mac/origin.sh install | status | uninstall`.
+Renders the gateway template for Homebrew nginx into `~/pilgrim-origin/`,
+writes a wrapper that sources the repo's `.env`, installs both launchd units,
+and runs `tailscale serve --bg --https=443 http://127.0.0.1:8090`. Logs:
+`~/Library/Logs/pilgrim/`. Restart the station with
+`launchctl kickstart -k gui/$(id -u)/farm.pilgrim.station`.
+
+**EC2 (edge):** from `/home/ec2-user/radio`,
+
+```sh
+H=justins-mac-studio.tail063158.ts.net
+LOCAL_GATEWAY=0 ORIGIN_SCHEME=https ORIGIN_HOST=$H ORIGIN_HOSTPORT=$H:443 \
+  MEDIA_CACHE_MAX=20g make edge-up        # also: make edge-status / edge-down
+```
+
+`up.sh` keeps rendered configs and the cache in `~/pilgrim-interim/`; deleting
+that directory breaks the running edge (`mkdir() "/cache/micro/..." failed`)
+until `make edge-up` is re-run. `TRUSTED_PROXY_CIDR` defaults to the
+instance's VPC CIDR via IMDSv2.
+
+**Tailnet policy:** edge tag `tag:radio-relay` → host `pilgrim-origin`
+(`100.114.40.70`), `tcp:443` only (docs/backends.md §8).
+
 ## Files
 
 | File | Who runs it | What it is |
@@ -20,7 +55,9 @@ throwaway container). Everything else is for the operator.
 | `gateway/extra-e2e.conf` | Local e2e render only | Exposes the e2e server's `/api/test/*` endpoints. Never use in production. |
 | `gateway/compose.yaml` | Operator, on the M5 | Tailscale sidecar + gateway nginx (Step 6). |
 | `gateway/serve.json` | Tailscale serve | HTTPS on 443 -> gateway on 8090 (Step 6). |
-| `tailscale/policy.example.hujson` | Operator | Tailnet policy fragment (Step 6). |
+| `tailscale/policy.example.hujson` | Operator | Tailnet policy fragment (Step 6). Production uses `tag:radio-relay` → host alias, see above. |
+| `interim/up.sh`, `interim/compose.yaml` | Operator, on the EC2 (`make edge-up`) | Edge container (and, with `LOCAL_GATEWAY=1`, a local gateway) from the same templates. |
+| `mac/origin.sh` | Operator, on the M5 | Native origin: launchd station + Homebrew nginx gateway + `tailscale serve`. |
 | `launchd/farm.pilgrim.station.plist.example` | Operator, on the M5 | launchd unit for the origin (Step 8). |
 | `local/compose.yaml` | `make e2e-split` / `make split-smoke` | Edge + gateway on loopback (Step 7). The gateway runs with the prod hardening (uid 101, read-only, tmpfs). |
 | `local/stack.sh` | both local targets | `PILGRIM_SPLIT_ORIGIN=e2e` (default): `e2e_server` + `extra-e2e.conf`, for the Playwright gap test. `=real`: `pilgrim/tests/e2e/split_origin.py` (the **real** `create_public_app`, fakes, temp library) + the **prod** allowlist (`extra-none.conf`). |
@@ -97,12 +134,13 @@ Render the gateway config with production values:
 .venv/bin/python -m pilgrim.tools.render_deploy \
   pilgrim/deploy/gateway/nginx.conf.template gateway/nginx.conf \
   --set GATEWAY_LISTEN=127.0.0.1:8090 \
-  --set ORIGIN_PUBLIC_HOSTPORT=host.docker.internal:5000 \
+  --set ORIGIN_PUBLIC_HOSTPORT=host.docker.internal:5080 \
   --set TRUSTED_EDGE_NET=127.0.0.1 \
   --set EXTRA_ALLOW_INCLUDE=/etc/nginx/extra-none.conf
 ```
 
-`host.docker.internal:5000` is the origin's public listener as seen from the
+(Docker variant. The native M5 setup uses `mac/origin.sh`, which renders
+`ORIGIN_PUBLIC_HOSTPORT` from `config.yaml`.) `host.docker.internal:5080` is the origin's public listener as seen from the
 gateway container. **The operator verifies this on the M5** and replaces it if
 Docker Desktop exposes the host differently. `127.0.0.1` for
 `TRUSTED_EDGE_NET` is correct in production because Tailscale serve proxies

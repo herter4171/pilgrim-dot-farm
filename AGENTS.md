@@ -69,11 +69,14 @@ If a task cannot be done without breaking one, stop and report.
 
 | Component | Where | Notes |
 |-----------|-------|-------|
-| Station server | M5 | also one of the three song generators (mlx-serve) |
-| Song generation | pool in `songs.gen_backends` | MiniMax Music 3 ×3 (M5 mlx-serve + two audiocpp GPU boxes) via LiteLLM's vLLM pass-through `localhost:4000/vllm/v1/audio/music-generations`, `model: MiniMax-Music-3`, Bearer `LITELLM_TOKEN`. The station enforces the slot ceiling and staggers submissions (docs/backends.md §2b). Read `pipelines/songs.py` before writing new code. |
+| Station server (origin, stateful) | M5 Mac Studio | `station.db` + `pilgrim/library/`; public listener `127.0.0.1:5080`, admin `127.0.0.1:5081`; launchd via `pilgrim/deploy/mac/origin.sh`. Also one of the three song generators (mlx-serve) |
+| Edge (stateless) | EC2 `pf`, `/home/ec2-user/radio` | nginx edge `:8080` behind Cloudflare → ALB; reaches the origin only via Tailscale serve (`make edge-up`, `LOCAL_GATEWAY=0`). Holds no station state. **No SSH port forwarding** anymore |
+| Song generation | pool in `songs.gen_backends` | MiniMax Music 3 ×3 (M5 mlx-serve + two audiocpp GPU boxes) via LiteLLM's vLLM pass-through `https://litellm.twr.church/vllm/v1/audio/music-generations`, `model: MiniMax-Music-3`, Bearer `LITELLM_TOKEN`. The station enforces the slot ceiling and staggers submissions (docs/backends.md §2b). Read `pipelines/songs.py` before writing new code. |
+| LiteLLM | `https://litellm.twr.church/v1` | LLMs, song pool (`/vllm`), searxng MCP (`/mcp`) |
 | `qwen38` (Qwen 3.8 27B) | 5090 host | via LiteLLM; news, song briefs, DJ talk |
 | `ornith` | 4070 Ti host | via LiteLLM; commercials, liners |
 | Kokoro TTS | `192.168.68.89:8001` | `/tts`, `/voices`, `/health`; 16-bit mono 24 kHz |
+| SFX (MOSS-SoundEffect v2.0) | `192.168.68.88:8000` | `/health` |
 | searxng | see config | news search |
 | Stripe | `payments.api_base` in config | Checkout Sessions + webhooks; keys in `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (PAYMENT.md Step 0) |
 
@@ -239,3 +242,9 @@ continue.
 - **Satire next to serious news.** Respect the `gravity` adjacency rule in §5.2.
 - **Don't let the committed window include unrendered items.** A contextual
   item that isn't ready gets replaced by a liner, never waited on.
+- **Port 5000 on macOS is AirPlay Receiver** (ControlCenter). The origin uses
+  5080/5081.
+- **nginx `proxy_ssl_verify_depth` defaults to 1**; the Tailscale (Let's
+  Encrypt) chain needs 2. Too shallow = edge serves off-air (docs/backends.md §8).
+- **`items.media_path` is absolute.** Moving the checkout or library means
+  rewriting the prefix in `station.db` (RUNBOOK §3–4), after a `.backup`.

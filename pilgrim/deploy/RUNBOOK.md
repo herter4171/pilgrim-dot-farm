@@ -48,14 +48,14 @@ Edit `pilgrim/config.yaml`. Each value and how to verify it:
 |---|---|---|
 | `songs.gen_backends` | `[{name: litellm, slots: 3, auth: litellm}]` (URL derived from `hosts.litellm` + `/vllm`; direct mode lists each box) | `make smoke` prints `music:<name> OK`; `make smoke SMOKE_ARGS=--gen` renders 10 s per slot (only when asked) |
 | `hosts.kokoro` | Kokoro host's LAN address, e.g. `http://192.168.68.89:8001` | `curl -s <kokoro>/health` and `curl -s <kokoro>/voices` |
-| `hosts.litellm` | LiteLLM host's LAN address, e.g. `http://<5090-lan>:4000/v1` | `curl -s -H "Authorization: Bearer $LITELLM_TOKEN" <litellm>/models` |
-| `hosts.searxng` | LiteLLM MCP endpoint, e.g. `http://<5090-lan>:4000/mcp` | MCP `initialize` + `tools/list` per `docs/backends.md` §5 |
-| `hosts.sfx` | `http://127.0.0.1:8000` | `curl -s http://127.0.0.1:8000/health` |
-| `station.host` | **`127.0.0.1`** — never `0.0.0.0` on the M5 | `lsof -nP -iTCP:5000 -sTCP:LISTEN` shows loopback only |
-| `station.port` | `5000` | same |
-| `station.admin_host` | `127.0.0.1` | `lsof -nP -iTCP:5001 -sTCP:LISTEN` shows loopback only |
-| `station.admin_port` | `5001` | same; must differ from `port` |
-| `station.serve_web` | `false` (edges serve `pilgrim/web/`) | `curl -s http://127.0.0.1:5000/` returns 404 |
+| `hosts.litellm` | `https://litellm.twr.church/v1` | `curl -s -H "Authorization: Bearer $LITELLM_TOKEN" <litellm>/models` |
+| `hosts.searxng` | LiteLLM MCP endpoint, `https://litellm.twr.church/mcp` | MCP `initialize` + `tools/list` per `docs/backends.md` §5 |
+| `hosts.sfx` | `http://192.168.68.88:8000` | `curl -s http://192.168.68.88:8000/health` |
+| `station.host` | **`127.0.0.1`** — never `0.0.0.0` on the M5 | `lsof -nP -iTCP:5080 -sTCP:LISTEN` shows loopback only |
+| `station.port` | `5080` (5000 is macOS AirPlay Receiver) | same |
+| `station.admin_host` | `127.0.0.1` | `lsof -nP -iTCP:5081 -sTCP:LISTEN` shows loopback only |
+| `station.admin_port` | `5081` | same; must differ from `port` |
+| `station.serve_web` | `false` (edges serve `pilgrim/web/`) | `curl -s http://127.0.0.1:5080/` returns 404 |
 | `visitors.trusted_proxies` | the gateway peer address observed in §6 | see §6 |
 
 ## 3. Freeze and copy data (EC2 → M5)
@@ -70,6 +70,21 @@ rsync -a pilgrim/library/ m5:/Users/pilgrim/radio/pilgrim/library/   # ~12 GB
 scp /tmp/station.db.migrate m5:/Users/pilgrim/radio/pilgrim/station.db
 ```
 
+**Keep both trailing slashes on the rsync.** Without them (or with `scp -r
+.../library .../library`) the files land in `pilgrim/library/library/`.
+
+**`items.media_path` is absolute** (`/home/ec2-user/radio/pilgrim/library/...`
+on the EC2). With the station stopped and after a `.backup`, rewrite the
+prefix to the M5 checkout:
+
+```sh
+cd <checkout>/pilgrim
+sqlite3 station.db ".backup station.db.path-migration-$(date -u +%Y%m%d-%H%M%SZ).bak"
+OLD=/home/ec2-user/radio/pilgrim/library/ NEW="$PWD/library/"
+sqlite3 station.db "UPDATE items SET media_path = '$NEW' || substr(media_path, length('$OLD')+1)
+                    WHERE media_path LIKE '$OLD%'"
+```
+
 ## 4. Verify the copy
 
 On the M5, run the audit in its **default dry-run** mode. Never use `--apply`
@@ -81,10 +96,26 @@ cd ~/radio
 sqlite3 pilgrim/station.db "select count(*) from items"
 ```
 
-Compare the item count with the EC2. Spot-check that a few `media_path` files
-exist under `pilgrim/library/`.
+Compare the item count with the EC2. Then check that **every** `media_path`
+resolves (prints nothing when all exist):
+
+```sh
+sqlite3 pilgrim/station.db "select media_path from items" |
+  while read f; do [ -e "$f" ] || echo "MISSING $f"; done | head
+```
+
+A missing file is a 404 on `/api/media/{id}` at the origin, so listeners hear
+nothing even though `/api/health` says on air.
 
 ## 5. Start the station under launchd
+
+**Native variant (current Mac Studio):** `pilgrim/deploy/mac/origin.sh install`
+does §5–6 without Docker: a wrapper sourcing the repo's gitignored `.env`,
+launchd units `farm.pilgrim.station` and `farm.pilgrim.gateway` (Homebrew
+nginx on `127.0.0.1:8090`), and `tailscale serve --bg --https=443` on the
+Mac's own tailnet node. The edge then uses that node's MagicDNS name as
+`ORIGIN_HOST`, and the tailnet policy must grant the edge tag `tcp:443` to it.
+The Docker steps below remain the alternative.
 
 Create the wrapper and env file **outside the repo**:
 
@@ -111,9 +142,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/farm.pilgrim.station.pli
 launchctl kickstart -k gui/$(id -u)/farm.pilgrim.station
 ```
 
-Verify: `curl -s http://127.0.0.1:5000/api/health` returns the public
-`{on_air, time}` shape; `curl -s http://127.0.0.1:5001/api/health` returns the
-full admin health; `/` on 5000 is 404 (`serve_web: false`). Logs:
+Verify: `curl -s http://127.0.0.1:5080/api/health` returns the public
+`{on_air, time}` shape; `curl -s http://127.0.0.1:5081/api/health` returns the
+full admin health; `/` on 5080 is 404 (`serve_web: false`). Logs:
 `~/Library/Logs/pilgrim/station.out.log` / `.err.log`.
 
 ## 6. Start the gateway and observe the peer address
@@ -125,12 +156,12 @@ cd ~/radio
 .venv/bin/python -m pilgrim.tools.render_deploy \
   pilgrim/deploy/gateway/nginx.conf.template pilgrim/deploy/gateway/nginx.conf \
   --set GATEWAY_LISTEN=127.0.0.1:8090 \
-  --set ORIGIN_PUBLIC_HOSTPORT=host.docker.internal:5000 \
+  --set ORIGIN_PUBLIC_HOSTPORT=host.docker.internal:5080 \
   --set TRUSTED_EDGE_NET=127.0.0.1 \
   --set EXTRA_ALLOW_INCLUDE=/etc/nginx/extra-none.conf
 ```
 
-`host.docker.internal:5000` is the origin's public listener as seen from the
+`host.docker.internal:5080` is the origin's public listener as seen from the
 gateway container. **Verify this on the M5**; replace it if Docker Desktop
 exposes the host differently.
 
@@ -162,7 +193,7 @@ Then read the peer address the origin sees. The upstream keepalive holds the
 connection open, so `lsof` shows it:
 
 ```sh
-lsof -nP -iTCP:5000 -sTCP:ESTABLISHED
+lsof -nP -iTCP:5080 -sTCP:ESTABLISHED
 ```
 
 The uvicorn access line in `~/Library/Logs/pilgrim/station.out.log` /
@@ -215,6 +246,20 @@ grants something. The auth key comes from SSM, never the AMI.
 edge's nginx **after** tailscaled is up and MagicDNS resolves
 `pilgrim-origin.<tailnet>.ts.net`.
 
+**Current EC2 edge (interim launcher, no AMI):** on `pf` in
+`/home/ec2-user/radio`, with the native M5 origin's node name:
+
+```sh
+H=justins-mac-studio.tail063158.ts.net
+LOCAL_GATEWAY=0 ORIGIN_SCHEME=https ORIGIN_HOST=$H ORIGIN_HOSTPORT=$H:443 \
+  MEDIA_CACHE_MAX=20g make edge-up
+```
+
+If the edge reports off-air while the origin answers, read the edge's
+`/var/log/nginx/error.log` (`docker exec pilgrim-interim-edge tail ...`): an
+`SSL certificate verify error` means `proxy_ssl_verify_depth` is too low
+(docs/backends.md §8).
+
 ## 8. Cut over
 
 Point Cloudflare at the edges, then run the curl-only cutover check **from one
@@ -255,10 +300,10 @@ DENY_TS_IPS="<other tailnet IPs>" \
 bash pilgrim/deploy/edge/cutover_check.sh
 ```
 
-With `ORIGIN_TS_IP` set, TCP `:443` must succeed and ports 22, 80, 5000, 5001,
+With `ORIGIN_TS_IP` set, TCP `:443` must succeed and ports 22, 80, 5000, 5001, 5080, 5081,
 8090 must fail within 3 s each. If `tailscale status --json` lists the origin
 peer's `PeerAPIURL`, a curl to it must fail; otherwise the script prints
-`SKIP`. `DENY_TS_IPS` (space-separated) checks ports 22, 443, 5000 and 5001 on
+`SKIP`. `DENY_TS_IPS` (space-separated) checks ports 22, 443, 5000, 5001, 5080 and 5081 on
 other tailnet devices (e.g. the M5 host's own Tailscale IP). Without
 `ORIGIN_TS_IP`, check 11 prints `SKIP`.
 

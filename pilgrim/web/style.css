@@ -218,14 +218,14 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   text-align: center; }
 .hit-link:hover { color: var(--cyan); }
 
-/* SoundCloud pane (COSMETIC_PATCHING §7). */
-.window.soundcloud { width: min(94vw, 484px); }
-.win-body.soundcloud { align-items: stretch; text-align: left; gap: 12px; }
-.sc-list { list-style: none; margin: 0; padding: 0; display: flex;
-  flex-direction: column; gap: 8px; }
-.sc-track { color: var(--cyan); font-size: 12px; letter-spacing: 1px;
-  text-decoration: none; overflow-wrap: anywhere; }
-.sc-track:hover, .sc-track:focus-visible { text-decoration: underline; color: var(--magenta); }
+/* Infra and data flow pane (COSMETIC_PATCHING §7). */
+.window.infra { width: min(94vw, 484px); }
+.win-body.infra { align-items: stretch; text-align: left; gap: 12px; }
+.infra-link { display: block; text-decoration: none; }
+.infra-img { display: block; width: 100%; height: auto; border: 1px solid var(--violet);
+  border-radius: 4px; background: #000; }
+.infra-link:hover .infra-img, .infra-link:focus-visible .infra-img {
+  border-color: var(--magenta); }
 
 /* Footer copyright (COSMETIC_PATCHING): same centered column as the panes,
    plain cyan type, no glow so it reads as a footer rather than a label. */

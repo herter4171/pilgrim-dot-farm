@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
-# Interim single-host split (see compose.yaml): render the edge + gateway
-# templates and run them next to the live origin on this host.
+# EC2 edge launcher (see compose.yaml): render the edge (+ optional local
+# gateway) templates and run them on this host. `make edge-up|edge-status|
+# edge-down` wrap this.
 #
-#   TRUSTED_PROXY_CIDR=172.31.0.0/16 pilgrim/deploy/interim/up.sh start
-#   pilgrim/deploy/interim/up.sh stop | status
+# PRODUCTION (since 2026-11-01): edge only, origin = the M5 over Tailscale:
+#   H=justins-mac-studio.tail063158.ts.net
+#   LOCAL_GATEWAY=0 ORIGIN_SCHEME=https ORIGIN_HOST=$H ORIGIN_HOSTPORT=$H:443 \
+#     MEDIA_CACHE_MAX=20g pilgrim/deploy/interim/up.sh start
+#
+# The defaults below are the old single-host mode (origin on this EC2 at
+# ORIGIN_PUBLIC, local gateway). $STATE holds the rendered configs and cache;
+# the running edge needs it, so never delete it without re-running start.
 #
 # Real client IP (behind Cloudflare → ALB): real_ip_header X-Forwarded-For with
 # real_ip_recursive, trusting TRUSTED_PROXY_CIDR (the ALB's VPC) and every
 # published Cloudflare range. A forged X-Forwarded-For sent straight to the ALB
 # resolves to the sender's own IP, never the forged value.
 #
-# Split day (origin on the M5, gateway there behind Tailscale serve): re-run
-#   LOCAL_GATEWAY=0 ORIGIN_SCHEME=https \
-#   ORIGIN_HOST=pilgrim-origin.<tailnet>.ts.net ORIGIN_HOSTPORT=pilgrim-origin.<tailnet>.ts.net:443 \
-#   MEDIA_CACHE_MAX=20g TRUSTED_PROXY_CIDR=... up.sh start
-# which re-renders the edge against the M5 and removes the local gateway.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
