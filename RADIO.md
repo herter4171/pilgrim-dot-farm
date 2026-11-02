@@ -828,7 +828,13 @@ live level meter driven by an
 below the meter showing exactly `` ${title} - ${artist} `` for the audible
 song (_both_ fields nonempty); any other segment, a gap, or STOP shows an
 empty label. The label is driven off the audio-clock playhead and never
-announces a buffered next song early. The site header/browser title retain
+announces a buffered next song early. Below the label, a **DOWNLOAD MP3**
+button shows under exactly the same rule (audible named song only; hidden
+before PLAY, after STOP and for any other segment: you have to listen to get
+it). A click fetches that song's MP3 the way the player does (`url` on
+CloudFront, `/api/media/<id>` fallback, stall timeout) into a blob and saves
+it as `${title} - ${artist}.mp3`; its row keeps its height when hidden, and a
+download never touches playback. The site header/browser title retain
 the station name.
 - **REQUEST LINE**: the request form + active queue, then a **RECENTLY PLAYED
   FOR YOU** list of the three most recent serviced/airéd requests.

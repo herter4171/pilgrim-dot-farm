@@ -14,6 +14,7 @@
   const offairEl = $("offair"), statusEl = $("status");
   const songLabel = $("song-label");
   const coverArt = $("cover-art");
+  const dlBtn = $("dl-mp3");
   // Cover art (ALBUM_ART.md Step 8): the placeholder always fills the frame,
   // so the PLAY row never moves. Art is cosmetic: a load error falls back
   // silently and never touches playback, the indicator or OFF AIR logic.
@@ -176,20 +177,20 @@
      stalls, retry once from the origin's /api/media/<id> (a different host,
      so a different connection); that route is also the only source for
      items not yet in S3. */
-  async function decode(entry, audioContext) {
+  async function fetchMedia(entry) {
     const origin = "/api/media/" + entry.media_id;
-    let bytes;
     if (entry.url && entry.url !== origin) {
       try {
-        bytes = await fetchBytes(entry.url, "media");
+        return await fetchBytes(entry.url, "media");
       } catch (e) {
         if (e instanceof OffAirError) throw e;
-        bytes = await fetchBytes(origin, "media (origin)");
+        return await fetchBytes(origin, "media (origin)");
       }
-    } else {
-      bytes = await fetchBytes(origin, "media");
     }
-    return await audioContext.decodeAudioData(bytes);
+    return await fetchBytes(origin, "media");
+  }
+  async function decode(entry, audioContext) {
+    return await audioContext.decodeAudioData(await fetchMedia(entry));
   }
 
   async function getDecoded(i) {
@@ -328,7 +329,47 @@
     const named = !!(it && it.type === "song" && it.title && it.artist);
     songLabel.textContent = named ? (it.title + " - " + it.artist) : "";
     setCoverArt(named ? it : null, named);
+    setDownload(named ? it : null);
   }
+
+  /* DOWNLOAD MP3 (RADIO §9.1): shown only while a named song is audible, so
+     you have to listen to get it. The click fetches the same MP3 the player
+     streams (CloudFront, origin fallback, stall timeout: fetchMedia) into a
+     same-origin blob, because the download attribute is ignored on a
+     cross-origin link. A download never touches playback. */
+  let dlItem = null, dlBusy = false;
+  function setDownload(it) {
+    dlItem = it ? { media_id: it.media_id, url: it.url,
+                    title: it.title, artist: it.artist } : null;
+    if (!dlBusy) dlBtn.hidden = !dlItem;
+  }
+  function mp3Name(d) {
+    const raw = (d.title + " - " + d.artist).replace(/[\u0000-\u001f\u007f\/\\:*?"<>|]+/g, " ");
+    const name = raw.replace(/\s+/g, " ").trim().slice(0, 120);
+    return (name || "pilgrim-dot-farm") + ".mp3";
+  }
+  dlBtn.addEventListener("click", async () => {
+    if (!dlItem || dlBusy) return;
+    const d = dlItem;
+    dlBusy = true; dlBtn.disabled = true; dlBtn.textContent = "DOWNLOADING…";
+    let label = "DOWNLOAD MP3";
+    try {
+      const bytes = await fetchMedia(d);
+      const href = URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
+      const a = document.createElement("a");
+      a.href = href; a.download = mp3Name(d); a.style.display = "none";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 60_000);
+    } catch (e) {
+      label = "DOWNLOAD FAILED";
+    }
+    dlBtn.textContent = label;
+    dlBtn.disabled = false; dlBusy = false;
+    dlBtn.hidden = !dlItem;
+    if (label !== "DOWNLOAD MP3") {
+      setTimeout(() => { if (!dlBusy) dlBtn.textContent = "DOWNLOAD MP3"; }, 3000);
+    }
+  });
 
   /* The cover swaps with the label, from the same playhead decision: an
      audible song with an uploaded art_url shows its cover, anything else
@@ -573,6 +614,7 @@
     items = []; cursor = 0; scheduleCursor = 0;
     songLabel.textContent = "";
     setCoverArt(null, false);
+    setDownload(null);
     btn.textContent = "▶  PLAY"; btn.classList.remove("stop");
     setState("idle"); lctx.clearRect(0, 0, level.width, level.height);
   }

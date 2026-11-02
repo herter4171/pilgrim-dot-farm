@@ -225,3 +225,41 @@ test("cover art swaps with the song label and never moves PLAY", async ({ page }
   // at least one swap happened (art is per-song, not a single static image)
   expect(new Set(songs.map(s => s.src)).size).toBeGreaterThan(1);
 });
+
+test("DOWNLOAD MP3 shows only while a named song is audible and saves it", async ({ page }) => {
+  await page.goto("/");
+  const dl = page.locator("#dl-mp3");
+  await expect(dl, "hidden before PLAY: you have to listen to get it").toBeHidden();
+  const btnBefore = await page.locator("#btn-play").boundingBox();
+
+  await page.click("#btn-play");
+  await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 15_000 });
+
+  // The button tracks the label: visible with a named song, hidden otherwise.
+  for (let k = 0; k < 10; k++) {
+    await page.waitForTimeout(1000);
+    const s = await page.evaluate(() => ({
+      label: document.getElementById("song-label")!.textContent || "",
+      hidden: (document.getElementById("dl-mp3") as HTMLButtonElement).hidden,
+    }));
+    expect(s.hidden, `button visibility follows the label (${s.label || "no song"})`)
+      .toBe(!s.label);
+  }
+
+  await expect(page.locator("#song-label")).not.toHaveText("", { timeout: 20_000 });
+  await expect(dl).toBeVisible();
+  const label = await page.locator("#song-label").textContent();
+  const [download] = await Promise.all([page.waitForEvent("download"), dl.click()]);
+  expect(download.suggestedFilename()).toBe(`${label}.mp3`);
+  const path = await download.path();
+  const { statSync } = await import("node:fs");
+  expect(statSync(path!).size, "the MP3 has bytes").toBeGreaterThan(1000);
+  await expect(page.locator("#indicator"), "downloading never stops playback")
+    .toHaveClass(/onair/);
+
+  const btnAfter = await page.locator("#btn-play").boundingBox();
+  expect(Math.abs(btnAfter!.y - btnBefore!.y), "PLAY never moves").toBeLessThanOrEqual(0.5);
+
+  await page.click("#btn-play");  // STOP hides it again
+  await expect(dl).toBeHidden();
+});
