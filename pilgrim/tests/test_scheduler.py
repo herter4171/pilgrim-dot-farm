@@ -538,7 +538,13 @@ def test_no_song_lockup_41_songs_all_air_over_6h(cfg, tmp_env):
         make_item(cfg, store, "dj_talk", 15 + i % 5)
     clock = SimClock(epoch=1_800_000_000.0)
     sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
-    for _ in range(int(6 * 3600) // 30):
+    # PRIORITIES §6's guard is "unheard no longer than max(6 h, pool x mean
+    # gap)" = 6 h here. A 6 h run sits exactly ON that bound: an old song with
+    # a ~0.11 youth weight has a ~20% chance of never being drawn, which is the
+    # intended thinning, not a lockup. Run 12 h so the guard is actually
+    # exceeded if the rotation fails (the old bug aired only #1-#18 forever,
+    # so it still fails here).
+    for _ in range(int(12 * 3600) // 30):
         clock.advance(30)
         sched.commit_lookahead()
     never = [iid for iid in ids if store.get_item(iid)["last_aired_at"] is None]
@@ -701,3 +707,51 @@ def test_request_hold_zero_keeps_songs_airing_while_a_request_renders(cfg, tmp_e
         sched.commit_lookahead()
     assert sched.coverage() >= cfg.playout.committed_lookahead_s
     assert "song" in [r["type"] for r in store.program_after(before)]
+
+
+def test_contextual_pick_uses_air_slot_expiry(cfg, tmp_env):
+    """A1: expiry is checked against the slot the clip would AIR in, not the
+    commit time. A clip that is still valid now but stale 300 s later must not
+    be committed."""
+    from datetime import UTC, datetime
+    _, store, _ = tmp_env
+    clock = SimClock(epoch=1_800_000_000.0)
+    song = make_item(cfg, store, "song", 300.0)
+    sched = Scheduler(cfg, store, RandomSelector(RNG(5), cfg), clock, RNG(5))
+    sched._append({"item_id": song, "type": "song", "duration_s": 300.0})
+    sched._rebuild_program()
+    # next slot airs at wall + 300 (coverage == 300, playhead at 0)
+    stale = datetime.fromtimestamp(clock.wall() + 120, UTC).isoformat()
+    make_item(cfg, store, "dj_talk", 16.0, expires_at=stale)
+    assert sched._pick_fresh_talk("dj_talk") == []
+    # one that clears the slot is accepted
+    ok = datetime.fromtimestamp(clock.wall() + 400, UTC).isoformat()
+    good = make_item(cfg, store, "dj_talk", 16.0, expires_at=ok)
+    picked = sched._pick_fresh_talk("dj_talk")
+    assert [p["item_id"] for p in picked] == [good]
+
+
+def test_contextual_pick_newest_first(cfg, tmp_env):
+    """Revision 4: the newest unexpired clip wins, not a uniform draw."""
+    _, store, _ = tmp_env
+    make_item(cfg, store, "dj_talk", 16.0)
+    make_item(cfg, store, "dj_talk", 16.0)
+    newest = make_item(cfg, store, "dj_talk", 16.0)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(2), cfg), clock, RNG(2))
+    assert sched._pick_fresh_talk("dj_talk")[0]["item_id"] == newest
+
+
+def test_news_expiry_checked_at_air_slot(cfg, tmp_env):
+    """A1 for news: a bulletin valid now but stale at the next slot is not
+    committed."""
+    from datetime import UTC, datetime
+    _, store, _ = tmp_env
+    clock = SimClock(epoch=1_800_000_000.0)
+    song = make_item(cfg, store, "song", 300.0)
+    sched = Scheduler(cfg, store, RandomSelector(RNG(4), cfg), clock, RNG(4))
+    sched._append({"item_id": song, "type": "song", "duration_s": 300.0})
+    sched._rebuild_program()
+    stale = datetime.fromtimestamp(clock.wall() + 120, UTC).isoformat()
+    make_item(cfg, store, "news", 19.0, fresh=True, expires_at=stale)
+    assert sched._news_valid() is None

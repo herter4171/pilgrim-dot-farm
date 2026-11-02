@@ -102,3 +102,15 @@ def test_dj_expiry_skips_stale_time_clips(cfg, tmp_env):
     clock2 = SimClock()
     sch2 = Scheduler(cfg, s2, RandomSelector(RNG(2), cfg), clock2, RNG(2))
     assert len(sch2._pick_dj(sch2.build_state())) == 1
+
+
+def test_mentions_clock_table():
+    from pilgrim.pipelines.clocktime import mentions_clock
+    assert mentions_clock("It is about quarter past six in the evening.")
+    assert mentions_clock("Coming up on eleven at night.")
+    assert mentions_clock("Just after ten in the morning, Thistledown.")
+    assert mentions_clock("Good evening from Pilgrim Dot Farm.")
+    assert mentions_clock("It is six thirty.")
+    assert not mentions_clock("The sprinkler is circling slow by the feed store.")
+    assert not mentions_clock("We just played Tractor Roll on Tuesday.")
+    assert not mentions_clock("")

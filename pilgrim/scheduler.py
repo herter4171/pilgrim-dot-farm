@@ -155,10 +155,14 @@ class Scheduler:
         # Availability follows the §5.4 fallback chain: songs/commercials/liners
         # are evergreen and recycle (fresh OR recycled counts as available);
         # dj_talk and news are produced fresh and deplete if unrefilled.
+        # Contextual counts are expiry-aware against the NEXT slot's air time
+        # (A1), so the selector never draws a type whose only stock is stale.
+        air_wall = self._slot_wall(self._total)
         st.inventory_counts = {
             "song": self.store.count_usable_of_type("song"),
-            "dj_talk": self.store.count_fresh_of_type("dj_talk"),
-            "field_report": self.store.count_fresh_of_type("field_report"),
+            "dj_talk": self.store.count_fresh_unexpired_of_type("dj_talk", air_wall),
+            "field_report": self.store.count_fresh_unexpired_of_type(
+                "field_report", air_wall),
             "commercial": self.store.count_usable_of_type("commercial"),
             # station IDs are liners for the draw (§4: a liner is a station ID
             # or a gag line); _pick_liner falls back to them
@@ -270,11 +274,13 @@ class Scheduler:
         return pos - last_end if last_end >= 0 else float("inf")
 
     def _news_valid(self) -> dict | None:
-        # latest not-expired bulletin not yet aired
+        # latest bulletin that will still be valid when it AIRS, not when it is
+        # committed (A1): expiry is checked against the next slot's wall time.
+        air_wall = self._slot_wall(self._total)
         for it in reversed(self.store.list_items("news")):
             exp = _parse_iso(it.get("expires_at"))
-            if exp is not None and exp < self.clock.wall():
-                continue  # expired
+            if exp is not None and exp < air_wall:
+                continue  # would expire before it airs
             fresh = it.get("fresh")
             if fresh:
                 return it
@@ -377,6 +383,14 @@ class Scheduler:
             self._offset += lag
             log.warning("program.starved", extra={"gap_s": round(lag, 1)})
         host_start = self._total
+        # A1 backstop: the picker already filtered against this slot, so this
+        # should never fire. Log it if it does; never drop the item (that would
+        # open a gap) and never wait on a render.
+        exp = _parse_iso(e.get("expires_at"))
+        if exp is not None and exp < self._slot_wall(host_start):
+            log.warning("program.expired_commit", extra={
+                "item_id": item_id, "item_type": e["type"],
+                "expires_at": e.get("expires_at")})
         seq = self.store.append_program(item_id, e["type"], e["duration_s"])
         self._air_clock += e["duration_s"]  # monotonic: never resets on trim
         self._plan_sfx(seq, e, host_start)
@@ -672,22 +686,25 @@ class Scheduler:
         return self._pick_fresh_talk("dj_talk")
 
     def _pick_fresh_talk(self, type_: str) -> list[dict]:
-        """An unaired, unexpired contextual clip (dj_talk / field_report).
-        Consumed on commit: contextual talk is never recycled (AGENTS rule 10)."""
-        now_wall = self.clock.wall()
+        """An unaired clip that is still valid when it AIRS (not when it is
+        committed), newest first (revision 4). Consumed on commit: contextual
+        talk is never recycled (AGENTS rule 10)."""
+        air_wall = self._slot_wall(self._total)
         items = []
         for i in self.store.list_items(type_):
             if not i["fresh"] or i["emergency"]:
                 continue
             exp = _parse_iso(i.get("expires_at"))
-            if exp is not None and exp < now_wall:
-                continue  # time-mention clip expired (OVERHAUL 5.3)
+            if exp is not None and exp < air_wall:
+                continue  # would expire before it airs (A1)
             items.append(i)
         if not items:
             return []
-        it = self.rng.choice(items)
+        # Newest first: the producer makes ~15/hour and the station airs ~8.6,
+        # so a uniform draw let 14-minute-old clips air as often as fresh ones.
+        it = max(items, key=lambda i: i["id"])
         return [{"item_id": it["id"], "type": type_, "duration_s": it["duration_s"],
-                 "consume": True}]
+                 "consume": True, "expires_at": it.get("expires_at")}]
 
     def _pick_commercial_break(self, st: PlayoutState) -> list[dict]:
         items = [i for i in self.store.list_items("commercial") if not i["emergency"]]
@@ -730,7 +747,7 @@ class Scheduler:
         # (playout never blocks). Producer pre-renders news into a 'news' audio item;
         # here we just commit the pre-rendered cliplike item if it exists.
         return [{"item_id": item_id, "type": "news", "duration_s": ni["duration_s"],
-                 "consume": True}]
+                 "consume": True, "expires_at": ni.get("expires_at")}]
 
     # ------------------------------------------------- request splice (§5.2)
     def _splice_ready_requests(self) -> None:

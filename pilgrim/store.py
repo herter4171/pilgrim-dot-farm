@@ -312,6 +312,25 @@ class Store:
                 "AND retired=0",
                 (type_,)).fetchone()[0])
 
+    def count_fresh_unexpired_of_type(self, type_: str, now_wall: float) -> int:
+        """Unaired, non-emergency items still valid at `now_wall`.
+
+        Contextual types (dj_talk, field_report, news) deplete: an expired clip
+        is not stock, so the selector and /api/health must agree with
+        `Producer._count_fresh_unexpired` (RADIO §5.2, OVERHAUL 5.3).
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT expires_at FROM items WHERE type=? AND fresh=1 "
+                "AND emergency=0 AND retired=0", (type_,)).fetchall()
+        n = 0
+        for r in rows:
+            exp = _parse_epoch(r["expires_at"])
+            if exp is not None and exp <= now_wall:
+                continue
+            n += 1
+        return n
+
     def count_usable_of_type(self, type_: str) -> int:
         """Evergreen types recycle: any non-emergency item is usable whatever its
         fresh flag (RADIO.md §5.4 fallback chain).

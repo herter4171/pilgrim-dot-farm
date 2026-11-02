@@ -23,7 +23,7 @@ import httpx
 from pilgrim import genres
 from pilgrim.config import RNG, Clock, Config
 from pilgrim.logging_setup import err_text
-from pilgrim.pipelines.clocktime import current_local_time, spoken_time
+from pilgrim.pipelines.clocktime import current_local_time, mentions_clock, spoken_time
 from pilgrim.pipelines.llm import LLM, LLMTruncated
 from pilgrim.pipelines.news import NewsPipeline
 from pilgrim.pipelines.sfx import SFX_HOST_TYPES, SfxPipeline, beat_offset
@@ -284,16 +284,21 @@ class Producer:
         except Exception:
             pass  # never block DJ production on the time
         context = "\n".join(context_parts)
-        # DJ clips that mention the time expire, so a stale 'just after ten'
-        # never airs hours later (5.3). Based on the injected clock so tests on
-        # SimClock and production agree about what 'now' is.
-        wall = self.clock.wall()
-        expires = (datetime.fromtimestamp(wall, UTC) + timedelta(
-            seconds=self.cfg.talk.time_mention_ttl_s)).isoformat()
+        # Expiry is stamped AFTER the LLM call (revision 3), and only when the
+        # copy actually states the clock (A2). A clip that never mentions a
+        # time is not perishable, so it may wait on the shelf instead of dying
+        # after 15 minutes — that was 43% of last run's renders.
         for _ in range(max(0, need)):
             try:
                 item = await self.voice.produce_item("dj_talk", 18.0, context=context)
-                self._store_voice(item, "dj_talk", evergreen=True, expires_at=expires)
+                text = (item.get("meta") or {}).get("text") or ""
+                expires = None
+                if mentions_clock(text):
+                    wall = self.clock.wall()  # after the LLM call, not before
+                    expires = (datetime.fromtimestamp(wall, UTC) + timedelta(
+                        seconds=self.cfg.talk.time_mention_ttl_s)).isoformat()
+                self._store_voice(item, "dj_talk", evergreen=True,
+                                  expires_at=expires)
                 log.info("produced dj_talk %.1fs", item["duration_s"])
             except Exception as e:
                 log.warning("dj talk production failed: %s", err_text(e))

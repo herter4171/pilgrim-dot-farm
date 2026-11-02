@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import re
 from collections.abc import Callable
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -110,3 +111,27 @@ def spoken_time(dt: datetime) -> str:
     if mm == 55:
         return f"about five to {nxt} {period}"
     return f"just after {base} {period}"
+
+
+# Vocabulary spoken_time can emit, plus the greeting forms news/field use.
+# Deliberately conservative: a false negative just means a clip waits on the
+# shelf instead of expiring, which is the safe direction.
+_CLOCK = re.compile(
+    r"\b(?:just after|coming up on)\b"
+    r"|\b(?:ten|twenty|twenty-five|quarter|half|five)\s+(?:past|to)\b"
+    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
+    r"(?:o'clock|thirty|fifteen|forty-five)\b"
+    r"|\bin the (?:morning|afternoon|evening)\b"
+    r"|\bat night\b"
+    r"|\bgood (?:morning|afternoon|evening)\b",
+    re.IGNORECASE)
+
+
+def mentions_clock(text: str) -> bool:
+    """True when copy states the clock or the day part, so it must expire.
+
+    Used at production time (revision 3: stamp `expires_at` *after* the LLM
+    call, and only when the copy actually says a time). Copy that never
+    mentions a time is not perishable and may wait on the shelf.
+    """
+    return bool(_CLOCK.search(text or ""))
