@@ -225,6 +225,30 @@ class Liners(BaseModel):
 class Promotions(BaseModel):
     request_line_gap_s: int = 2700   # one request-line plug per 45 min
     promo_min_spacing_s: int = 600   # no two promos closer than this
+    # Steady self-promotion for the paid tier (ANNOUNCER, operator: "advertise
+    # steadily, fold it into the other bullshit"). Copy only: no payment code
+    # ever runs in playout (AGENTS rule 11).
+    paid_tier_gap_s: int = 1800      # one paid-tier promo per 30 min
+    paid_tier_lines: list[str] = Field(default_factory=lambda: [
+        "Your lyrics, your style, ahead of the free line. Priority requests "
+        "at Pilgrim Dot Farm, about tree fiddy.",
+        "Pilgrim Dot Farm runs on about tree fiddy at a time. Priority "
+        "request, and the song is yours.",
+        "You write it, we play it. Priority requests go ahead of the free "
+        "line at Pilgrim Dot Farm. Tree fiddy, name your price.",
+    ])
+    # The Tree Fiddy Report: the administrator's weekly count, voiced by the
+    # operator character (am_justin). Real numbers, never invented.
+    tree_fiddy_gap_s: int = 3600     # once an hour
+    tree_fiddy_lines: list[str] = Field(default_factory=lambda: [
+        "The Tree Fiddy Report from the administrator: {n} priority "
+        "request{s} aired this week, and the line is open. Your lyrics, "
+        "ahead of the free line. About tree fiddy at Pilgrim Dot Farm.",
+    ])
+    tree_fiddy_none: str = (
+        "The Tree Fiddy Report from the administrator: no priority requests "
+        "yet this week. Be the first: your lyrics, ahead of the free line, "
+        "about tree fiddy at Pilgrim Dot Farm.")
     campaigns: list[Campaign] = Field(default_factory=list)
     # Code-written request-line plugs (no LLM, AGENTS rule 11: copy only).
     request_line_lines: list[str] = Field(default_factory=lambda: [

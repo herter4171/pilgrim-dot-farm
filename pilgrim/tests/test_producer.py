@@ -627,21 +627,48 @@ def test_default_library_cap_is_100(cfg):
 
 
 
-def test_ensure_promos_request_line_when_no_campaign(cfg, tmp_env):
-    """With no active campaign the producer fills the request-line plugs from
-    code-written config lines (no LLM, no expiry)."""
+def test_ensure_promos_steady_kinds_without_a_campaign(cfg, tmp_env):
+    """With no active campaign the producer fills the steady self-promotion:
+    request-line plugs, paid-tier promos and one Tree Fiddy Report. All are
+    code-written (no LLM) and the report uses the administrator's voice."""
     import asyncio
     import json
     cfg.promotions.campaigns = []
     _, store, _ = tmp_env
-    prod = make_producer(cfg, store, FakeVoice())
+    voice = FakeVoice()
+    prod = make_producer(cfg, store, voice)
     asyncio.run(prod.ensure_promos())
     items = store.list_items("promo")
-    assert len(items) == cfg.inventory.promos_min
-    meta = json.loads(items[0]["meta_json"])
-    assert meta["kind"] == "request_line"
-    assert items[0]["expires_at"] is None
-    assert cfg.station.name in meta["text"]
+    kinds = [json.loads(i["meta_json"])["kind"] for i in items]
+    assert kinds.count("request_line") == 2
+    assert kinds.count("paid_tier") == 2
+    assert kinds.count("tree_fiddy") == 1
+    tf = [i for i in items if json.loads(i["meta_json"])["kind"] == "tree_fiddy"][0]
+    meta = json.loads(tf["meta_json"])
+    assert meta["paid_aired_7d"] == 0
+    assert "no priority requests" in meta["text"]
+    assert "am_justin" in voice.rendered_voices
+    paid = [i for i in items if json.loads(i["meta_json"])["kind"] == "paid_tier"]
+    assert all(cfg.station.name in json.loads(i["meta_json"])["text"]
+               for i in paid)
+
+
+def test_tree_fiddy_report_counts_real_paid_airings(cfg, tmp_env):
+    import asyncio
+    import json
+    cfg.promotions.campaigns = []
+    _, store, _ = tmp_env
+    rid = store.add_request("a song about the night bus", None, priority=1)["id"]
+    store.mark_request_aired(rid)
+    import time as _time
+    prod = make_producer(cfg, store, FakeVoice(),
+                         clock_override=SimClock(epoch=_time.time()))
+    asyncio.run(prod.ensure_promos())
+    tf = [i for i in store.list_items("promo")
+          if json.loads(i["meta_json"])["kind"] == "tree_fiddy"][0]
+    meta = json.loads(tf["meta_json"])
+    assert meta["paid_aired_7d"] == 1
+    assert "1 priority request aired" in meta["text"]
 
 
 def test_ensure_promos_campaign_fills_day_tokens_and_expires_at_midnight(cfg, tmp_env):
@@ -664,7 +691,8 @@ def test_ensure_promos_campaign_fills_day_tokens_and_expires_at_midnight(cfg, tm
     prod = make_producer(cfg, store, FakeVoice(),
                          clock_override=SimClock(epoch=_time.time()))
     asyncio.run(prod.ensure_promos())
-    items = store.list_items("promo")
+    items = [i for i in store.list_items("promo")
+             if json.loads(i["meta_json"]).get("kind") == "campaign"]
     assert len(items) == cfg.inventory.promos_min
     meta = json.loads(items[0]["meta_json"])
     assert meta["campaign_id"] == "t"

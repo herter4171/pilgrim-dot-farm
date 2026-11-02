@@ -762,6 +762,15 @@ class Store:
                 f"SELECT * FROM requests WHERE status='ready' {QUEUE_ORDER}").fetchall()
         return [dict(r) for r in rows]
 
+    def count_paid_aired_since(self, since_iso: str) -> int:
+        """Priority (paid) requests that aired at/after `since_iso`. Feeds the
+        Tree Fiddy Report; never names or emails."""
+        with self._lock:
+            return int(self._conn.execute(
+                "SELECT COUNT(*) FROM requests WHERE priority=1 AND status='aired' "
+                "AND aired_at IS NOT NULL AND aired_at >= ?",
+                (since_iso,)).fetchone()[0])
+
     def recently_aired_request(self, since_iso: str) -> dict[str, Any] | None:
         """The most recently aired request at/after `since_iso` (wall ISO), if
         any. Used for the DJ's back-announce (never a name or email)."""

@@ -806,9 +806,9 @@ def test_promo_spacing_and_request_line_gap(cfg, tmp_env):
     sched._last_promo_air = sched._air_clock - 100  # inside 600 s
     assert not sched._promo_available()
     sched._last_promo_air = sched._air_clock - 1000
-    sched._last_request_line_air = sched._air_clock - 100  # inside 2700 s
+    sched._last_promo_kind_air["request_line"] = sched._air_clock - 100
     assert not sched._promo_available()
-    sched._last_request_line_air = sched._air_clock - 3000
+    sched._last_promo_kind_air["request_line"] = sched._air_clock - 3000
     assert sched._promo_available()
 
 
@@ -825,3 +825,21 @@ def test_promo_never_adjacent_to_dj_talk(cfg):
     st.available.update(song=False, dj_talk=True, promo=False)
     st.recent_types = ["promo"]
     assert sel.choose_next(st) == "dj_talk"
+
+
+def test_promo_kinds_have_their_own_gaps(cfg, tmp_env):
+    """Steady self-promotion: the paid-tier promo and the Tree Fiddy Report
+    each have their own spacing, independent of the campaign/global gap."""
+    _, store, _ = tmp_env
+    make_item(cfg, store, "promo", 12.0, meta={"kind": "paid_tier"})
+    make_item(cfg, store, "promo", 20.0, meta={"kind": "tree_fiddy"})
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(1), cfg), clock, RNG(1))
+    assert sched._promo_available()
+    sched._last_promo_kind_air["paid_tier"] = sched._air_clock - 100
+    sched._last_promo_kind_air["tree_fiddy"] = sched._air_clock - 100
+    assert not sched._promo_available()
+    sched._last_promo_kind_air["paid_tier"] = sched._air_clock - 2000
+    assert sched._promo_available()
+    picked = sched._pick_promo()
+    assert [p["promo_kind"] for p in picked] == ["paid_tier"]

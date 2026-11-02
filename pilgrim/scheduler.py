@@ -92,6 +92,8 @@ class Scheduler:
         # re-derives the calendar target from the committed window).
         self._last_promo_air = -1e9
         self._last_request_line_air = -1e9
+        self._last_promo_kind_air: dict[str, float] = {}
+        self._promo_log: list[tuple[float, str]] = []  # (program start, kind)
         self._last_time_check_air = -1e9
         self._last_liner_air: dict[int, float] = {}
         self._air_clock = 0.0  # monotonic committed-program time (independent of trimming)
@@ -412,8 +414,11 @@ class Scheduler:
         if e.get("consume"):
             self.store.mark_aired(item_id)
         if e["type"] == "promo":
+            kind = e.get("promo_kind") or "campaign"
             self._last_promo_air = host_start
-            if e.get("promo_kind") == "request_line":
+            self._last_promo_kind_air[kind] = host_start
+            self._promo_log.append((host_start, kind))
+            if kind == "request_line":
                 self._last_request_line_air = host_start
         if e["type"] == "time_check":
             self._last_time_check_air = host_start
@@ -775,21 +780,38 @@ class Scheduler:
             out.append(it)
         return out
 
+    def _promo_kind_gap(self, kind: str) -> float:
+        p = self.cfg.promotions
+        if kind == "request_line":
+            return float(p.request_line_gap_s)
+        if kind == "paid_tier":
+            return float(p.paid_tier_gap_s)
+        if kind == "tree_fiddy":
+            return float(p.tree_fiddy_gap_s)
+        return float(p.promo_min_spacing_s)  # campaign
+
+    def _due_promos(self) -> list[tuple[dict, dict]]:
+        """Promos whose per-kind spacing has passed, newest first."""
+        now = self._air_clock
+        out: list[tuple[dict, dict]] = []
+        for it in self._promos():
+            meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            kind = meta.get("kind") or "campaign"
+            last = self._last_promo_kind_air.get(kind, -1e9)
+            if now - last < self._promo_kind_gap(kind):
+                continue
+            out.append((it, meta))
+        return out
+
     def _promo_available(self) -> bool:
         if self._air_clock - self._last_promo_air < self.cfg.promotions.promo_min_spacing_s:
             return False
-        for it in self._promos():
-            meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
-            if meta.get("kind") == "request_line" and (
-                    self._air_clock - self._last_request_line_air
-                    < self.cfg.promotions.request_line_gap_s):
-                continue
-            return True
-        return False
+        return bool(self._due_promos())
 
     def _campaign_due(self) -> bool:
         """An active campaign is under its per-hour target for the committed
-        hour (a soft nudge; never forced past a constraint)."""
+        hour (a soft nudge; never forced past a constraint). Counts only
+        campaign promos: the steady kinds have their own gaps."""
         air_wall = self._slot_wall(self._total)
         camp = active_campaign(air_wall, self.cfg.station.timezone,
                                self.cfg.promotions.campaigns)
@@ -799,26 +821,24 @@ class Scheduler:
         if target <= 0:
             return False
         cutoff = self._total - 3600.0
-        aired = sum(1 for i, r in enumerate(self._items)
-                    if r["type"] == "promo" and self._cum[i] >= cutoff)
+        self._promo_log = [(s, k) for s, k in self._promo_log if s >= cutoff]
+        aired = sum(1 for _s, k in self._promo_log if k == "campaign")
         return aired < target
 
     def _pick_promo(self) -> list[dict]:
-        items: list[tuple[dict, dict]] = []
-        for it in self._promos():
-            meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
-            if meta.get("kind") == "request_line" and (
-                    self._air_clock - self._last_request_line_air
-                    < self.cfg.promotions.request_line_gap_s):
-                continue
-            items.append((it, meta))
+        items = self._due_promos()
         if not items:
             return []
-        it, meta = max(items, key=lambda p: p[0]["id"])  # newest first
+        now = self._air_clock
+        # the most overdue kind wins; newest first inside that kind
+        def rank(p: tuple[dict, dict]) -> tuple[float, int]:
+            kind = p[1].get("kind") or "campaign"
+            return (now - self._last_promo_kind_air.get(kind, -1e9), p[0]["id"])
+        it, meta = max(items, key=rank)
         return [{"item_id": it["id"], "type": "promo",
                  "duration_s": it["duration_s"], "consume": True,
                  "expires_at": it.get("expires_at"),
-                 "promo_kind": meta.get("kind")}]
+                 "promo_kind": meta.get("kind") or "campaign"}]
 
     def _near_mark(self, air_wall: float) -> bool:
         """Does this wall time sit within the window of a configured clock mark

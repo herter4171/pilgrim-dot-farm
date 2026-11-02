@@ -80,9 +80,12 @@ def run(hours=24):
     clock = SimClock()
     # Promos (recyclable) and clock checks for the whole run, so the promo and
     # time_check paths are exercised (ANNOUNCER_OVERHAUL).
-    for _ in range(6):
-        store.add_item(type_="promo", media_path="promo.flac", duration_s=12.0,
-                       evergreen=True, meta={"kind": "request_line"})
+    for kind in ("request_line", "paid_tier"):
+        for _ in range(2):
+            store.add_item(type_="promo", media_path="promo.flac", duration_s=12.0,
+                           evergreen=True, meta={"kind": kind})
+    store.add_item(type_="promo", media_path="promo.flac", duration_s=20.0,
+                   evergreen=False, meta={"kind": "tree_fiddy"})
     buckets = [int((clock.wall() + k * 300) // 300 * 300)
                for k in range(24 * 12 + 12)]
     for b in buckets:
@@ -229,6 +232,28 @@ def run(hours=24):
                 if 0 <= j < len(types) and types[j] in ("dj_talk", "news", "time_check"):
                     fails.append(f"time_check adjacent to dj_talk/news/time_check: "
                                  f"{types[max(0, i - 2):i + 3]}")
+
+    # steady self-promotion: each kind keeps its own gap, and each airs
+    promo_gaps = {"request_line": cfg.promotions.request_line_gap_s,
+                  "paid_tier": cfg.promotions.paid_tier_gap_s,
+                  "tree_fiddy": cfg.promotions.tree_fiddy_gap_s}
+    t_cursor = 0.0
+    last_kind: dict[str, float] = {}
+    kinds_seen: set[str] = set()
+    for _seq, t, dur, iid in seen:
+        if t == "promo":
+            it = store.get_item(iid)
+            meta = _json.loads(it["meta_json"] or "{}") if it else {}
+            kind = meta.get("kind") or "campaign"
+            kinds_seen.add(kind)
+            gap = promo_gaps.get(kind, cfg.promotions.promo_min_spacing_s)
+            if kind in last_kind and t_cursor - last_kind[kind] < gap:
+                fails.append(f"promo kind {kind} aired inside its gap")
+            last_kind[kind] = t_cursor
+        t_cursor += dur
+    for kind in ("paid_tier", "tree_fiddy"):
+        if kind not in kinds_seen:
+            fails.append(f"no {kind} promo aired in 24h")
 
     # clock checks must speak the mark they were rendered for (window only)
     wall0 = clock.wall() - hours * 3600

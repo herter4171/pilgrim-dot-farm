@@ -123,9 +123,15 @@ Segment types the selector chooses from:
   rotated topic. **Time-free**: the clock is carried by `time_check` only.
 - `time_check` — a 3–5 s clock read, **code-written** (no LLM), airing at
   :00/:15/:30/:45 (ANNOUNCER §A4).
-- `promo` — a 10–20 s station promo; `meta.kind` ∈ `campaign | request_line`.
+- `promo` — a 10–20 s station promo; `meta.kind` ∈
+  `campaign | request_line | paid_tier | tree_fiddy`.
   Campaign promos are LLM-written with code-filled day tokens and expire at
-  local midnight; request-line plugs are code-written config lines.
+  local midnight. Request-line, paid-tier and Tree Fiddy Report promos are
+  code-written config lines (no LLM). The Tree Fiddy Report is voiced by the
+  operator character (Jimmany, `am_justin`), carries the real count of paid
+  requests aired in the last 7 days, and is regenerated hourly. Paid-tier
+  promotion is **copy only**: no payment code ever runs in playout (AGENTS
+  rule 11), and it never names a buyer or email.
 - `intro` — the named song intro; **evergreen** (recycled with its song), except
   a listener-request intro, which is one-shot.
 - `news` — the current bulletin, if one is valid.
@@ -255,7 +261,10 @@ Constraints (applied before drawing):
   `commercial_break`.
 - `promo` never adjacent to `dj_talk` or another `promo`, and is held back after
   a `serious` bulletin. A campaign under its `per_hour` target triples the
-  promo weight (soft nudge; never forced past a constraint).
+  promo weight (soft nudge; never forced past a constraint). Each promo kind
+  has its own spacing: campaign/global `promo_min_spacing_s` (600),
+  `request_line_gap_s` (2,700), `paid_tier_gap_s` (1,800) and
+  `tree_fiddy_gap_s` (3,600). The most overdue due kind wins.
 - `time_check` never adjacent to `dj_talk`, `news`, or another `time_check`.
   It is **due** only when the next slot airs within
   `talk.time_check_window_s` of a configured mark (`time_check_marks_min`,
@@ -426,7 +435,7 @@ target, per host worker.
 | Current news bulletin | 1 valid; refreshed every 30 min |
 | Commercials (library) | ≥ 20 at launch; top up slowly (they repeat on purpose) |
 | Liners, by length bucket (3 / 5 / 10 / 15 / 30 s) | ≥ `inventory.liners_per_bucket` each (4 → 20 total) |
-| Promos | ≥ `inventory.promos_min` (4) per source: campaign or request-line |
+| Promos | campaign: `inventory.promos_min` (4) while the ramp runs; steady kinds: 2 request-line, 2 paid-tier, 1 Tree Fiddy Report |
 | Named song intros | one per song, rendered once with the song, evergreen |
 | Clock reads | one variant per 5-minute bucket for the next hour (12) |
 | Unaired field reports | ≥ `inventory.field_reports_min` (1) |
@@ -1209,6 +1218,12 @@ liners:                       # ANNOUNCER B4: the pool is small, so a repeat
 promotions:                   # ANNOUNCER C1: campaign calendar, config-driven
   request_line_gap_s: 2700    # one request-line plug per 45 min
   promo_min_spacing_s: 600    # no two promos closer than this
+  paid_tier_gap_s: 1800       # steady paid-tier promo, every 30 min
+  tree_fiddy_gap_s: 3600      # the administrator's report, once an hour
+  paid_tier_lines:            # code-written, copy only (AGENTS rule 11)
+    - "Your lyrics, your style, ahead of the free line. Priority requests at Pilgrim Dot Farm, about tree fiddy."
+  tree_fiddy_lines:           # {n} paid requests aired in the last 7 days
+    - "The Tree Fiddy Report from the administrator: {n} priority request{s} aired this week, and the line is open. About tree fiddy at Pilgrim Dot Farm."
   request_line_lines: ["The request line is open at Pilgrim Dot Farm."]
   campaigns:
     - id: thanksgiving-2026
@@ -1456,6 +1471,10 @@ Random selection is chosen for Phase 1 partly because it is easy to test.
 - **ANNOUNCER §C1/C2 (sim):** promo airings follow the campaign ramp; every
   campaign promo contains the station name and the label; a `promo` is never
   adjacent to `dj_talk` or another `promo`.
+- **Steady self-promotion (sim):** each promo kind keeps its own gap
+  (`request_line_gap_s`, `paid_tier_gap_s`, `tree_fiddy_gap_s`); paid-tier and
+  Tree Fiddy promos both air in a 24 h run; the Tree Fiddy Report carries the
+  real 7-day paid count.
 - **ANNOUNCER §A5 (sim/DB):** a greeting never contradicts the air time when
   the same voice spoke immediately before; a new voice may greet.
 - **ANNOUNCER §B4/B5 (sim):** no liner repeats inside

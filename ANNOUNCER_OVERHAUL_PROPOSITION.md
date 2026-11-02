@@ -969,6 +969,28 @@ Not in this change. When it lands:
 - `/api/health` `inventory` gains `promo: {have, target, campaign_id}`.
 - RADIO.md §11 + §12 updated in the same change (AGENTS rule 8).
 
+#### C7 — Steady paid-tier promotion (shipped 2026-11-01)
+
+Operator: "advertise our channel steadily; incorporate it with the other
+bullshit." The paid tier is the thing that keeps the station on the air, so it
+gets permanent airtime, not a campaign burst:
+
+| Kind | Length | Cadence | Copy |
+|---|---|---|---|
+| `paid_tier` promo | 12–14 s | every 30 min | "Your lyrics, your style, ahead of the free line… about tree fiddy." |
+| `tree_fiddy` report | ~20 s | hourly | The administrator's real 7-day paid count, in `am_justin` |
+| `request_line` plug | 8 s | every 45 min | The free request line |
+
+The Tree Fiddy Report is voiced by the operator character (Jimmany, `am_justin`)
+and counts actual paid requests aired in the last 7 days — never invented, and
+never a name or email. All three are **code-written config lines**: no LLM, no
+Stripe, no payment code in playout (AGENTS rule 11). The scheduler gives each
+kind its own gap and picks the most overdue due kind, so promotion is steady
+rather than clumped.
+
+Copy stays honest: "$3.50 suggested, $3.00 minimum", "ahead of the free line",
+no "instant" promise (moderation runs before Checkout).
+
 ### D. Testing
 
 - **Sim (§15 additions):** no expired item airs (air-slot expiry); every
@@ -1126,6 +1148,9 @@ change and needs RADIO.md §14 plus a migration.
 - **Q4 — Liners: `liners_per_bucket: 4`** (20 total).
 - **Q5 — Thanksgiving angles: approved, pandering encouraged.**
   Ramp starts **2026-11-01** (operator: "start it today, I want to hear it").
+- **Q8 — Paid-tier promotion: steady, folded into the normal promo mix.**
+  `paid_tier` every 30 min, Tree Fiddy Report hourly in `am_justin`, request
+  line every 45 min. Site untouched.
 - **Q6 — No Thanksgiving song steering.** Requests are fulfilled normally.
 - **Q7 — Clock reads: 4/h at :00/:15/:30/:45.** Shipped; the sim shows
   97/day = 4.04/h, each speaking its own 5-minute bucket.
