@@ -54,6 +54,8 @@ class PlayoutState:
         self.near_top_of_hour: bool = False
         # an active campaign is under its per-hour promo target
         self.campaign_due: bool = False
+        # a steady self-promo kind (paid tier / Tree Fiddy) is past its gap
+        self.promo_steady_due: bool = False
         # the next slot sits inside a clock mark's window and no check aired yet
         self.time_check_due: bool = False
 
@@ -162,6 +164,8 @@ class RandomSelector:
         # bump here just makes the due mark win.
         if state.campaign_due and "promo" in available:
             weights["promo"] = weights.get("promo", 0.0) * 3
+        if state.promo_steady_due and "promo" in available:
+            weights["promo"] = weights.get("promo", 0.0) * 2
         if state.time_check_due and "time_check" in available:
             weights["time_check"] = weights.get("time_check", 0.0) * 4
 

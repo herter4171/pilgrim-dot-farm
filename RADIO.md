@@ -224,7 +224,10 @@ Constraints (applied before drawing):
   | 1 | Fresh (never-aired) song | **Newest first** (LIFO); airs at the next song slot. |
   | 2 | Recycled song | **Weighted random** over songs that clear spacing. |
 
-  Tier-2 weight is `youth * (wait_floor + (1 - wait_floor) * wait)`
+  **Starvation guard:** an aired song whose wait reaches
+  `song_rotation.starvation_h` (6 h) minus `starvation_margin_s` (600 s) is
+  picked outright, longest wait first, so weighting can never make a song
+  disappear. Tier-2 weight is `youth * (wait_floor + (1 - wait_floor) * wait)`
   (`playout.song_rotation`, §12): **youth** halves every `half_life_h` hours
   (floored at `youth_floor` so no song starves); **wait** grows 0..1 while a
   song goes unheard, saturating at `wait_target_h` (a never-aired song counts

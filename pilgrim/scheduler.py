@@ -216,6 +216,7 @@ class Scheduler:
         st.near_top_of_hour = self._near_top_of_hour()
         st.time_check_due = st.available["time_check"]
         st.campaign_due = self._campaign_due()
+        st.promo_steady_due = self._steady_promo_due()
         return st
 
     # ------------------------------------------------- words between songs
@@ -590,6 +591,17 @@ class Scheduler:
         # relax toward the 15-min floor (same relaxation as today). Weighting
         # never breaks the floor — it only orders what already passes.
         now = self._slot_wall(self._total)
+        # PRIORITIES §6 starvation guard: if an aired song has waited past
+        # starvation_h, it goes next regardless of the weighted draw. Spacing
+        # is already satisfied (this is the eligible pool).
+        rot = self.cfg.playout.song_rotation
+        limit = rot.starvation_h * 3600.0 - rot.starvation_margin_s
+        starving = [i for i in pool
+                    if i.get("last_aired_at") is not None
+                    and now - i["last_aired_at"] >= limit]
+        if starving:
+            cand = min(starving, key=lambda i: i["last_aired_at"])
+            return self._glue_intro(cand["id"], cand["duration_s"])
         min_gap = float(self.cfg.playout.song_min_spacing_s[0])
         spaced = [i for i in pool
                   if i.get("last_aired_at") is None or now - i["last_aired_at"] >= min_gap]
@@ -824,6 +836,19 @@ class Scheduler:
         self._promo_log = [(s, k) for s, k in self._promo_log if s >= cutoff]
         aired = sum(1 for _s, k in self._promo_log if k == "campaign")
         return aired < target
+
+    def _steady_promo_due(self) -> bool:
+        """A paid-tier or Tree Fiddy promo is past its own gap, so the promo
+        weight gets a nudge (steady self-promotion, not a burst)."""
+        now = self._air_clock
+        for it in self._promos():
+            meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            kind = meta.get("kind")
+            if kind not in ("paid_tier", "tree_fiddy"):
+                continue
+            if now - self._last_promo_kind_air.get(kind, -1e9) >= self._promo_kind_gap(kind):
+                return True
+        return False
 
     def _pick_promo(self) -> list[dict]:
         items = self._due_promos()

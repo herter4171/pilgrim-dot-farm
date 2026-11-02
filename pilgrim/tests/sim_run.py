@@ -321,8 +321,10 @@ def run(hours=24):
     n_song_airings = len([a for a in seen if a[1] == "song"])
     mean_gap = (hours * 3600) / n_song_airings if n_song_airings else 0.0
     guard = max(6 * 3600, total_songs * mean_gap)
+    # 1 s of float tolerance: the guard is "no longer than 6 h", and a song
+    # that airs exactly at the bound must not fail on accumulated clock noise.
     for iid, gap in song_gap.items():
-        if gap > guard:
+        if gap > guard + 1.0:
             fails.append(f"song {iid} went {gap/3600:.1f}h between airs "
                          f"(starvation guard {guard/3600:.1f}h)")
 

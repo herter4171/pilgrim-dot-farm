@@ -148,6 +148,13 @@ class SongRotation(BaseModel):
     youth_floor: float = 0.1
     wait_target_h: float = 3.0
     wait_floor: float = 0.2
+    # PRIORITIES §6 starvation guard: an aired song that has waited this long
+    # is picked outright (longest wait first), so the weighting can never let
+    # a song disappear.
+    starvation_h: float = 6.0
+    # React this long BEFORE the bound: the guard is checked at song slots, so
+    # waiting until exactly 6 h would already overshoot by one slot gap.
+    starvation_margin_s: int = 600
 
 
 class Playout(BaseModel):
