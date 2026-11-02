@@ -320,9 +320,13 @@ class Store:
                 "SELECT meta_json FROM items WHERE id=?", (item_id,)).fetchone()
             meta = json.loads(r["meta_json"]) if r and r["meta_json"] else {}
             meta["art"] = art_meta
+            # A re-render (art_backfill --force) writes new bytes, so any
+            # previous upload no longer matches: clear the key and let the
+            # publisher upload the new JPEG (same rule as set_media_file).
             self._conn.execute(
-                "UPDATE items SET art_path=?, meta_json=?, art_attempted_at=NULL "
-                "WHERE id=?", (art_path, json.dumps(meta), item_id))
+                "UPDATE items SET art_path=?, meta_json=?, art_attempted_at=NULL, "
+                "art_s3_key=NULL, art_uploaded_at=NULL WHERE id=?",
+                (art_path, json.dumps(meta), item_id))
             self._conn.commit()
 
     def set_art_attempted(self, item_id: int, when: float) -> None:

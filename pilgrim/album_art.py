@@ -178,12 +178,15 @@ class ArtWorker:
         return {"backend": self.backend}
 
     # -- one song ----------------------------------------------------------
-    async def process(self, item: dict[str, Any]) -> bool:
+    async def process(self, item: dict[str, Any], seed: int | None = None) -> bool:
         """Render one song's cover. Returns True on success; records a failed
-        attempt (back-off) and returns False otherwise. Never raises."""
+        attempt (back-off) and returns False otherwise. Never raises.
+
+        `seed` overrides the deterministic per-item seed (art_backfill --seed).
+        """
         iid = int(item["id"])
         title, artist = scene_texts(item)
-        seed = art_seed(iid)
+        seed = art_seed(iid) if seed is None else int(seed)
         try:
             free = self._free_gb()
         except Exception:  # noqa: BLE001

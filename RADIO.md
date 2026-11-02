@@ -773,6 +773,11 @@ S3 is the source of truth for listener audio; the M5 no longer streams it
   sends `art_url: ""` until the upload lands, and art is cosmetic, so a song
   simply airs without a cover meanwhile.
 - Nothing is deleted from S3 yet (no lifecycle; operator decision 2026-11-01).
+- Cover-art backfill: `make art-backfill ART_ARGS="--apply --limit N"` (dry
+  run by default; `--item ID --force --seed N` re-renders one song). It reuses
+  the worker's per-song path and memory gate, is resumable, and refuses
+  `--apply` while the live worker holds a fresh lease (two renderers must never
+  contend for the single-flight FLUX server).
 - Backfill: `make mp3-migrate MIGRATE_ARGS="--apply --upload"`
   (`pilgrim/tools/mp3_migrate.py`) encodes an MP3 next to every non-emergency
   FLAC, repoints the row (after a SQLite `.backup`), and uploads. Resumable.
@@ -796,7 +801,7 @@ stays reachable on small screens:
 art frame** above the play row (`min(100%, 300px)`, 1:1, retro-pane border,
 centred; ALBUM_ART.md Step 8). It always shows something — the audible song's
 cover from `art_url` when it has one, else the static station placeholder
-(`web/img/placeholder.svg`) — so the PLAY row never moves when art appears or
+(`web/img/fall.jpg`, a fall-foliage photo) — so the PLAY row never moves when art appears or
 changes. The cover swaps from the same audio-clock playhead decision as the
 song label (never the buffered next song early), is preloaded when the item is
 decoded ahead, and an image load error falls back to the placeholder

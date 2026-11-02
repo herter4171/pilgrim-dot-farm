@@ -3,7 +3,7 @@ PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
 FFMPEG := $(HOME)/bin/ffmpeg
 
-.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status media-smoke mp3-migrate
+.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status media-smoke mp3-migrate art-backfill art-smoke reel
 
 # --- setup ---------------------------------------------------------------
 venv:
@@ -81,6 +81,24 @@ smoke:
 # Real S3 + CloudFront round trip of one 2 s tone (RADIO §8.4). Only when asked.
 media-smoke:
 	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tools.media_smoke
+
+# Cover-art backfill (ALBUM_ART.md Step 9). Dry run by default; the live
+# worker renders on its own, this is for deliberate/targeted runs:
+#   make art-backfill ART_ARGS="--apply --limit 20"
+#   make art-backfill ART_ARGS="--item 132 --force --seed 7"
+art-backfill:
+	PATH="$(HOME)/bin:$(PATH)" LITELLM_TOKEN=$$(grep LITELLM_TOKEN .env | cut -d= -f2) \
+		$(PY) -m pilgrim.tools.art_backfill $(ART_ARGS)
+
+# One real FLUX render through S3 + CloudFront (ALBUM_ART.md Step 10).
+# Only when asked: ~40 s of GPU and one S3 object.
+art-smoke:
+	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tools.art_smoke
+
+# Instagram Reel builder (ALBUM_ART.md Step 11; ffmpeg only, never posts):
+#   make reel REEL_ARGS="--item 132 --start 0 --duration 60"
+reel:
+	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tools.make_reel $(REEL_ARGS)
 
 # Library backfill to MP3 + S3 (RADIO §8.4). Dry run by default:
 #   make mp3-migrate MIGRATE_ARGS="--apply --upload"
