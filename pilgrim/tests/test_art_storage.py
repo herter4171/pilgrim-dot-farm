@@ -160,3 +160,71 @@ def test_art_publish_and_counts(tmp_env):
     assert item["art_s3_key"] == "art/a-abc.jpg" and item["art_uploaded_at"]
     assert store.items_to_publish_art() == []
     assert b not in [i["id"] for i in store.items_to_publish_art()]
+
+
+# --------------------------------------------------------------- publishing
+@pytest.mark.asyncio
+async def test_art_publishes_with_the_right_key_and_headers(tmp_env):
+    from pilgrim.media_publish import ART_CONTENT_TYPE, CACHE_CONTROL, MediaPublisher, art_url
+    from pilgrim.tests.fakes.fake_s3 import FakeS3
+
+    cfg, store, tmp = tmp_env
+    cfg.media.bucket = "bucket"
+    cfg.media.public_base_url = "https://cdn.example/"
+    iid = store.add_item(type_="song", media_path=str(tmp / "song_9.mp3"),
+                         duration_s=1, title="T", artist="A")
+    _, jpg = save_art(cfg, encode_png(32, 32), "song_9")
+    store.set_art(iid, str(jpg), {"scene": "s"})
+    s3 = FakeS3()
+    pub = MediaPublisher(cfg, store, s3)
+    assert await pub.publish_pending_art() == 1
+    item = store.get_item(iid)
+    key = item["art_s3_key"]
+    assert key.startswith("art/song_9-") and key.endswith(".jpg")
+    assert s3.headers[key]["ContentType"] == ART_CONTENT_TYPE == "image/jpeg"
+    assert s3.headers[key]["CacheControl"] == CACHE_CONTROL
+    assert art_url(cfg, item) == "https://cdn.example/" + key
+    assert item["art_uploaded_at"]
+    assert store.items_to_publish_art() == []
+    # art_url is "" until uploaded (no origin fallback, ALBUM_ART Step 7)
+    assert art_url(cfg, {**item, "art_s3_key": None}) == ""
+
+
+@pytest.mark.asyncio
+async def test_art_publish_failure_backs_off_and_keeps_the_row(tmp_env):
+    from pilgrim.media_publish import MediaPublisher
+    from pilgrim.tests.fakes.fake_s3 import FakeS3
+
+    cfg, store, tmp = tmp_env
+    cfg.media.bucket = "bucket"
+    cfg.media.public_base_url = "https://cdn.example/"
+    iid = store.add_item(type_="song", media_path=str(tmp / "song_10.mp3"),
+                         duration_s=1, title="T", artist="A")
+    _, jpg = save_art(cfg, encode_png(32, 32), "song_10")
+    store.set_art(iid, str(jpg), {"scene": "s"})
+    s3 = FakeS3()
+    s3.fail_next = 1
+    pub = MediaPublisher(cfg, store, s3)
+    assert await pub.publish_pending_art() == 0
+    item = store.get_item(iid)
+    assert item["art_s3_key"] is None and item["art_uploaded_at"] is None
+    assert [i["id"] for i in store.items_to_publish_art()] == [iid]
+    # the 5-minute back-off keeps it out of the next batch
+    assert await pub.publish_pending_art() == 0
+    pub._failed_art.clear()
+    assert await pub.publish_pending_art() == 1
+
+
+def test_missing_art_file_is_a_failure_not_a_crash(tmp_env):
+    from pilgrim.media_publish import MediaPublisher
+    from pilgrim.tests.fakes.fake_s3 import FakeS3
+
+    cfg, store, tmp = tmp_env
+    cfg.media.bucket = "bucket"
+    iid = store.add_item(type_="song", media_path=str(tmp / "song_11.mp3"),
+                         duration_s=1, title="T", artist="A")
+    store.set_art(iid, str(tmp / "gone.jpg"), {"scene": "s"})
+    pub = MediaPublisher(cfg, store, FakeS3())
+    with pytest.raises(FileNotFoundError):
+        pub.publish_art_item(store.get_item(iid))
+    assert store.get_item(iid)["art_s3_key"] is None

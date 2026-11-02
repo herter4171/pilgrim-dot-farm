@@ -763,6 +763,15 @@ S3 is the source of truth for listener audio; the M5 no longer streams it
   committed window, so this path is transitional.
 - Emergency items (§8.3) are never published: they are local by definition
   and keep the fallback URL.
+- **Cover art (ALBUM_ART.md).** The same publisher loop uploads each song's
+  rendered JPEG (`art_path` set, `art_s3_key` NULL) to
+  `art.key_prefix + <song media stem>-<sha256[:16]>.jpg` with
+  `Content-Type: image/jpeg` and the same immutable `Cache-Control`, and sets
+  `art_s3_key` / `art_uploaded_at` only after a successful PUT. Failures share
+  the 5-minute retry. CloudFront already fronts the whole bucket, so art needs
+  no new infrastructure. Unlike audio there is **no origin fallback**: the API
+  sends `art_url: ""` until the upload lands, and art is cosmetic, so a song
+  simply airs without a cover meanwhile.
 - Nothing is deleted from S3 yet (no lifecycle; operator decision 2026-11-01).
 - Backfill: `make mp3-migrate MIGRATE_ARGS="--apply --upload"`
   (`pilgrim/tools/mp3_migrate.py`) encodes an MP3 next to every non-emergency

@@ -26,6 +26,7 @@ from pilgrim.config import ROOT, Config
 log = logging.getLogger("radio.media")
 
 CONTENT_TYPE = "audio/mpeg"
+ART_CONTENT_TYPE = "image/jpeg"
 # A key embeds the content hash, so its bytes never change: cache for a year.
 CACHE_CONTROL = "public, max-age=31536000, immutable"
 RETRY_AFTER_S = 300.0  # a failed item waits this long before another attempt
@@ -97,6 +98,23 @@ def object_key(cfg: Config, item: dict[str, Any], digest: str) -> str:
     return f"{cfg.media.key_prefix}{item['type']}/{stem}-{digest[:16]}.mp3"
 
 
+def art_object_key(cfg: Config, item: dict[str, Any], digest: str) -> str:
+    """`art/<song media stem>-<sha256[:16]>.jpg` (ALBUM_ART.md Step 6). The art
+    file may carry a `-2` collision suffix; the song stem keeps the key stable
+    across re-renders, and the hash keeps the bytes immutable behind the
+    year-long cache."""
+    stem = Path(str(item["media_path"])).stem
+    return f"{cfg.art.key_prefix}{stem}-{digest[:16]}.jpg"
+
+
+def art_url(cfg: Config, item: dict[str, Any] | None) -> str:
+    """Where a browser fetches a song's cover: CloudFront once uploaded, else
+    "" (no origin fallback — art is cosmetic; ALBUM_ART.md Step 7)."""
+    key = (item or {}).get("art_s3_key")
+    base = cfg.media.public_base_url.rstrip("/")
+    return f"{base}/{key}" if key and base else ""
+
+
 def public_url(cfg: Config, item: dict[str, Any] | None, item_id: int) -> str:
     """Where a browser fetches item audio: CloudFront once uploaded, else the
     origin's transitional `/api/media/<id>` route."""
@@ -113,7 +131,9 @@ class MediaPublisher:
         self.db = db
         self.objects = objects
         self._failed: dict[int, float] = {}   # item id -> monotonic failure time
+        self._failed_art: dict[int, float] = {}  # same, for cover JPEGs
         self.published = 0
+        self.art_published = 0
 
     def publish_item(self, item: dict[str, Any]) -> str:
         """Blocking: hash, skip if already there with the same size, PUT, record.
@@ -128,6 +148,51 @@ class MediaPublisher:
                                   cache_control=CACHE_CONTROL)
         self.db.set_published(int(item["id"]), key)
         return key
+
+    def publish_art_item(self, item: dict[str, Any]) -> str:
+        """Blocking: hash the JPEG, skip if already there with the same size,
+        PUT, record. Raises on any failure; the caller retries later."""
+        path = Path(str(item["art_path"]))
+        if not path.exists():
+            raise FileNotFoundError(f"art file missing: {path}")
+        size = path.stat().st_size
+        key = art_object_key(self.cfg, item, sha256_file(path))
+        if self.objects.head(key) != size:
+            self.objects.put_file(key, path, content_type=ART_CONTENT_TYPE,
+                                  cache_control=CACHE_CONTROL)
+        self.db.set_art_published(int(item["id"]), key)
+        return key
+
+    async def publish_pending_art(self) -> int:
+        """Upload one batch of rendered cover JPEGs (ALBUM_ART.md Step 6)."""
+        now = time.monotonic()
+        batch = [it for it in self.db.items_to_publish_art(
+                     limit=max(1, self.cfg.media.concurrency) * 8 + len(self._failed_art))
+                 if now - self._failed_art.get(int(it["id"]), -RETRY_AFTER_S) >= RETRY_AFTER_S]
+        if not batch:
+            return 0
+        sem = asyncio.Semaphore(max(1, self.cfg.media.concurrency))
+
+        async def one(it: dict[str, Any]) -> bool:
+            async with sem:
+                t0 = time.monotonic()
+                try:
+                    key = await asyncio.to_thread(self.publish_art_item, it)
+                except Exception as e:  # noqa: BLE001 - S3/disk errors degrade
+                    self._failed_art[int(it["id"])] = time.monotonic()
+                    log.warning("media.art_publish_failed", extra={
+                        "item_id": it["id"], "stage": "publish",
+                        "error": f"{type(e).__name__}: {e}"[:300]})
+                    return False
+                self._failed_art.pop(int(it["id"]), None)
+                log.info("media.art_published", extra={
+                    "item_id": it["id"], "stage": "publish", "key": key,
+                    "duration_ms": round((time.monotonic() - t0) * 1000)})
+                return True
+
+        ok = sum(await asyncio.gather(*(one(it) for it in batch)))
+        self.art_published += ok
+        return ok
 
     async def publish_pending(self) -> int:
         """Upload one batch of unpublished items; returns how many succeeded."""
@@ -159,6 +224,11 @@ class MediaPublisher:
 
         ok = sum(await asyncio.gather(*(one(it) for it in batch)))
         self.published += ok
+        # Cover JPEGs ride the same uploader loop and the same 5-minute retry.
+        try:
+            ok += await self.publish_pending_art()
+        except Exception as e:  # noqa: BLE001 - art never breaks audio publishing
+            log.warning("media.art_loop_error", extra={"error": str(e)[:300]})
         return ok
 
     async def run(self) -> None:
