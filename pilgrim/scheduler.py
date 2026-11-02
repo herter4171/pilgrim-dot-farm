@@ -855,10 +855,14 @@ class Scheduler:
         if not items:
             return []
         now = self._air_clock
-        # the most overdue kind wins; newest first inside that kind
-        def rank(p: tuple[dict, dict]) -> tuple[float, int]:
+        # The most overdue kind wins. When several are equally overdue (fresh
+        # start: all gaps reset), the kind with the LONGEST gap goes first, so
+        # the hourly Tree Fiddy Report is not starved by the 30-minute paid
+        # promo. Newest first inside a kind.
+        def rank(p: tuple[dict, dict]) -> tuple[float, float, int]:
             kind = p[1].get("kind") or "campaign"
-            return (now - self._last_promo_kind_air.get(kind, -1e9), p[0]["id"])
+            return (now - self._last_promo_kind_air.get(kind, -1e9),
+                    self._promo_kind_gap(kind), p[0]["id"])
         it, meta = max(items, key=rank)
         return [{"item_id": it["id"], "type": "promo",
                  "duration_s": it["duration_s"], "consume": True,
