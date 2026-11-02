@@ -783,6 +783,17 @@ S3 is the source of truth for listener audio; the M5 no longer streams it
   FLAC, repoints the row (after a SQLite `.backup`), and uploads. Resumable.
 - `make media-smoke` round-trips one 2 s tone through S3 and CloudFront and
   checks status, type, cache and CORS headers. Real backend: only when asked.
+- `make art-smoke` (ALBUM_ART.md Step 10; only when asked) renders one
+  1024×1024 cover of a fixed test title, checks the PNG dimensions, encodes the
+  JPEG, PUTs it to `art/smoke/`, GETs it through CloudFront (200 +
+  `image/jpeg`), and saves the PNG to `pilgrim/logs/art-smoke.png` for a human
+  to eyeball.
+- `make reel REEL_ARGS="--item ID [--start S] [--duration D]"` (ALBUM_ART.md
+  Step 11) builds an Instagram Reel from the **published** copies — the song's
+  MP3 and cover JPEG fetched through CloudFront — as 1080×1920 H.264 High /
+  AAC 48 kHz stereo 192 kb/s at 30 fps with `+faststart`, verified by
+  `ffprobe`. Output: `pilgrim/logs/reels/<stem>.mp4`. Uploading to Instagram
+  is out of scope.
 - CORS: browsers `fetch()` the CloudFront URL cross-origin from the site, so
   every response must carry `access-control-allow-origin`. A CloudFront
   Function (viewer-response) sets `*`; the managed CORS policy drops the
