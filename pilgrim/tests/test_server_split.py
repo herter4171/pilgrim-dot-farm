@@ -62,7 +62,9 @@ def test_public_health_is_minimal_and_probe_free(tmp_env):
     station.inventory_levels = _boom
     c = TestClient(create_public_app(cfg, station))
     body = c.get("/api/health").json()
-    assert set(body) == {"on_air", "time"}
+    assert set(body) == {"on_air", "art", "time"}   # ALBUM_ART Step 5
+    assert body["art"] == {"backend": station.art_worker.backend
+                           if station.art_worker else "disabled"}
     assert body["on_air"] == station.on_air
     assert station.kokoro.calls == []
     assert station.llm.calls == 0

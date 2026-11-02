@@ -32,6 +32,7 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 from pilgrim import dj_contracts as dj
+from pilgrim.album_art import ArtWorker
 from pilgrim.config import (
     PAID_OVERRIDE_ENV,
     RNG,
@@ -147,6 +148,9 @@ class Station:
         self.override_token = load_secret(PAID_OVERRIDE_ENV)
         self._tasks: list = []
         self._http = httpx.AsyncClient(timeout=4.0)
+        # Cover art (ALBUM_ART.md Step 5): its own task, never inside playout.
+        # A song without art airs exactly as today (hard rule 1).
+        self.art_worker: ArtWorker | None = None
         # S3 publishing (RADIO §8.4): its own task, never inside playout.
         self.publisher: MediaPublisher | None = None
         if cfg.media.publish:
@@ -154,6 +158,11 @@ class Station:
                 self.publisher = MediaPublisher(cfg, self.db, S3ObjectStore(cfg))
             except Exception as e:  # noqa: BLE001 - no creds/boto3: degrade to /api/media
                 log.warning("media.publisher_disabled", extra={"error": str(e)[:300]})
+        if cfg.art.enabled:
+            try:
+                self.art_worker = ArtWorker(cfg, self.db, self.llm, self.prompts)
+            except Exception as e:  # noqa: BLE001 - bad config/creds: art is cosmetic
+                log.warning("art.worker_disabled", extra={"error": str(e)[:300]})
 
     def media_url(self, item_id: int, inv: dict | None = None) -> str:
         """Browser URL for an item's audio (RADIO §8.4, §11)."""
@@ -229,6 +238,13 @@ class Station:
             "promo": have["promo"],
         }
 
+    def art_health(self) -> dict:
+        """Admin-only art health: the worker's cached backend plus DB counts.
+        Never probes FLUX (a render blocks /health for ~40 s)."""
+        counts = self.db.art_counts()
+        backend = self.art_worker.backend if self.art_worker else "disabled"
+        return {"backend": backend, **counts}
+
     @property
     def on_air(self) -> bool:
         return self.scheduler.coverage() > 0
@@ -245,6 +261,7 @@ class Station:
             "committed_coverage_s": round(self.scheduler.coverage(), 1),
             "committed_count": len(self.scheduler._items),
             "song_realtime": round(self.songs.generation_rate, 2),
+            "art": self.art_health(),
             "time": time.time(),
         }
 
@@ -464,6 +481,8 @@ class Station:
         self._tasks.append(asyncio.create_task(_backfill_paid_summaries(self)))
         if self.publisher is not None:
             self._tasks.append(asyncio.create_task(self.publisher.run()))
+        if self.art_worker is not None:
+            self._tasks.append(asyncio.create_task(self.art_worker.run()))
         inv = await self.inventory_levels()
         log.info("station.startup", extra={
             "lookahead_s": self.cfg.playout.committed_lookahead_s, "inventory": inv})
@@ -474,7 +493,8 @@ def _load_prompts(cfg: Config) -> dict:
     out = {}
     for f in ("voice.md", "song_brief.md", "station_song.md", "news.md", "moderation.md",
               "field.md", "sfx_cues.md", "sfx_joke.md", "paid_request.md",
-              "paid_summary.md", "promo.md", "album_art_scene.md"):
+              "paid_summary.md", "promo.md", "album_art_scene.md",
+              "album_art_flux.md"):
         p = pdir / f
         if p.exists():
             out[f.replace(".md", "")] = p.read_text()
@@ -671,7 +691,11 @@ async def _public_health(station: Station) -> dict:
     No backend probes, no inventory query, no network call (SPLIT_PLAN §1.3).
     `on_air` is the scheduler's committed coverage, which is pure.
     """
-    return {"on_air": station.on_air, "time": time.time()}
+    return {"on_air": station.on_air,
+            # cached worker state only: no DB read, no FLUX probe (SPLIT_PLAN §1.3)
+            "art": {"backend": station.art_worker.backend
+                    if station.art_worker else "disabled"},
+            "time": time.time()}
 
 
 async def _admin_health(station: Station) -> dict:

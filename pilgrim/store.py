@@ -1128,3 +1128,23 @@ class Store:
             rows = self._conn.execute(
                 "SELECT * FROM requests ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
+
+
+    # -------------------------------------------------------------- key/value
+    def meta_get(self, key: str) -> str | None:
+        """One small key/value from the `meta` table (leases, counters)."""
+        with self._lock:
+            r = self._conn.execute("SELECT value FROM meta WHERE key=?",
+                                   (key,)).fetchone()
+        return None if r is None else r["value"]
+
+    def meta_set(self, key: str, value: str | None) -> None:
+        with self._lock:
+            if value is None:
+                self._conn.execute("DELETE FROM meta WHERE key=?", (key,))
+            else:
+                self._conn.execute(
+                    "INSERT INTO meta (key, value) VALUES (?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, value))
+            self._conn.commit()
