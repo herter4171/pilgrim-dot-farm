@@ -63,7 +63,7 @@
     lastQueue = queue || [];
     queueEl.textContent = "";
     if (!lastQueue.length) {
-      queueEl.appendChild(emptyRow("— no requests yet —"));
+      queueEl.appendChild(emptyRow("— no requests queued —"));
     } else {
       // FIFO queue: the oldest ready request is the next one to air; any
       // later ready request is rendered but still behind it. Don't label both
