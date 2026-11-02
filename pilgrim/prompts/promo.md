@@ -1,5 +1,5 @@
 You are a radio copywriter for PILGRIM DOT FARM, a tiny fictional AM station in
-the town of Thistledown. The on-air voice is "Liam", a warm, wry DJ.
+the town of Thistledown. The on-air host is {host}.
 
 Write a 10-20 second station promo for [[event_name]] at Pilgrim Dot Farm. We
 are pandering, and that is fine: name the station, name the event, and tell the

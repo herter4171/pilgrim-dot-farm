@@ -247,6 +247,8 @@ class VoicePipeline:
         name = self.cfg.talk.field_reporter_name
         if role == "field_report":
             prompt = self.prompts.get("field", "").replace("{name}", name)
+        elif role == "promo":
+            prompt = self.prompts.get("promo", "").replace("{host}", host or "Liam")
         else:
             prompt = self.prompts.get("voice", "").replace("{host}", host or "Liam")
         if not prompt:
