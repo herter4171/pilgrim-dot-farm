@@ -224,3 +224,39 @@ def test_admin_health_has_counts(tmp_env):
     c = TestClient(create_admin_app(cfg, station))
     admin = c.get("/api/health").json()
     assert admin["art"]["with_art"] == 1
+
+
+# --------------------------------------------------------------------- API
+def _api_station(tmp_env, cfg, store):
+    station = build_station(cfg)
+    station.llm = FakeLLM()  # type: ignore[assignment]
+    station.art_worker = _worker(cfg, store)
+    return station
+
+
+def test_program_and_state_carry_art_url(tmp_env):
+    cfg, store, tmp = tmp_env
+    _cfg(cfg)
+    cfg.media.public_base_url = "https://cdn.example"
+    iid = _song(store, tmp, media="song_20.mp3")
+    station = _api_station(tmp_env, cfg, store)   # Scheduler clears the program
+    store.append_program(iid, "song", 30.0)
+    station.scheduler._rebuild_program()
+
+    prog = station.program_response(None)
+    assert prog["items"][0]["art_url"] == ""          # not uploaded yet
+
+    store.set_art(iid, "/art/song_20.jpg", {"scene": "s"})
+    store.set_art_published(iid, "art/song_20-abc123.jpg")
+    prog = station.program_response(None)
+    assert prog["items"][0]["art_url"] == "https://cdn.example/art/song_20-abc123.jpg"
+
+    # state: on-air item's art (the committed window starts at the playhead)
+    state = station.public_state()
+    assert state["current_seq"] == prog["items"][0]["seq"]
+    assert state["current_art_url"] == "https://cdn.example/art/song_20-abc123.jpg"
+
+    c = TestClient(create_public_app(cfg, station))
+    body = c.get("/api/station/program").json()
+    assert body["items"][0]["art_url"].endswith(".jpg")
+    assert c.get("/api/station/state").json()["current_art_url"].endswith(".jpg")

@@ -47,7 +47,7 @@ from pilgrim.config import (
 )
 from pilgrim.dj_security import require_dj
 from pilgrim.logging_setup import setup_logging
-from pilgrim.media_publish import MediaPublisher, S3ObjectStore, public_url
+from pilgrim.media_publish import MediaPublisher, S3ObjectStore, art_url, public_url
 from pilgrim.payments import (
     PaymentService,
     StripeClient,
@@ -291,6 +291,9 @@ class Station:
             artist = (inv.get("artist") if inv else None) or ""
             out.append({"seq": it["seq"], "media_id": it["item_id"],
                         "url": self.media_url(it["item_id"], inv),
+                        # ALBUM_ART Step 7: "" until the JPEG is in S3; no
+                        # origin fallback, art is cosmetic.
+                        "art_url": art_url(self.cfg, inv),
                         "type": it["type"], "duration_s": it["duration_s"],
                         "sfx": self._with_urls(scheduler.overlays_for(it["seq"])),
                         "title": title, "artist": artist})
@@ -302,7 +305,7 @@ class Station:
         """Cheap station state for DJ-aware clients (RADIO §11, §5.3).
         Reads in-memory schedule state; never probes production backends."""
         st = self.scheduler
-        seq = ctype = url = None
+        seq = ctype = url = art = None
         offset = 0.0
         if st._items:
             s, off = st.on_air()
@@ -310,10 +313,14 @@ class Station:
                 row = next((r for r in st._items if r["seq"] == s), None)
                 seq, offset = s, off
                 ctype = row["type"] if row else None
-                url = self.media_url(row["item_id"]) if row else None
+                if row:
+                    inv = self.db.get_item(row["item_id"])
+                    url = self.media_url(row["item_id"], inv)
+                    art = art_url(self.cfg, inv)
         return {"epoch": st.epoch, "revision": st.revision,
                 "server_time": time.time(), "current_seq": seq,
                 "current_type": ctype, "current_url": url,
+                "current_art_url": art,
                 "current_offset_s": round(offset, 3),
                 "prepared_cutover": None, "listeners": self.active_listeners()}
 
