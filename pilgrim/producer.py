@@ -573,6 +573,15 @@ class Producer:
         for it in self.store.list_items("time_check"):
             if it["retired"]:
                 continue
+            exp = it.get("expires_at")
+            if exp:
+                try:
+                    if datetime.fromisoformat(exp).timestamp() < now - 3600:
+                        # stale renders would otherwise accumulate forever
+                        self.store.retire_item(it["id"], "clock bucket passed")
+                        continue
+                except ValueError:
+                    pass
             meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
             existing.add(meta.get("bucket"))
         for bucket in buckets:
