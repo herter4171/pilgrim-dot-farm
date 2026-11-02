@@ -6,7 +6,7 @@ import io
 import re
 
 import pytest
-from pilgrim.pipelines.voice import VoicePipeline
+from pilgrim.pipelines.voice import VoicePipeline, strip_greeting
 from pilgrim.tests.fakes import FakeKokoro, FakeLLM, tone_wav
 
 # 70 words — the kind of script that produces suspiciously short audio when
@@ -167,3 +167,17 @@ def test_cleanup_large_numbers_left_alone():
     from pilgrim.pipelines.voice import tts_cleanup
     got = tts_cleanup("there are 1234 songs")
     assert got == "there are 1234 songs", got
+
+
+def test_strip_greeting_removes_the_clock_statement():
+    """ANNOUNCER A5: a greeting is a clock statement and must not air at the
+    wrong hour. News/field copy loses it; a greeting that carries news content
+    is left alone."""
+    assert strip_greeting(
+        "Good evening from Pilgrim Dot Farm. Here is your bulletin."
+    ) == "Here is your bulletin."
+    assert strip_greeting(
+        "Good morning, Michigan pickles are spicy."
+    ) == "Michigan pickles are spicy."
+    assert strip_greeting("Good evening.") == ""
+    assert strip_greeting("Pilgrim Dot Farm news.") == "Pilgrim Dot Farm news."

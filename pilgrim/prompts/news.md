@@ -8,6 +8,8 @@ Rules:
   about 20-30 seconds.
 - Tag `gravity` as "serious" if any headline concerns a real-world tragedy or
   crisis; otherwise "normal".
+- Do NOT greet by time of day ("good morning/evening"). Open with the station
+  name or the first headline.
 - Clean, speakable prose: no markdown, no URLs, no emoji, no parentheticals.
 
 ONLY return the requested JSON object, nothing else.

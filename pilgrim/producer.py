@@ -727,8 +727,9 @@ class Producer:
             bulletin = await self.news.produce_bulletin()
             text = bulletin["text"]
             item = await self.voice.produce_item("news", 20.0, context=text)
-            from datetime import datetime, timedelta
-            expires = datetime.now(UTC) + timedelta(seconds=self.cfg.news.refresh_s + 900)
+            # injected clock, not datetime.now (AGENTS rule 3)
+            expires = (datetime.fromtimestamp(self.clock.wall(), UTC)
+                       + timedelta(seconds=self.cfg.news.refresh_s + 900))
             self._store_voice(item, "news", evergreen=False,
                               expires_at=expires.isoformat(), gravity=bulletin["gravity"])
             self._news_ok = bulletin
@@ -740,9 +741,8 @@ class Producer:
         exp = item.get("expires_at")
         if not exp:
             return True
-        from datetime import datetime
         try:
-            return datetime.fromisoformat(exp).timestamp() > __import__("time").time()
+            return datetime.fromisoformat(exp).timestamp() > self.clock.wall()
         except Exception:
             return True
 

@@ -31,6 +31,22 @@ _EMOJI = re.compile(
 _STAGE = re.compile(r"\([^)]*\)", re.IGNORECASE)
 _URL = re.compile(r"https?://\S+|www\.\S+")
 _TIME = re.compile(r"\b(\d{1,2}):(\d{2})\b")
+# A greeting is a clock statement: "Good evening from Pilgrim Dot Farm." can
+# air at 11:00. Strip it from news/field copy (ANNOUNCER A5) so the anchor
+# never contradicts the clock.
+_GREETING = re.compile(
+    r"^\s*good\s+(?:morning|afternoon|evening|night)\b[^.]*?[.,!]\s*",
+    re.IGNORECASE)
+
+
+def strip_greeting(text: str) -> str:
+    """Drop a leading time-of-day greeting (and its station clause).
+
+    "Good evening from Pilgrim Dot Farm. Here is your bulletin." ->
+    "Here is your bulletin." A greeting that carries news content is left
+    alone (the regex stops at the first comma/period).
+    """
+    return _GREETING.sub("", text or "", count=1).strip()
 
 
 def tts_cleanup(text: str) -> str:
@@ -254,6 +270,8 @@ class VoicePipeline:
                 if extra else f"Write the copy. {schema}")
         obj = await self.llm.chat_json(self._model_for(role), sys_prompt, user)
         text = str(obj.get("text", "")).strip()
+        if role in ("news", "field_report"):
+            text = strip_greeting(text)
         if not text:
             raise LLMError("copy empty")
         if role == "field_report" and self.CATCH_PHRASE not in text.lower():
