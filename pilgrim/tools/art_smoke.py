@@ -51,11 +51,23 @@ def run(cfg: Config, flux: FluxClient, objects: S3ObjectStore,
         if not ok:
             failures += 1
 
-    healthy = asyncio.run(flux.health())
-    check("FLUX /health", healthy)
-
     prompt = build_flux_prompt(_template(cfg), SMOKE_SCENE, SMOKE_TITLE, SMOKE_ARTIST)
-    png = asyncio.run(flux.generate(prompt, SMOKE_SEED))
+
+    async def render() -> tuple[bool, bytes | None]:
+        # One event loop for health + generate + close: httpx.AsyncClient is
+        # bound to the loop it first ran on.
+        try:
+            healthy = await flux.health()
+            png = await flux.generate(prompt, SMOKE_SEED) if healthy else None
+            return healthy, png
+        finally:
+            await flux.close()
+
+    healthy, png = asyncio.run(render())
+    check("FLUX /health", healthy)
+    if png is None:
+        print("art-smoke: FAIL")
+        return 1
     want = parse_size(cfg.art.size)
     dims = validate_png(png, want)
     check("PNG is the requested size", dims == want, f"{dims[0]}x{dims[1]}")
@@ -93,12 +105,7 @@ def run(cfg: Config, flux: FluxClient, objects: S3ObjectStore,
 
 def main() -> None:
     cfg = load_config()
-    flux = FluxClient(cfg)
-    try:
-        objects = S3ObjectStore(cfg)
-        code = run(cfg, flux, objects)
-    finally:
-        asyncio.run(flux.close())
+    code = run(cfg, FluxClient(cfg), S3ObjectStore(cfg))
     print("art-smoke:", "PASS" if code == 0 else "FAIL")
     raise SystemExit(code)
 
