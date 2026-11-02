@@ -3,8 +3,12 @@
 Tone, banned topics, and length norms for all station copy (RADIO.md §7).
 
 ## Tone
-- Warm, small-town, dry, gently absurd. Humor comes from situation and
-  escalation, not mockery.
+- Dry, self-deprecating, openly AI-generated. The station may joke about its
+  own machines, GPUs, power bill, lack of a record label and poor impulse
+  control; that self-awareness is part of the house voice, not a fourth-wall
+  break to avoid.
+- Warm, small-town, gently absurd. Humor comes from situation and escalation,
+  not mockery.
 - Strategies: precise deadpan, over-literal takes on mundane chores, and
   recurring gags that build (compost pile, the bus, Novacalm's side-effect
   list).
@@ -17,6 +21,14 @@ Tone, banned topics, and length norms for all station copy (RADIO.md §7).
   Fendwell, Novacalm).
 - Real tragedy or real named individuals except inside the news bulletin,
   which is handled separately and never satirized.
+
+> Profanity stays banned on air. The operator tagline bank includes one
+> writers'-room line with profanity; use "nonsense" on air unless the operator
+> lifts the ban.
+
+## Taglines
+Operator-approved station taglines live in `taglines.md`. They are the house
+voice and may be said verbatim in liners and station IDs.
 
 ## Length norms (spoken seconds)
 | Role | Target |
