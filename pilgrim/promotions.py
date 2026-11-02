@@ -29,6 +29,14 @@ DAYS_PHRASES: list[tuple[int, str]] = [
 
 # Timing words an LLM must never write: they cannot be re-filled, and the
 # tokens already carry the correct phrase (revision 5/6).
+# Present-tense event claims are only allowed on the day itself; 25 days out
+# the copy must say it is coming (the [[days_until]] phrase).
+_PRESENT_TENSE = re.compile(
+    r"\b(?:it'?s|it is)\s+thanksgiving\b"
+    r"|\bthanksgiving\s+is\s+(?:today|here|now|tonight)\b"
+    r"|\bhappy thanksgiving\b",
+    re.IGNORECASE)
+
 _BANNED_TIMING = re.compile(
     r"\b(?:tonight|tomorrow|today|next week|last week|"
     r"this (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
@@ -105,12 +113,14 @@ def fill_day_tokens(text: str, now_wall: float, tz: str,
 
 
 def validate_promo_template(raw: str, campaign: Campaign,
-                            station_name: str) -> str | None:
+                            station_name: str, days: int | None = None) -> str | None:
     """Reject LLM copy that would air a wrong claim. Returns the reason, or
     None when the copy is acceptable.
 
     Checked on the RAW copy (before token fill): the station name and the
-    event-name token must be present, and no timing word may be invented.
+    event-name token must be present, no timing word may be invented, and
+    while the event is in the future the copy must say it is *coming*
+    ([[days_until]]) rather than claim it is today.
     """
     if station_name.lower() not in raw.lower():
         return "missing station name"
@@ -119,6 +129,13 @@ def validate_promo_template(raw: str, campaign: Campaign,
     m = _BANNED_TIMING.search(raw)
     if m:
         return f"invented timing word: {m.group(0)}"
+    if days is None or days > 0:
+        phrase = phrase_for(days) if days is not None else ""
+        if "[[days_until]]" not in raw and (not phrase or phrase.lower() not in raw.lower()):
+            return (f"missing timing: use the [[days_until]] token or the phrase "
+                    f"'{phrase}'")
+        if _PRESENT_TENSE.search(raw):
+            return "present-tense event claim while the event is in the future"
     return None
 
 

@@ -37,8 +37,10 @@ from pilgrim.pipelines.songs import SongPipeline
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
 from pilgrim.promotions import (
     active_campaign,
+    days_until,
     fill_day_tokens,
     next_local_midnight,
+    phrase_for,
     target_per_hour,
     validate_promo_copy,
     validate_promo_template,
@@ -180,7 +182,7 @@ class Producer:
             "field_report": self._count_fresh_unexpired("field_report"),
             "news": self._count_fresh_unexpired("news"),
             "sfx": self.count_sfx_stock(),
-            "promo": self._count_promos(),
+            "promo": self._count_promos(now_wall=self.clock.wall()),
         }
 
     def sfx_stock_target(self) -> int:
@@ -227,8 +229,14 @@ class Producer:
         if usable >= target_total:
             return
         made = 0
-        while made < 3 and usable < target_total:
-            bucket = float(inv.liner_buckets_s[made % len(inv.liner_buckets_s)])
+        idx = 0
+        buckets = list(inv.liner_buckets_s) or [5]
+        # A bucket whose copy overshoots its duration tolerance (the 3 s bucket
+        # renders ~9 s) must not pin the loop forever: try each bucket once per
+        # call and move on.
+        while made < 3 and usable < target_total and idx < len(buckets):
+            bucket = float(buckets[idx % len(buckets)])
+            idx += 1
             try:
                 item = await self.voice.produce_item("liner", bucket)
                 self._store_voice(item, "liner")
@@ -236,8 +244,9 @@ class Producer:
                 made += 1
                 usable += 1
             except Exception as e:
-                log.warning("liner production failed: %s", err_text(e))
-                return  # back off; don't hammer a failing backend
+                log.warning("liner production failed (%.0fs bucket): %s",
+                            bucket, err_text(e))
+                continue
 
     async def ensure_station_ids(self) -> None:
         """Keep `inventory.station_ids_min` emergency station IDs (RADIO §8.3).
@@ -451,12 +460,23 @@ class Producer:
 
     # --------------------------------------------------------------- promos
     def _count_promos(self, campaign_id: str | None = None,
-                      kind: str | None = None) -> int:
-        """Ready promos (recyclable), optionally filtered by campaign or kind."""
+                      kind: str | None = None,
+                      now_wall: float | None = None) -> int:
+        """Ready promos (recyclable), optionally filtered by campaign or kind.
+        Day-level promos expire at local midnight, so they are not stock after
+        that even though the row survives (revision 6)."""
         n = 0
         for it in self.store.list_items("promo"):
             if it["emergency"]:
                 continue
+            if now_wall is not None:
+                exp = it.get("expires_at")
+                if exp:
+                    try:
+                        if datetime.fromisoformat(exp).timestamp() <= now_wall:
+                            continue
+                    except ValueError:
+                        pass
             meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
             if campaign_id is not None and meta.get("campaign_id") != campaign_id:
                 continue
@@ -474,8 +494,13 @@ class Producer:
             if not cid:
                 continue
             camp = next((c for c in self.cfg.promotions.campaigns if c.id == cid), None)
-            if camp is None or target_per_hour(now_wall, tz, camp) <= 0:
-                self.store.retire_item(it["id"], "campaign ended")
+            expired = False
+            exp = it.get("expires_at")
+            if exp:
+                with contextlib.suppress(ValueError):
+                    expired = datetime.fromisoformat(exp).timestamp() <= now_wall
+            if expired or camp is None or target_per_hour(now_wall, tz, camp) <= 0:
+                self.store.retire_item(it["id"], "campaign promo expired/ended")
 
     async def ensure_promos(self) -> None:
         """Keep `inventory.promos_min` ready promos per source. Campaign promos
@@ -486,10 +511,10 @@ class Producer:
         tz = cfg.station.timezone
         now = self.clock.wall()
         camp = active_campaign(now, tz, cfg.promotions.campaigns)
-        if camp is None:
-            self._retire_finished_promos(now, tz)
-        have = (self._count_promos(campaign_id=camp.id) if camp is not None
-                else self._count_promos(kind="request_line"))
+        self._retire_finished_promos(now, tz)  # expired day-level promos too
+        have = (self._count_promos(campaign_id=camp.id, now_wall=now)
+                if camp is not None
+                else self._count_promos(kind="request_line", now_wall=now))
         need = cfg.inventory.promos_min - have
         log.debug("producer.need", extra={
             "item_type": "promo", "have": have, "target": cfg.inventory.promos_min})
@@ -506,22 +531,28 @@ class Producer:
         tz = cfg.station.timezone
         now = self.clock.wall()
         if camp is not None:
+            days = days_until(now, tz, camp)
+            phrase = phrase_for(days)
             ctx = (f"Event: {camp.label}. Date: {camp.date}. CTA: {camp.cta}.\n"
+                   f"Timing phrase: {phrase}. Write it exactly, or use the "
+                   f"[[days_until]] token.\n"
                    f"Angles you may use: {'; '.join(camp.lines)}")
             host = self._current_host()
             copy = await self.voice.write_copy(
                 "promo", 12.0, context=ctx, host=host.name if host else "Liam")
-            reason = validate_promo_template(copy["text"], camp, cfg.station.name)
+            reason = validate_promo_template(copy["text"], camp, cfg.station.name,
+                                             days)
             if reason:
                 # one retry with the rejection fed back, then give up rather
                 # than air a wrong claim
                 copy = await self.voice.write_copy(
                     "promo", 12.0,
-                    context=ctx + f"\nYour previous attempt was rejected "
-                                  f"({reason}); include the tokens.",
+                    context=ctx + f"\nYour previous attempt was rejected: "
+                                  f"{reason}. Fix exactly that and keep "
+                                  f"[[event_name]].",
                     host=host.name if host else "Liam")
                 reason = validate_promo_template(copy["text"], camp,
-                                                 cfg.station.name)
+                                                 cfg.station.name, days)
                 if reason:
                     log.warning("promo.rejected", extra={"reason": reason})
                     return None

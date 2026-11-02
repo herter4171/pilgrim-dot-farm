@@ -1218,7 +1218,7 @@ promotions:                   # ANNOUNCER C1: campaign calendar, config-driven
       light_touch: true
       lines: [a song for the table, the great Thistledown turkey census]
       schedule:
-        - {from: "2026-11-05", until: "2026-11-18", per_hour: 1}
+        - {from: "2026-11-01", until: "2026-11-18", per_hour: 1}
         - {from: "2026-11-19", until: "2026-11-25", per_hour: 2}
         - {from: "2026-11-26", until: "2026-11-26", per_hour: 3, after_news: true}
 

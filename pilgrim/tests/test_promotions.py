@@ -99,7 +99,18 @@ def test_fill_day_tokens_and_no_spoken_date_by_default():
 def test_validate_rejects_invented_timing_and_missing_tokens():
     c = camp()
     ok = "Pilgrim Dot Farm is pandering about [[event_name]] [[days_until]]."
-    assert validate_promo_template(ok, c, "Pilgrim Dot Farm") is None
+    assert validate_promo_template(ok, c, "Pilgrim Dot Farm", 25) is None
+    # 25 days out: the copy must say it is coming, not that it is today
+    assert validate_promo_template(
+        "Pilgrim Dot Farm says [[event_name]] is here.", c, "Pilgrim Dot Farm",
+        25) is not None
+    assert validate_promo_template(
+        "Pilgrim Dot Farm. It's Thanksgiving! [[event_name]]", c,
+        "Pilgrim Dot Farm", 25) is not None
+    # on the day, "Happy Thanksgiving" is fine and [[days_until]] is optional
+    assert validate_promo_template(
+        "Happy Thanksgiving from Pilgrim Dot Farm!", c, "Pilgrim Dot Farm",
+        0) is None
     assert validate_promo_template("Come to the farm tonight!", c,
                                    "Pilgrim Dot Farm") is not None
     assert validate_promo_template("Thanksgiving at the farm.", c,

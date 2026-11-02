@@ -12,10 +12,12 @@ being an AI.
 Hard rules (the code enforces these):
 - You MUST include the literal token [[event_name]] and the station name
   "Pilgrim Dot Farm".
-- You MAY include the literal token [[days_until]] for timing. The code fills
-  it with the correct phrase ("a couple weeks away", "tomorrow", "Happy
-  Thanksgiving"). Do NOT write any other timing words: no "tonight",
-  "tomorrow", "next week", "this Thursday", no calendar dates, no clock times.
+- You MUST include the literal token [[days_until]]: the code fills it with
+  the correct phrase ("coming up", "a couple weeks away", "tomorrow", "Happy
+  Thanksgiving"). The event is usually in the FUTURE, so say it is coming —
+  never claim it is today unless the phrase is "Happy Thanksgiving".
+- Do NOT write any other timing words: no "tonight", "tomorrow", "next week",
+  "this Thursday", no calendar dates, no clock times.
 - You MAY include the literal token [[cta]] for the call to action.
 - Never invent a date or a time.
 

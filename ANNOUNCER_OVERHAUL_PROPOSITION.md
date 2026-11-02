@@ -880,7 +880,7 @@ station:
       cta: "the request line"          # what listeners should do
       light_touch: true                # small audience: timing is optional
       schedule:                        # ~1/h, 2/h in the final week, extra on the day
-        - {from: "2026-11-05", until: "2026-11-18", per_hour: 1}
+        - {from: "2026-11-01", until: "2026-11-18", per_hour: 1}
         - {from: "2026-11-19", until: "2026-11-25", per_hour: 2}
         - {from: "2026-11-26", until: "2026-11-26", per_hour: 3, after_news: true}
       lines:                           # operator-approved angles, rephrased by the LLM
@@ -1125,6 +1125,7 @@ change and needs RADIO.md §14 plus a migration.
   self-promotion; no payment language.
 - **Q4 — Liners: `liners_per_bucket: 4`** (20 total).
 - **Q5 — Thanksgiving angles: approved, pandering encouraged.**
+  Ramp starts **2026-11-01** (operator: "start it today, I want to hear it").
 - **Q6 — No Thanksgiving song steering.** Requests are fulfilled normally.
 - **Q7 — Clock reads: 4/h at :00/:15/:30/:45.** Shipped; the sim shows
   97/day = 4.04/h, each speaking its own 5-minute bucket.
