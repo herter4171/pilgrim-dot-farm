@@ -68,6 +68,29 @@ async def test_process_renders_and_records_everything(tmp_env):
 
 
 @pytest.mark.asyncio
+async def test_render_brief_renders_before_the_item_exists(tmp_env):
+    """Early art: the producer can render a cover from the brief alone."""
+    cfg, store, tmp = tmp_env
+    _cfg(cfg)
+    w = _worker(cfg, store)
+    brief = {
+        "title": "Early Bird", "artist": "The Dawn Chorus",
+        "genre": "country-americana", "seed": 42, "request_id": 999,
+        "lyrics": "[verse]\nup before the sun",
+        "style_prompt": "Global Emotional Progression: warm and awake",
+    }
+    res = await w.render_brief(brief, "req999")
+    assert res is not None
+    jpg, meta = res
+    assert Path(jpg).exists() and Path(jpg).suffix == ".jpg"
+    assert meta["scene"] == GOOD_SCENE
+    assert meta["seed"] == 42
+    assert w.rendered == 1
+    # no item was created by the early path
+    assert store.all_requests() == []
+
+
+@pytest.mark.asyncio
 async def test_non_latin_title_renders_text_free(tmp_env):
     cfg, store, tmp = tmp_env
     _cfg(cfg)

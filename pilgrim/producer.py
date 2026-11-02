@@ -13,6 +13,7 @@ import heapq
 import itertools
 import json
 import logging
+import secrets
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -148,6 +149,9 @@ class Producer:
         self._clock_time = clock_time or current_local_time
         self._news_ok: dict | None = None
         self.sfx = sfx  # None = station airs dry (no SFX backend configured)
+        # Set by server.py after the ArtWorker exists. Early art is optional:
+        # tests and art-disabled stations leave it None.
+        self.art_worker: Any | None = None
         # clock.now() when the last stock song finished (None = none yet this run)
         self._last_stock_song_at: float | None = None
         # one-shot log so a capped stock worker doesn't spam every 20 s
@@ -1114,25 +1118,83 @@ class Producer:
                 out.append(j.genre)
         return out[-n:]
 
+    def _start_early_art(self, brief: dict[str, Any], token: str):
+        """Start the cover render now that the brief (title/artist/lyrics/
+        style) exists, in parallel with the song generator. Optional."""
+        aw = self.art_worker
+        if aw is None or not self.cfg.art.enabled:
+            return None
+        if not (brief.get("title") and brief.get("artist")):
+            return None
+        # share the song seed so the art meta records a reproducible seed
+        brief.setdefault("seed", secrets.randbits(32))
+        return asyncio.create_task(aw.render_brief(brief, token))
+
+    def _finish_early_art(self, song_id: int, task) -> None:
+        """Attach an early cover to the item, or let the background worker
+        pick it up if the render failed/was slower than the song."""
+        aw = self.art_worker
+        if task is None or aw is None:
+            return
+        aw.pending_early.add(song_id)
+        if task.done():
+            self._attach_early_art(song_id, task, aw)
+        else:
+            task.add_done_callback(
+                lambda t, sid=song_id, worker=aw:
+                self._attach_early_art(sid, t, worker))
+
+    def _attach_early_art(self, song_id: int, task, aw) -> None:
+        if task.cancelled():
+            aw.clear_pending(song_id)
+            return
+        try:
+            result = task.result()
+        except Exception:  # noqa: BLE001 - early art is cosmetic
+            result = None
+        if result is None:
+            aw.clear_pending(song_id)
+            return
+        jpg_path, meta = result
+        try:
+            aw.attach(song_id, jpg_path, meta)
+        except Exception as e:  # noqa: BLE001 - DB hiccup: worker retries later
+            log.warning("art.attach_failed", extra={
+                "item_id": song_id, "stage": "attach", "error": err_text(e)})
+            aw.clear_pending(song_id)
+            return
+        log.info("art.attached", extra={
+            "item_id": song_id, "stage": "attach", "early": True})
+
     async def _produce_stock_song(self, job: SongJob) -> bool:
-        async with self._brief_gate.hold(STOCK_BRIEF_KEY):
-            brief = await self.songs.brief(self._genre_context())
-            job.genre = brief.get("genre")
-        item = await self.songs.produce_song(brief, prefer="slow")
-        # render the intro BEFORE the song enters the library: the scheduler
-        # shares this event loop and would air the song bare in the gap
-        intro = await self._render_intro(item, None)  # stock intros are non-fatal
-        song_id = self.store.add_item(
-            type_="song", media_path=item["media_path"], duration_s=item["duration_s"],
-            sample_rate=item.get("sample_rate"), channels=item.get("channels"),
-            title=item.get("title"), artist=item.get("artist"), genre=item.get("genre"),
-            evergreen=True, fresh=True, meta=item.get("meta"))
-        self._store_intro(intro, song_id, None)
-        self._last_stock_song_at = self.clock.now()
-        log.info("song.produced", extra={
-            "title": item.get("title"), "genre": item.get("genre"),
-            "duration_s": item.get("duration_s")})
-        return True
+        art_task = None
+        attached = False
+        try:
+            async with self._brief_gate.hold(STOCK_BRIEF_KEY):
+                brief = await self.songs.brief(self._genre_context())
+                job.genre = brief.get("genre")
+            art_task = self._start_early_art(
+                brief, f"stock{secrets.token_hex(6)}")
+            item = await self.songs.produce_song(brief, prefer="slow")
+            # render the intro BEFORE the song enters the library: the scheduler
+            # shares this event loop and would air the song bare in the gap
+            intro = await self._render_intro(item, None)  # stock intros are non-fatal
+            song_id = self.store.add_item(
+                type_="song", media_path=item["media_path"], duration_s=item["duration_s"],
+                sample_rate=item.get("sample_rate"), channels=item.get("channels"),
+                title=item.get("title"), artist=item.get("artist"), genre=item.get("genre"),
+                evergreen=True, fresh=True, meta=item.get("meta"))
+            self._store_intro(intro, song_id, None)
+            self._finish_early_art(song_id, art_task)
+            attached = True
+            self._last_stock_song_at = self.clock.now()
+            log.info("song.produced", extra={
+                "title": item.get("title"), "genre": item.get("genre"),
+                "duration_s": item.get("duration_s")})
+            return True
+        finally:
+            if art_task is not None and not attached:
+                art_task.cancel()
 
     def stock_capped(self) -> bool:
         """True when the library already holds songs.stock_max_library usable
@@ -1149,6 +1211,8 @@ class Producer:
         self.store.mark_request_producing(req["id"])
         self.request_stage[req["id"]] = "waiting"  # for its turn at the brief LLM
         paid = bool(req.get("priority"))
+        art_task = None
+        attached = False
         try:
             backlog = len(self.store.queued_requests())
             # Paid requests are never shortened by the backlog rule (§0.5).
@@ -1165,6 +1229,9 @@ class Producer:
                 if job is not None:  # inside the lock: the next brief sees it
                     job.genre = brief.get("genre")
             brief["request_id"] = req["id"]
+            # start the cover now, in parallel with the song render: the brief
+            # already has everything FLUX needs (title/artist/genre/lyrics/style)
+            art_task = self._start_early_art(brief, f"req{req['id']}")
             # requests take the fastest idle generator (RADIO §6.2)
             self.request_stage[req["id"]] = "generating"
             item = await self.songs.produce_song(brief, prefer="fast")
@@ -1183,6 +1250,8 @@ class Producer:
                 evergreen=True, fresh=True,
                 meta={**dict(item.get("meta") or {}), "request_id": req["id"]})
             intro_id = self._store_intro(intro, song_id, req)
+            self._finish_early_art(song_id, art_task)
+            attached = True
             self.store.mark_request_ready(req["id"], song_id, intro_id)
             log.info("request.ready", extra={
                 "request_id": req["id"], "song_item_id": song_id,
@@ -1209,6 +1278,9 @@ class Producer:
         except Exception as e:
             self._fail_request_attempt(req, paid, e)
             raise
+        finally:
+            if art_task is not None and not attached:
+                art_task.cancel()
 
     def _fail_request_attempt(self, req: dict, paid: bool, e: BaseException) -> None:
         max_attempts = self.cfg.payments.max_attempts if paid else 3

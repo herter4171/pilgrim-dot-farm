@@ -532,6 +532,16 @@
       if (st.epoch !== epoch || st.revision !== revision) {
         epoch = st.epoch; revision = st.revision;
         await resetProgram();
+        return;
+      }
+      // A cover can be published after the program snapshot was fetched (art
+      // never gates playout). The state carries the on-air item's current
+      // art URL; swap it in without refetching or rescheduling audio.
+      const cur = items[cursor];
+      if (cur && st.current_seq === cur.seq && st.current_art_url
+          && st.current_art_url !== cur.art_url) {
+        cur.art_url = st.current_art_url;
+        setCoverArt(cur, cur.type === "song");
       }
     } catch (e) { /* keep the current audio; retry on the next poll */ }
   }

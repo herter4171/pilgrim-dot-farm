@@ -3,6 +3,8 @@ low-water target and NOT over-produced merely because items have aired. Fakes
 only — no real backends."""
 from __future__ import annotations
 
+import asyncio
+
 from conftest import make_item, valid_brief
 from pilgrim.config import RNG, SimClock
 from pilgrim.producer import Producer
@@ -207,6 +209,7 @@ class FakeSong:
                            artist="The Barn Cats", lyrics="[verse]\nmeow")
 
     async def produce_song(self, brief, prefer="slow"):
+        await asyncio.sleep(0)  # let an early-art task start before the item
         if self.fail:
             raise RuntimeError("mlx down")
         return {"type": "song", "media_path": "/tmp/s.flac", "duration_s": 45.0,
@@ -271,6 +274,41 @@ def test_two_requests_produced_oldest_first(cfg, tmp_env):
     assert store.get_request(b["id"])["status"] == "queued"
     asyncio.run(prod.song_step())
     assert store.get_request(b["id"])["status"] == "ready"
+
+
+class FakeArtWorker:
+    """Duck-typed early-art worker: renders from the brief, attaches on call."""
+
+    def __init__(self):
+        self.pending_early = set()
+        self.calls = []
+        self.attached = []
+
+    async def render_brief(self, brief, token):
+        self.calls.append((brief["title"], token))
+        return "/tmp/early.jpg", {"scene": "early", "seed": brief.get("seed")}
+
+    def attach(self, item_id, jpg_path, meta):
+        self.attached.append((item_id, jpg_path))
+        self.pending_early.discard(item_id)
+
+    def clear_pending(self, item_id):
+        self.pending_early.discard(item_id)
+
+
+def test_request_song_starts_and_attaches_early_art(cfg, tmp_env):
+    """The cover render starts from the brief and lands on the new song."""
+    _, store, _ = tmp_env
+    cfg.art.enabled = True
+    req = store.add_request("early art please", cap=10)
+    prod = make_song_producer(cfg, store, FakeVoice(), FakeSong())
+    art = FakeArtWorker()
+    prod.art_worker = art
+    assert asyncio.run(prod.song_step()) is True
+    song_id = store.get_request(req["id"])["song_item_id"]
+    assert art.calls and art.calls[0][0] == "Mittens the Night"
+    assert art.calls[0][1] == f"req{req['id']}"
+    assert art.attached == [(song_id, "/tmp/early.jpg")]
 
 
 def test_request_production_starts_prep_clock_at_writing(cfg, tmp_env):

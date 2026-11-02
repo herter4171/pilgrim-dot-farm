@@ -163,6 +163,10 @@ class Station:
                 self.art_worker = ArtWorker(cfg, self.db, self.llm, self.prompts)
             except Exception as e:  # noqa: BLE001 - bad config/creds: art is cosmetic
                 log.warning("art.worker_disabled", extra={"error": str(e)[:300]})
+        # The producer can start a cover from the song brief (early art), in
+        # parallel with the song render. Optional: no worker -> worker path only.
+        if self.art_worker is not None:
+            self.producer.art_worker = self.art_worker
 
     def media_url(self, item_id: int, inv: dict | None = None) -> str:
         """Browser URL for an item's audio (RADIO §8.4, §11)."""

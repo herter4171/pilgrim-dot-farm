@@ -29,6 +29,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.timer import Timer
 from textual.widgets import Button, DataTable, Footer, Header, Input, Label, Static
 
@@ -151,7 +152,10 @@ class DjConsole(App):
 
     # ----------------------------------------------------------------- status
     def _set_status(self, text: str) -> None:
-        self.query_one("#status", Static).update(text)
+        # A poll worker can outlive the screen by a tick during shutdown; a
+        # status update then has no widget to land on. Ignore that race.
+        with suppress(NoMatches):
+            self.query_one("#status", Static).update(text)
 
     def _mark_connected(self) -> None:
         pending = ""

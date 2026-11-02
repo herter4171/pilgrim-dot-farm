@@ -171,6 +171,12 @@ class ArtWorker:
         self.backend = "down"       # cached: ok | down | busy (public health reads it)
         self.rendered = 0
         self.failed = 0
+        # One FLUX render station-wide: the early producer path and the
+        # background worker share this lock.
+        self._render_lock = asyncio.Lock()
+        # Item ids whose cover is being rendered early (producer path); the
+        # background worker skips them so it does not duplicate the work.
+        self.pending_early: set[int] = set()
 
     # -- health ------------------------------------------------------------
     def snapshot(self) -> dict[str, Any]:
@@ -178,15 +184,13 @@ class ArtWorker:
         return {"backend": self.backend}
 
     # -- one song ----------------------------------------------------------
-    async def process(self, item: dict[str, Any], seed: int | None = None) -> bool:
-        """Render one song's cover. Returns True on success; records a failed
-        attempt (back-off) and returns False otherwise. Never raises.
-
-        `seed` overrides the deterministic per-item seed (art_backfill --seed).
-        """
-        iid = int(item["id"])
+    async def _render_one(self, item: dict[str, Any], seed: int,
+                          item_id: int | None = None
+                          ) -> tuple[Path, Path, dict[str, Any]] | None:
+        """Scene -> FLUX -> files. Returns None when the memory gate says no.
+        Raises on any real failure; the caller decides whether to back off."""
+        iid = int(item["id"]) if item_id is None else item_id
         title, artist = scene_texts(item)
-        seed = art_seed(iid) if seed is None else int(seed)
         try:
             free = self._free_gb()
         except Exception:  # noqa: BLE001
@@ -195,56 +199,122 @@ class ArtWorker:
             log.info("art.low_memory", extra={
                 "item_id": iid, "stage": "render",
                 "free_gb": round(free, 1), "min_free_gb": self.cfg.art.min_free_gb})
-            return False
+            return None
 
+        t0 = time.monotonic()
+        scene = await self.scene.write(
+            title=title, artist=artist, genre=item.get("genre"),
+            hint=style_hint(_meta(item)), lyrics=lyric_excerpt(_meta(item)),
+            item_id=iid)
+        prompt = build_flux_prompt(self.template, scene, title, artist)
+        log.info("art.prompt", extra={
+            "item_id": iid, "stage": "scene",
+            "duration_ms": round((time.monotonic() - t0) * 1000)})
+
+        self.backend = "ok" if await self.flux.health() else "down"
+        if self.backend != "ok":
+            raise FluxTimeout("flux health probe failed")
+
+        t0 = time.monotonic()
+        png = await self.flux.generate(prompt, seed)
+        log.info("art.rendered", extra={
+            "item_id": iid, "stage": "render", "seed": seed,
+            "duration_ms": round((time.monotonic() - t0) * 1000)})
+
+        t0 = time.monotonic()
+        png_path, jpg_path = await asyncio.to_thread(
+            save_art, self.cfg, png, art_stem(item))
+        log.info("art.encoded", extra={
+            "item_id": iid, "stage": "encode",
+            "duration_ms": round((time.monotonic() - t0) * 1000),
+            "png": str(png_path), "jpg": str(jpg_path)})
+
+        meta = {
+            "scene": scene, "prompt": prompt, "seed": seed,
+            "title_text": title, "artist_text": artist,
+            "png_path": str(png_path), "model": self.cfg.art.size,
+            "rendered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        return png_path, jpg_path, meta
+
+    async def process(self, item: dict[str, Any], seed: int | None = None) -> bool:
+        """Render one song's cover. Returns True on success; records a failed
+        attempt (back-off) and returns False otherwise. Never raises.
+
+        `seed` overrides the deterministic per-item seed (art_backfill --seed).
+        """
+        iid = int(item["id"])
+        seed = art_seed(iid) if seed is None else int(seed)
+        async with self._render_lock:
+            try:
+                result = await self._render_one(item, seed)
+            except FluxBusy as e:
+                self.backend = "busy"
+                self._failed(iid, "render", e)
+                return False
+            except ArtError as e:
+                self._failed(iid, "render", e)
+                return False
+            except Exception as e:  # noqa: BLE001 - disk/DB/LLM surprises: back off
+                self._failed(iid, "scene", e)
+                return False
+        if result is None:
+            return False
+        png_path, jpg_path, meta = result
         try:
-            t0 = time.monotonic()
-            scene = await self.scene.write(
-                title=title, artist=artist, genre=item.get("genre"),
-                hint=style_hint(_meta(item)), lyrics=lyric_excerpt(_meta(item)),
-                item_id=iid)
-            prompt = build_flux_prompt(self.template, scene, title, artist)
-            log.info("art.prompt", extra={
-                "item_id": iid, "stage": "scene",
-                "duration_ms": round((time.monotonic() - t0) * 1000)})
-
-            self.backend = "ok" if await self.flux.health() else "down"
-            if self.backend != "ok":
-                raise FluxTimeout("flux health probe failed")
-
-            t0 = time.monotonic()
-            png = await self.flux.generate(prompt, seed)
-            log.info("art.rendered", extra={
-                "item_id": iid, "stage": "render", "seed": seed,
-                "duration_ms": round((time.monotonic() - t0) * 1000)})
-
-            t0 = time.monotonic()
-            png_path, jpg_path = await asyncio.to_thread(
-                save_art, self.cfg, png, art_stem(item))
-            log.info("art.encoded", extra={
-                "item_id": iid, "stage": "encode",
-                "duration_ms": round((time.monotonic() - t0) * 1000),
-                "png": str(png_path), "jpg": str(jpg_path)})
-
-            self.db.set_art(iid, str(jpg_path), {
-                "scene": scene, "prompt": prompt, "seed": seed,
-                "title_text": title, "artist_text": artist,
-                "png_path": str(png_path), "model": self.cfg.art.size,
-                "rendered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            })
-            self.rendered += 1
-            self.backend = "ok"
-            return True
-        except FluxBusy as e:
-            self.backend = "busy"
-            self._failed(iid, "render", e)
+            self.db.set_art(iid, str(jpg_path), meta)
+        except Exception as e:  # noqa: BLE001 - a DB hiccup must not kill the worker
+            self._failed(iid, "store", e)
             return False
-        except ArtError as e:
-            self._failed(iid, "render", e)
-            return False
-        except Exception as e:  # noqa: BLE001 - disk/DB/LLM surprises: back off
-            self._failed(iid, "scene", e)
-            return False
+        self.rendered += 1
+        self.backend = "ok"
+        return True
+
+    async def render_brief(self, brief: dict[str, Any], token: str
+                           ) -> tuple[str, dict[str, Any]] | None:
+        """Render a cover from a song brief before the song item exists.
+
+        This is the early path: the producer starts it as soon as the song
+        brief is written, so FLUX runs while the song generator renders. The
+        result is attached to the item by the producer. Failures are logged
+        and left for the background worker (the item keeps art_path NULL).
+        """
+        title = sanitize_text(str(brief.get("title") or ""), TITLE_CAP)
+        artist = sanitize_text(str(brief.get("artist") or ""), ARTIST_CAP)
+        if not title or not artist:
+            return None
+        iid = int(brief.get("request_id") or 0)
+        item = {
+            "id": iid,
+            "media_path": f"_pending_{token}.mp3",
+            "title": brief.get("title"),
+            "artist": brief.get("artist"),
+            "genre": brief.get("genre"),
+            "meta_json": {"brief": brief, "lyrics": brief.get("lyrics", ""),
+                          "style_prompt": brief.get("style_prompt", "")},
+        }
+        seed = int(brief.get("seed") or art_seed(iid))
+        async with self._render_lock:
+            try:
+                result = await self._render_one(item, seed)
+            except Exception as e:  # noqa: BLE001 - early art never blocks a song
+                log.warning("art.early_failed", extra={
+                    "request_id": iid or None, "stage": "render",
+                    "error": f"{type(e).__name__}: {e}"[:300]})
+                return None
+        if result is None:
+            return None
+        _png_path, jpg_path, meta = result
+        self.rendered += 1
+        return str(jpg_path), meta
+
+    def attach(self, item_id: int, jpg_path: str, meta: dict[str, Any]) -> None:
+        """Record an early-rendered cover on the now-created item."""
+        self.db.set_art(item_id, jpg_path, meta)
+        self.pending_early.discard(item_id)
+
+    def clear_pending(self, item_id: int) -> None:
+        self.pending_early.discard(item_id)
 
     def _failed(self, item_id: int, stage: str, exc: Exception) -> None:
         self.failed += 1
@@ -265,7 +335,9 @@ class ArtWorker:
             try:
                 self.db.meta_set(LEASE_KEY, _iso_now())
                 pending = self.db.songs_needing_art(
-                    1, retry_after_s=self.cfg.art.retry_after_s)
+                    10, retry_after_s=self.cfg.art.retry_after_s)
+                pending = [it for it in pending
+                           if int(it["id"]) not in self.pending_early]
                 if pending:
                     ok = await self.process(pending[0])
                     if not ok:
