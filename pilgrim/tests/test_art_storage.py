@@ -228,3 +228,22 @@ def test_missing_art_file_is_a_failure_not_a_crash(tmp_env):
     with pytest.raises(FileNotFoundError):
         pub.publish_art_item(store.get_item(iid))
     assert store.get_item(iid)["art_s3_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_publish_pending_uploads_art_when_no_audio_is_pending(tmp_env):
+    """Regression: an empty audio batch must not skip pending covers."""
+    from pilgrim.media_publish import MediaPublisher
+    from pilgrim.tests.fakes.fake_s3 import FakeS3
+
+    cfg, store, tmp = tmp_env
+    cfg.media.bucket = "bucket"
+    cfg.media.public_base_url = "https://cdn.example/"
+    iid = store.add_item(type_="song", media_path=str(tmp / "song_12.mp3"),
+                         duration_s=1, title="T", artist="A")
+    _, jpg = save_art(cfg, encode_png(32, 32), "song_12")
+    store.set_art(iid, str(jpg), {"scene": "s"})
+    s3 = FakeS3()
+    pub = MediaPublisher(cfg, store, s3)
+    assert await pub.publish_pending() == 1          # nothing to upload but art
+    assert store.get_item(iid)["art_s3_key"]

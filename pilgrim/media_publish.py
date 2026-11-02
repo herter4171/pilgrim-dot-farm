@@ -195,7 +195,17 @@ class MediaPublisher:
         return ok
 
     async def publish_pending(self) -> int:
-        """Upload one batch of unpublished items; returns how many succeeded."""
+        """Upload one batch of unpublished audio, then any pending covers;
+        returns how many objects succeeded. Art runs even when there is no
+        audio to upload, and an art failure never affects audio."""
+        ok = await self._publish_audio()
+        try:
+            ok += await self.publish_pending_art()
+        except Exception as e:  # noqa: BLE001 - art never breaks audio publishing
+            log.warning("media.art_loop_error", extra={"error": str(e)[:300]})
+        return ok
+
+    async def _publish_audio(self) -> int:
         now = time.monotonic()
         # over-fetch by the backed-off count so failures can't starve the rest
         batch = [it for it in self.db.items_to_publish(
@@ -224,11 +234,6 @@ class MediaPublisher:
 
         ok = sum(await asyncio.gather(*(one(it) for it in batch)))
         self.published += ok
-        # Cover JPEGs ride the same uploader loop and the same 5-minute retry.
-        try:
-            ok += await self.publish_pending_art()
-        except Exception as e:  # noqa: BLE001 - art never breaks audio publishing
-            log.warning("media.art_loop_error", extra={"error": str(e)[:300]})
         return ok
 
     async def run(self) -> None:
