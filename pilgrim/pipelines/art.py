@@ -18,7 +18,10 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import re
 import struct
+import time
+import unicodedata
 from typing import Any
 
 import httpx
@@ -195,3 +198,168 @@ def _busy_detail(r: httpx.Response) -> str:
     if isinstance(body, dict):
         return str(body.get("detail") or body.get("type") or "")[:200]
     return r.text[:200]
+
+
+# --------------------------------------------------------------------------- #
+# Scene writing + the fixed FLUX prompt (ALBUM_ART.md §0.3, Step 3)
+# --------------------------------------------------------------------------- #
+# These words make FLUX draw a vinyl disc instead of square artwork (§0.3).
+BANNED_WORDS = ("album", "cover", "record", "vinyl", "lp", "disc", "cd",
+                "single", "sleeve", "cassette")
+_BANNED_RE = re.compile(
+    r"\b(?:" + "|".join(BANNED_WORDS) + r")\b", re.I)
+
+TITLE_CAP = 70          # art text only; the DB title is never changed
+ARTIST_CAP = 48
+STYLE_HINT_CAP = 300
+LYRIC_LINES = 12
+MIN_SCENE_WORDS = 20    # asked for 30-70, accepted a little wider
+MAX_SCENE_WORDS = 80
+NO_TEXT_SENTENCE = "No text, no letters, no typography."
+
+_EMOJI = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF"
+    "\uFE0F\u200D\u20E3]+")
+_TRAILING_PAREN = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]\s*$")
+_SECTION_TAG = re.compile(r"^\s*\[[^\]]*\]\s*")
+
+
+class SceneError(ArtError):
+    """No usable scene after `art.scene_attempts` (skip the song, retry later)."""
+
+
+def banned_hits(text: str) -> list[str]:
+    """Whole-word, case-insensitive banned-word matches (§0.3)."""
+    return sorted({m.group(0).lower() for m in _BANNED_RE.finditer(text)})
+
+
+def has_non_latin_script(text: str) -> bool:
+    """True when a letter is not Latin script (Japanese, Tamil, Cyrillic, …).
+    Accented Latin (Spanish, French) is fine: those render correctly."""
+    for ch in text:
+        if not ch.isalpha():
+            continue
+        try:
+            name = unicodedata.name(ch)
+        except ValueError:
+            return True     # unnamed letter: assume the model can't render it
+        if not name.startswith("LATIN"):
+            return True
+    return False
+
+
+def sanitize_text(text: str, cap: int) -> str:
+    """Art-text sanitiser (§0.3): strip emoji/control chars, collapse
+    whitespace, straighten quotes, drop a trailing parenthetical, cap at a word
+    boundary. Never touches the stored title/artist."""
+    t = unicodedata.normalize("NFKC", text or "")
+    t = "".join(ch for ch in t if unicodedata.category(ch)[0] != "C")
+    t = _EMOJI.sub("", t)
+    for q in ('"', "\u201c", "\u201d", "\u201e"):
+        t = t.replace(q, "'")
+    t = re.sub(r"\s+", " ", t).strip()
+    stripped = _TRAILING_PAREN.sub("", t).strip()
+    if stripped:
+        t = stripped
+    if len(t) > cap:
+        cut = t[:cap]
+        if " " in cut:
+            cut = cut.rsplit(" ", 1)[0]
+        t = cut.rstrip(" ,;:-–—'")
+    return t.strip()
+
+
+def typography_sentence(title: str, artist: str) -> str:
+    """The two `reads exactly` sentences, or the text-free replacement for a
+    non-Latin title/artist (§0.3, answer 5)."""
+    if has_non_latin_script(title + artist):
+        return NO_TEXT_SENTENCE
+    return (f'Large clear typography at the top reads exactly "{title}". '
+            f'Smaller text at the bottom reads exactly "{artist}".')
+
+
+def build_flux_prompt(template: str, scene: str, title: str, artist: str) -> str:
+    """Fixed code-owned template + the LLM scene + code-inserted names."""
+    return template.format(scene=re.sub(r"\s+", " ", scene).strip(),
+                           typography=typography_sentence(title, artist))
+
+
+def validate_scene(obj: dict[str, Any]) -> str:
+    """Untrusted LLM output -> a scene, or SceneError (AGENTS §5)."""
+    scene = obj.get("scene")
+    if not isinstance(scene, str) or not scene.strip():
+        raise SceneError("scene missing or empty")
+    scene = re.sub(r"\s+", " ", scene).strip()
+    words = len(scene.split())
+    if words < MIN_SCENE_WORDS or words > MAX_SCENE_WORDS:
+        raise SceneError(f"scene is {words} words (want {MIN_SCENE_WORDS}-{MAX_SCENE_WORDS})")
+    hits = banned_hits(scene)
+    if hits:
+        raise SceneError(f"banned words in scene: {', '.join(hits)}")
+    return scene
+
+
+def style_hint(meta: dict[str, Any] | None) -> str:
+    """The brief's scene-bearing lines when present (5 of 413 songs), else the
+    one-line caption (ALBUM_ART Step 3, answer 3)."""
+    meta = meta or {}
+    raw_brief = meta.get("brief")
+    brief: dict[str, Any] = raw_brief if isinstance(raw_brief, dict) else {}
+    sp = str(brief.get("style_prompt") or meta.get("style_prompt") or "").strip()
+    if not sp:
+        return ""
+    lines = [ln.strip() for ln in sp.splitlines()]
+    picked = [ln for ln in lines
+              if ln.startswith("Application Scenarios")
+              or ln.startswith("Global Emotional Progression")]
+    if picked:
+        return " ".join(picked)[:600]
+    return sp[:STYLE_HINT_CAP]
+
+
+def lyric_excerpt(meta: dict[str, Any] | None, lines: int = LYRIC_LINES) -> str:
+    """First ~12 non-empty lyric lines with `[section]` tags stripped."""
+    raw = str((meta or {}).get("lyrics") or "")
+    out = []
+    for line in raw.splitlines():
+        line = _SECTION_TAG.sub("", line).strip()
+        if line:
+            out.append(line)
+        if len(out) >= lines:
+            break
+    return "\n".join(out)
+
+
+class SceneWriter:
+    """Asks `models.art_scene` for a scene, retrying untrusted output."""
+
+    def __init__(self, cfg: Config, llm: Any, prompt: str) -> None:
+        self.cfg = cfg
+        self.llm = llm
+        self.prompt = prompt
+
+    async def write(self, *, title: str, artist: str, genre: str | None,
+                    hint: str, lyrics: str, item_id: int | None = None) -> str:
+        user = (f"Title: {title}\nArtist: {artist}\n"
+                f"Genre: {genre or 'unknown'}\nStyle hint: {hint or 'none'}\n")
+        if lyrics:
+            user += f"Lyrics excerpt:\n{lyrics}\n"
+        last: Exception | None = None
+        for attempt in range(1, max(1, self.cfg.art.scene_attempts) + 1):
+            t0 = time.monotonic()
+            try:
+                obj = await self.llm.chat_json(self.cfg.models.art_scene,
+                                               self.prompt, user)
+                scene = validate_scene(obj)
+                log.info("art.scene", extra={
+                    "item_id": item_id, "stage": "scene", "attempt": attempt,
+                    "duration_ms": round((time.monotonic() - t0) * 1000)})
+                return scene
+            except Exception as e:  # noqa: BLE001 - untrusted output, retry
+                last = e
+                log.warning("art.scene_rejected", extra={
+                    "item_id": item_id, "stage": "scene", "attempt": attempt,
+                    "error": f"{type(e).__name__}: {e}"[:300],
+                    "duration_ms": round((time.monotonic() - t0) * 1000)})
+        raise SceneError(f"no valid scene after {self.cfg.art.scene_attempts} "
+                         f"attempts: {last}")

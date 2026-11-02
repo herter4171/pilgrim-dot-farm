@@ -474,7 +474,7 @@ def _load_prompts(cfg: Config) -> dict:
     out = {}
     for f in ("voice.md", "song_brief.md", "station_song.md", "news.md", "moderation.md",
               "field.md", "sfx_cues.md", "sfx_joke.md", "paid_request.md",
-              "paid_summary.md", "promo.md"):
+              "paid_summary.md", "promo.md", "album_art_scene.md"):
         p = pdir / f
         if p.exists():
             out[f.replace(".md", "")] = p.read_text()
