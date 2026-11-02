@@ -1345,6 +1345,19 @@ not uploaded) and `uploaded_at TEXT` (§8.4), both added by an idempotent
 migration. `set_media_file` (MP3 backfill) clears them so the new file is
 re-published.
 
+**Cover art (ALBUM_ART.md, §8.4).** The `items` table carries four additive,
+idempotently-migrated art columns: `art_path TEXT` (absolute path of the local
+JPEG master; NULL = no art yet), `art_s3_key TEXT` (published object key; NULL
+= not uploaded), `art_uploaded_at TEXT` (ISO time of the successful PUT) and
+`art_attempted_at REAL` (epoch of the last failed attempt, for the
+`art.retry_after_s` back-off). Songs only (`type='song'`, not retired, not
+emergency, both title and artist non-empty). The master PNG and the delivered
+JPEG live in `pilgrim/library/art/` as **new** files named after the song's
+media stem (`<stem>.png` / `<stem>.jpg`, then `-2`, `-3` on collision) — never
+an overwrite (hard rule 5). `meta_json.art` stores the scene, the final FLUX
+prompt and the seed so a render is reproducible. `art_path` is set only after
+the PNG validates and the JPEG encodes; `art_s3_key` only after the PUT.
+
 The `items` table carries a `retired` flag (default 0) — a soft-delete used to
 pull truncated/unusable inventory out of playout and production while keeping
 the row for history and the file on disk. `get_item` still returns retired

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
+import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -196,6 +197,15 @@ class Store:
                 self._conn.execute("ALTER TABLE items ADD COLUMN s3_key TEXT")
             if "uploaded_at" not in cols:
                 self._conn.execute("ALTER TABLE items ADD COLUMN uploaded_at TEXT")
+            # idempotent migration (ALBUM_ART.md Step 4, RADIO §14): cover art
+            # per song. art_path is the absolute local JPEG (NULL = no art yet),
+            # art_s3_key the published object key (NULL = not uploaded), and
+            # art_attempted_at the epoch of the last failed attempt (back-off).
+            for col, ddl in (("art_path", "TEXT"), ("art_s3_key", "TEXT"),
+                             ("art_uploaded_at", "TEXT"),
+                             ("art_attempted_at", "REAL")):
+                if col not in cols:
+                    self._conn.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
             # idempotent migration (OVERHAUL 4.4 + PAYMENT.md §3.1): request
             # lifecycle + paid-priority columns. Additive only.
             req_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(requests)")}
@@ -276,6 +286,77 @@ class Store:
                 "UPDATE items SET s3_key=?, uploaded_at=? WHERE id=?",
                 (s3_key, _now_iso(), item_id))
             self._conn.commit()
+
+    # ------------------------------------------------------------------- art
+    def songs_needing_art(self, limit: int = 10, *, retry_after_s: float = 300.0,
+                          now: float | None = None) -> list[dict[str, Any]]:
+        """Songs with no art yet (ALBUM_ART.md Step 5): both title and artist
+        present, not retired/emergency, and not attempted within
+        `retry_after_s`. Songs already in the committed program come first
+        (they are about to air), then newest `created_at` first."""
+        now = time.time() if now is None else now
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT i.* FROM items i
+                   WHERE i.type='song' AND i.retired=0 AND i.emergency=0
+                     AND i.art_path IS NULL
+                     AND COALESCE(i.title,'') <> '' AND COALESCE(i.artist,'') <> ''
+                     AND (i.art_attempted_at IS NULL OR i.art_attempted_at <= ?)
+                   ORDER BY CASE WHEN EXISTS (
+                              SELECT 1 FROM program p WHERE p.item_id = i.id)
+                            THEN 0 ELSE 1 END,
+                            COALESCE((SELECT MIN(p.seq) FROM program p
+                                      WHERE p.item_id = i.id), 0),
+                            i.created_at DESC
+                   LIMIT ?""",
+                (now - retry_after_s, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_art(self, item_id: int, art_path: str, art_meta: dict[str, Any]) -> None:
+        """Record a rendered cover: the local JPEG plus the reproducible scene
+        (scene, final FLUX prompt, seed) merged into the item's meta."""
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT meta_json FROM items WHERE id=?", (item_id,)).fetchone()
+            meta = json.loads(r["meta_json"]) if r and r["meta_json"] else {}
+            meta["art"] = art_meta
+            self._conn.execute(
+                "UPDATE items SET art_path=?, meta_json=?, art_attempted_at=NULL "
+                "WHERE id=?", (art_path, json.dumps(meta), item_id))
+            self._conn.commit()
+
+    def set_art_attempted(self, item_id: int, when: float) -> None:
+        """Mark a failed art attempt (back-off for `art.retry_after_s`)."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE items SET art_attempted_at=? WHERE id=?", (when, item_id))
+            self._conn.commit()
+
+    def set_art_published(self, item_id: int, art_s3_key: str) -> None:
+        """Record a confirmed art upload. Only a successful PUT calls this."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE items SET art_s3_key=?, art_uploaded_at=? WHERE id=?",
+                (art_s3_key, _now_iso(), item_id))
+            self._conn.commit()
+
+    def items_to_publish_art(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Songs with a rendered JPEG not yet in S3 (ALBUM_ART.md Step 6)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM items WHERE type='song' AND retired=0 "
+                "AND art_path IS NOT NULL AND art_s3_key IS NULL "
+                "ORDER BY id LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def art_counts(self) -> dict[str, int]:
+        """Songs with / without a rendered cover (admin health only)."""
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT SUM(CASE WHEN art_path IS NOT NULL THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN art_path IS NULL THEN 1 ELSE 0 END) FROM items "
+                "WHERE type='song' AND retired=0 AND emergency=0").fetchone()
+        return {"with_art": int(r[0] or 0), "without_art": int(r[1] or 0)}
 
     def set_media_file(self, item_id: int, *, media_path: str, duration_s: float,
                        sample_rate: int, channels: int) -> None:
