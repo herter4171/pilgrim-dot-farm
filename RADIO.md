@@ -44,6 +44,7 @@ without touching the rest of the system.
 | 5090 | `qwen38` (Qwen 3.8 27B): news (with search tools), song briefs/lyrics, just-in-time DJ talk | `<QWEN_HOST>` via LiteLLM |
 | 4070 Ti | `ornith`: commercials, liners (high volume, low stakes, inventory work) | `<ORNITH_HOST>` via LiteLLM |
 | Kokoro-82M | TTS, 16-bit mono 24 kHz | `192.168.68.89:8001` |
+| FLUX 3 Image Klein | Cover art per song (ALBUM_ART.md): 1024×1024 PNG, ~40 s/image, single-flight, blocks while rendering | `127.0.0.1:8084` (`hosts.flux`, docs/backends.md §10) |
 | searxng | Web search for news (MCP or JSON API) | `<SEARXNG_HOST>` |
 
 Notes:
@@ -1026,6 +1027,7 @@ hosts:
   litellm: https://litellm.twr.church/v1
   searxng: https://litellm.twr.church/mcp   # LiteLLM MCP (web_search tool)
   sfx: http://192.168.68.88:8000  # MOSS-SoundEffect v2.0
+  flux: http://127.0.0.1:8084     # FLUX 3 Image Klein, cover art (ALBUM_ART.md)
 
 models:
   news: qwen38

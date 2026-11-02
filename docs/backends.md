@@ -562,6 +562,116 @@ Hence RADIO §8.2 delivers **48 kHz stereo** for everything (mono speech is
 duplicated). Firefox could not be launched by Playwright on this host;
 unverified.
 
+## 10. Image generation — FLUX 3 Klein (`127.0.0.1:8084`) (re-probed 2026-11-02)
+
+ALBUM_ART.md Step 1. The server is the M5's own FLUX server
+(`/Users/justinherter/local_llm/flux3/serve.py`), FastAPI/uvicorn, loopback
+only. Source read for the behaviour curl can't show (locks, memory guard,
+503 body).
+
+### Server
+
+```
+GET /health  -> 200 {"status":"ok","port":8084,"model":"6bit","loaded":true,
+                     "rss_mb":9053.7,"physical_memory_gb":68.7}      (1.4 ms)
+GET /v1/models -> 200 {"object":"list","data":[
+                     {"id":"flux3-6bit","object":"model","owned_by":"local"},
+                     {"id":"8bit","object":"model","owned_by":"hub","hf":"VisualInference/FLUX-3-Image-Klein-MLX-8bit"},
+                     {"id":"6bit","object":"model","owned_by":"hub","hf":"VisualInference/FLUX-3-Image-Klein-MLX-6bit"}]}
+```
+
+One model is resident (`6bit`, ~9 GB RSS). The `model` field in a generation
+request is **ignored**: whatever is loaded renders. Every response carries
+`X-Model-Memory-MB` (observed `9053.7`).
+
+### Request (JSON)
+
+```json
+{"prompt": "...", "size": "1024x1024", "n": 1, "steps": 16,
+ "guidance": null, "seed": 1045308, "response_format": "b64_json"}
+```
+
+Only `prompt` matters; all other fields optional (`size` default `1024x1024`,
+`steps` default 16, `n` 1–4 — anything outside 400s). `images`/`boxes` are
+reference-image inputs; we don't use them.
+
+### Response — **double nesting**
+
+```json
+{"object": "list",
+ "data": [ { "created": 1793591772,
+             "data": [ {"b64_json": "<png base64>", "mime_type": "image/png"} ],
+             "model": "flux3-6bit",
+             "bfx_revised_prompt": "<prompt as sent>",
+             "bfx_record": {"prompt": "...", "input_prompt": "...",
+                            "width": 1024, "height": 1024, "steps": 16,
+                            "seed": 1045308, "upsampled": false,
+                            "references": 0, "boxes": null} } ]}
+```
+
+The PNG is `body["data"][0]["data"][0]["b64_json"]`. `bfx_revised_prompt` is
+the prompt echoed back unchanged (no rewriting).
+
+### Observed timings (2026-11-02, mlx-serve song generation resident, 40.9 GB
+free by the server's own vm_stat formula)
+
+| size | steps | wall | PNG |
+|---|---|---|---|
+| 256×256 | 4 | **1.0 s** | 98 KB |
+| 1024×1024 | 16 | **37.6 s** | 1.79 MB (2.39 MB base64) |
+
+So the 40 s figure in ALBUM_ART.md §0.1 is the 1024×1024/16-step number and
+still holds; a small probe render is ~1 s, cheap enough for tests against the
+real server if ever needed. Output PNG: 8-bit RGB (colortype 2), IHDR at
+bytes 16–24 (`width`, `height` big-endian), signature
+`89 50 4E 47 0D 0A 1A 0A`.
+
+### The `/download` race — never use it
+
+`POST` with `response_format: "url"` (the default!) returns
+`{"url": "http://<host>:<port>/download/<nbytes>", ...}`. `GET /download/{nbytes}`
+ignores `nbytes` and serves `flux3_output.png` from the server's cwd — i.e.
+**whatever render finished most recently**, not ours. With any other caller
+between our render and our download we would attach someone else's image.
+Always send `response_format: "b64_json"`.
+
+### Single-flight, and `/health` blocks
+
+Generation holds an `asyncio.Lock` and runs the model **synchronously on the
+event loop** (the handler is `async def` but `server.generate` is a plain sync
+call), so during a render the loop is blocked: no request is parsed at all.
+Verified: while a 1024×1024 render ran, a `/health` poll returned after
+**36.7 s**; immediately after the render, `/health` was back to 1–2 ms. A
+second generation queues behind the first (`n: 2` is two serial renders).
+Hence: one in-flight request station-wide, `/health` timeout ≥ 60 s, and a
+slow health check is not "down".
+
+### Memory guard (from source)
+
+`available = (Pages free + Pages inactive + Pages occupied by compressor) ×
+page size` from `vm_stat`; work is refused when
+`available < PRESSURE_FREE_BYTES` (**15 GB**), before loading and before each
+image. MLX is hard-capped at `MEM_LIMIT_GB` = 12 GB (measured peak ~9.3 GB).
+On refusal the `RuntimeError` handler answers:
+
+```json
+503 {"detail": "server_busy_or_out_of_memory: out of memory pressure (12.3 GB free of 69 GB RAM); refusing request",
+     "type": "memory_pressure"}
+```
+
+(The detail string is built inside a `redirect_stdout` block, so the exact
+wording may vary; `status 503` + `type: memory_pressure` is the contract.)
+This is a normal back-off, not an error.
+
+### The "album" finding, re-verified
+
+Prompting "album cover"/"record"/"vinyl" makes FLUX draw a vinyl disc. The
+ALBUM_ART.md §0.3 template (square full-bleed art + `reads exactly "…"` for
+title and artist) rendered **exactly correct** text on a real library song:
+title `Biscuits and Gravy (Two-Step Flow)`, artist `The Dirty Gravy Boys`,
+square, no disc, no border. Props that carry writing (box labels, screens)
+produce pseudo-text, so scenes must not contain them.
+
 ---
 
 ## Open gaps (to verify before depending on these in code)

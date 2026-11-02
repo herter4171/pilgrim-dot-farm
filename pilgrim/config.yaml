@@ -19,6 +19,7 @@ hosts:
   # NOT a direct HTTP /search. This is the MCP Streamable-HTTP endpoint.
   searxng: https://litellm.twr.church/mcp
   sfx: http://192.168.68.88:8000   # MOSS-SoundEffect v2.0 (docs/backends.md §7)
+  flux: http://127.0.0.1:8084      # FLUX 3 Image Klein, cover art (ALBUM_ART.md; docs/backends.md §10)
 
 models:
   news: qwen38

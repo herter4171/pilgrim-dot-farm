@@ -1,7 +1,8 @@
 # AGENTS.md — Pilgrim Dot Farm Radio
 
-Active work plan: PAYMENT.md (paid priority requests via Stripe; start at
-Step 0). SPLIT_PLAN.md is complete (Steps 1–10) and stays the reference for
+Active work plan: ALBUM_ART.md (cover art per song via the local FLUX 3
+server; start at Step 1). PAYMENT.md is paused (Steps 0–12b shipped).
+SPLIT_PLAN.md is complete (Steps 1–10) and stays the reference for
 the edge/gateway/origin layout.
 
 You are building an AI-generated radio station. **`RADIO.md` is the source of

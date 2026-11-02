@@ -103,6 +103,7 @@ class Hosts(BaseModel):
     litellm: str
     searxng: str
     sfx: str = "http://127.0.0.1:8000"  # MOSS-SoundEffect v2.0 (docs/backends.md §7)
+    flux: str = "http://127.0.0.1:8084"  # FLUX 3 Image Klein, cover art (docs/backends.md §10)
 
 
 class Models(BaseModel):
