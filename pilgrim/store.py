@@ -85,6 +85,13 @@ def _project_recent_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
             "wait_s": _wait_s(row.get("prep_started_at"), row.get("aired_at"))}
 
 
+REQUEST_PRIORITY_H = 24.0   # a request song made this recently jumps the queue
+
+
+def _iso_ago(epoch: float, hours: float) -> str:
+    return datetime.fromtimestamp(epoch - hours * 3600, tz=UTC).isoformat()
+
+
 class Store:
     """Thin wrapper over SQLite. All writes go through a single connection per thread."""
 
@@ -292,8 +299,14 @@ class Store:
                           now: float | None = None) -> list[dict[str, Any]]:
         """Songs with no art yet (ALBUM_ART.md Step 5): both title and artist
         present, not retired/emergency, and not attempted within
-        `retry_after_s`. Songs already in the committed program come first
-        (they are about to air), then newest `created_at` first."""
+        `retry_after_s`.
+
+        Order: **fresh listener-request songs first** (made in the last
+        `REQUEST_PRIORITY_H` hours, newest first — they air minutes after
+        being made, so a cover rendered now lands before the first spin;
+        ALBUM_ART Step 5 addendum), then songs already in the committed
+        program (they are about to air), then newest `created_at`.
+        """
         now = time.time() if now is None else now
         with self._lock:
             rows = self._conn.execute(
@@ -302,14 +315,17 @@ class Store:
                      AND i.art_path IS NULL
                      AND COALESCE(i.title,'') <> '' AND COALESCE(i.artist,'') <> ''
                      AND (i.art_attempted_at IS NULL OR i.art_attempted_at <= ?)
-                   ORDER BY CASE WHEN EXISTS (
+                   ORDER BY CASE WHEN i.meta_json LIKE '%"request_id"%'
+                                  AND i.created_at >= ?
+                            THEN 0 ELSE 1 END,
+                            CASE WHEN EXISTS (
                               SELECT 1 FROM program p WHERE p.item_id = i.id)
                             THEN 0 ELSE 1 END,
                             COALESCE((SELECT MIN(p.seq) FROM program p
                                       WHERE p.item_id = i.id), 0),
                             i.created_at DESC
                    LIMIT ?""",
-                (now - retry_after_s, limit)).fetchall()
+                (now - retry_after_s, _iso_ago(now, REQUEST_PRIORITY_H), limit)).fetchall()
         return [dict(r) for r in rows]
 
     def set_art(self, item_id: int, art_path: str, art_meta: dict[str, Any]) -> None:

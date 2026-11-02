@@ -125,6 +125,28 @@ def test_songs_needing_art_orders_program_first_then_newest(tmp_env):
     assert ids == [mid, new, old]
 
 
+def test_request_songs_come_first_newest_first(tmp_env):
+    """A fresh listener-request song airs minutes after it is made, so its
+    cover must be rendered ahead of the stock backlog (ALBUM_ART Step 5).
+    Stale requests fall back to the normal committed/newest order."""
+    cfg, store, tmp = tmp_env
+    stock_new = _song(store, tmp, media="stock_new.mp3",
+                      created_at="2026-05-01T00:00:00+00:00")
+    old_req = store.add_item(type_="song", media_path=str(tmp / "req_old.mp3"),
+                             duration_s=1, title="Old req", artist="A",
+                             meta={"request_id": 1},
+                             created_at="2026-01-01T00:00:00+00:00")
+    new_req = store.add_item(type_="song", media_path=str(tmp / "req_new.mp3"),
+                             duration_s=1, title="New req", artist="A",
+                             meta={"request_id": 2},
+                             created_at="2026-02-01T00:00:00+00:00")
+    store.append_program(old_req, "song", 1.0)     # committed, but still a request
+    from datetime import UTC, datetime
+    now = datetime(2026, 2, 2, tzinfo=UTC).timestamp()   # 24 h after new_req
+    ids = [i["id"] for i in store.songs_needing_art(10, now=now)]
+    assert ids == [new_req, old_req, stock_new]
+
+
 def test_songs_needing_art_skips_songs_with_art(tmp_env):
     cfg, store, tmp = tmp_env
     iid = _song(store, tmp)
