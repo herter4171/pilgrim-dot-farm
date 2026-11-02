@@ -14,9 +14,12 @@ class FakeVoice:
     def __init__(self) -> None:
         self.calls = 0
         self.contexts: list[str | None] = []
+        self.rendered_voices: list[str | None] = []
 
     async def produce_item(self, role: str, target_s: float,
-                           context: str | None = None) -> dict:
+                           context: str | None = None,
+                           voice: str | None = None,
+                           host: str | None = None) -> dict:
         self.calls += 1
         self.contexts.append(context)
         return {"media_path": f"/tmp/{role}_{self.calls}.flac", "duration_s": target_s,
@@ -24,13 +27,16 @@ class FakeVoice:
                 "meta": {"text": "Pilgrim Dot Farm."}}
 
     async def write_copy(self, role: str, target_s: float,
-                         context: str | None = None) -> dict:
+                         context: str | None = None,
+                         host: str | None = None) -> dict:
         self.calls += 1
         self.contexts.append(context)
         return {"text": "Pilgrim Dot Farm. [[event_name]] [[days_until]].",
                 "est_duration_s": target_s, "evergreen": True}
 
-    async def render(self, copy: dict, role: str, target_s: float) -> dict:
+    async def render(self, copy: dict, role: str, target_s: float,
+                     voice: str | None = None) -> dict:
+        self.rendered_voices.append(voice)
         return {"path": f"/tmp/{role}_{self.calls}.flac", "duration_s": target_s,
                 "sample_rate": 24000, "channels": 1,
                 "words": len(str(copy.get("text", "")).split()),
@@ -316,7 +322,7 @@ class _RecordingVoice(FakeVoice):
         super().__init__()
         self.role_contexts = []
 
-    async def produce_item(self, role, target_s, context=None):
+    async def produce_item(self, role, target_s, context=None, voice=None, host=None):
         self.role_contexts.append((role, context))
         return await super().produce_item(role, target_s, context)
 
@@ -400,12 +406,12 @@ class _SnoopVoice(FakeVoice):
         self.store = store
         self.songs_during_intro: list[int] = []
 
-    async def produce_item(self, role, target_s, context=None):
+    async def produce_item(self, role, target_s, context=None, voice=None, host=None):
         if role == "intro":
             self.songs_during_intro.append(len(self.store.list_items("song")))
         return await super().produce_item(role, target_s, context)
 
-    async def render(self, copy, role, target_s):
+    async def render(self, copy, role, target_s, voice=None):
         if role == "intro":  # stock intros are code-written (revision 11)
             self.songs_during_intro.append(len(self.store.list_items("song")))
         return await super().render(copy, role, target_s)
@@ -491,7 +497,7 @@ class _FailingVoice(FakeVoice):
         super().__init__()
         self.rendered: list[str] = []
 
-    async def produce_item(self, role, target_s, context=None):
+    async def produce_item(self, role, target_s, context=None, voice=None, host=None):
         self.calls += 1
         raise ValueError("voice speech rate 3.9 w/s outside [1.2,3.6]")
 
@@ -679,3 +685,45 @@ def test_ensure_time_checks_renders_one_per_upcoming_mark(cfg, tmp_env):
     assert len(set(buckets)) == 12
     assert all(b % 300 == 0 for b in buckets)
     assert all(i["expires_at"] for i in items)
+
+
+def test_host_shifts_by_day_part(cfg, tmp_env):
+    """Q2: two hosts, one per shift. Evening -> the evening host, morning ->
+    the morning host (ANNOUNCER_OVERHAUL §10)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from pilgrim.config import Host
+    cfg.talk.hosts = [
+        Host(id="liam", name="Liam", voice="am_liam",
+             day_parts=["overnight", "morning drive"]),
+        Host(id="mara", name="Mara", voice="af_bella",
+             day_parts=["midday", "afternoon", "evening"]),
+    ]
+    _, store, _ = tmp_env
+    tz = ZoneInfo(cfg.station.timezone)
+    evening = datetime(2026, 11, 1, 18, 30, tzinfo=tz).timestamp()
+    morning = datetime(2026, 11, 1, 8, 30, tzinfo=tz).timestamp()
+    prod = make_producer(cfg, store, FakeVoice(),
+                         clock_override=SimClock(epoch=evening))
+    assert prod._current_host().name == "Mara"
+    prod = make_producer(cfg, store, FakeVoice(),
+                         clock_override=SimClock(epoch=morning))
+    assert prod._current_host().name == "Liam"
+
+
+def test_ensure_dj_renders_in_the_shift_hosts_voice(cfg, tmp_env):
+    import asyncio
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from pilgrim.config import Host
+    cfg.talk.hosts = [Host(id="mara", name="Mara", voice="af_bella")]
+    _, store, _ = tmp_env
+    voice = FakeVoice()
+    tz = ZoneInfo(cfg.station.timezone)
+    ts = datetime(2026, 11, 1, 18, 30, tzinfo=tz).timestamp()
+    prod = make_producer(cfg, store, voice, clock_override=SimClock(epoch=ts))
+    asyncio.run(prod.ensure_dj())
+    assert voice.rendered_voices
+    assert all(v == "af_bella" for v in voice.rendered_voices)

@@ -216,6 +216,19 @@ talk:
   time_check_marks_min: [0, 15, 30, 45]   # top, quarter past, bottom, quarter til
   time_check_window_s: 120                 # a check airs only this close to its mark
   time_check_min_gap_s: 600
+  hosts:
+    - id: liam
+      name: Liam
+      voice: am_liam
+      persona: warm and wry, a little absurd; loves the town, the barn and the weather
+      day_parts: [overnight, morning drive]
+    # PROVISIONAL (operator picked "American, woman" but not the id by ear —
+    # AGENTS §9). Samples in voice-samples/af_bella|af_nicole|af_sarah|af_river.wav.
+    - id: mara
+      name: Mara
+      voice: af_bella
+      persona: dry and quick, a little conspiratorial; treats Thistledown like a beat she covers
+      day_parts: [midday, afternoon, evening]
   field_reporter_name: Giles  # PLACEHOLDER until the user names him (SFX.md §10.1)
 
 # Sound effects overlaid on non-news talk (SFX.md). Never on news, by construction.

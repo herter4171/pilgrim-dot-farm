@@ -579,10 +579,21 @@ class Station(BaseModel):
         return self
 
 
+class Host(BaseModel):
+    """One on-air host (ANNOUNCER_OVERHAUL Q2). The shift is chosen by day
+    part; the voice and name are the operator's listening decision (§10)."""
+    id: str
+    name: str
+    voice: str
+    persona: str = ""
+    day_parts: list[str] = Field(default_factory=list)  # empty = any shift
+
+
 class Talk(BaseModel):
     """Contextual talk settings (OVERHAUL 5.3, ANNOUNCER_OVERHAUL)."""
     time_mention_ttl_s: int = 900  # DJ clips that mention the time expire after this
     field_reporter_name: str = "Giles"  # placeholder until the user names him (SFX.md §10)
+    hosts: list[Host] = Field(default_factory=list)
     # Time checks are code-written and targeted at quarter marks (operator pick:
     # top, quarter past, bottom, quarter til). A check airs only inside the
     # window around its mark, so it can never be stale by more than the window.

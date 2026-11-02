@@ -194,7 +194,9 @@ class VoicePipeline:
     def _model_for(self, role: str) -> str:
         return getattr(self.cfg.models, self.ROLE_INFO[role][0], "qwen38")
 
-    def _voice_for(self, role: str) -> str:
+    def _voice_for(self, role: str, override: str | None = None) -> str:
+        if override:
+            return override
         if role == "commercial":
             return self.cfg.voices.commercials
         if role == "news":
@@ -224,10 +226,13 @@ class VoicePipeline:
         return tmpl.format(cues=", ".join(names) or "none", joke=joke).strip()
 
     async def write_copy(self, role: str, target_s: float,
-                         context: str | None = None) -> dict:
+                         context: str | None = None,
+                         host: str | None = None) -> dict:
         name = self.cfg.talk.field_reporter_name
-        prompt = (self.prompts.get("field", "").replace("{name}", name)
-                  if role == "field_report" else self.prompts.get("voice"))
+        if role == "field_report":
+            prompt = self.prompts.get("field", "").replace("{name}", name)
+        else:
+            prompt = self.prompts.get("voice", "").replace("{host}", host or "Liam")
         if not prompt:
             raise LLMError(f"prompt template missing for {role}")
         extra = context or ""
@@ -260,9 +265,10 @@ class VoicePipeline:
         return {**obj, "text": text, "est_duration_s": est,
                 "sfx_cues": cues, "joke_after_sentence": joke}
 
-    async def render(self, copy: dict, role: str, target_s: float) -> dict:
+    async def render(self, copy: dict, role: str, target_s: float,
+                     voice: str | None = None) -> dict:
         clean = tts_cleanup(copy["text"])
-        voice = self._voice_for(role)
+        voice = self._voice_for(role, voice)
         speed = self.cfg.voices.speed
         wav = await self.kokoro.synth(clean, voice, speed)
         # staging-safe (TUI.md §6.4): the intermediate WAV never collides with a
@@ -309,15 +315,17 @@ class VoicePipeline:
         }
 
     async def produce_item(self, role: str, target_s: float,
-                           context: str | None = None) -> dict:
+                           context: str | None = None,
+                           voice: str | None = None,
+                           host: str | None = None) -> dict:
         base = {"item_type": role, "target_s": target_s}
         try:
-            copy = await self.write_copy(role, target_s, context)
+            copy = await self.write_copy(role, target_s, context, host=host)
         except Exception as e:
             log.warning("voice.rejected", extra={**base, "stage": "copy", "error": err_text(e)})
             raise
         try:
-            rendered = await self.render(copy, role, target_s)
+            rendered = await self.render(copy, role, target_s, voice=voice)
         except Exception as e:
             log.warning("voice.rejected", extra={**base, "stage": "render", "error": err_text(e)})
             raise

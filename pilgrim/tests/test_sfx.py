@@ -121,17 +121,17 @@ class CueVoice:
         self.cues = cues or []
         self.joke = joke
 
-    async def produce_item(self, role, target_s, context=None):
+    async def produce_item(self, role, target_s, context=None, voice=None, host=None):
         return {"media_path": f"/tmp/{role}.flac", "duration_s": 15.0,
                 "sample_rate": 24000, "channels": 1, "role": role,
                 "meta": {"text": TEXT, "sfx_cues": list(self.cues),
                          "joke_after_sentence": self.joke}}
 
-    async def write_copy(self, role, target_s, context=None):
+    async def write_copy(self, role, target_s, context=None, host=None):
         return {"text": TEXT, "est_duration_s": target_s, "evergreen": True,
                 "sfx_cues": list(self.cues), "joke_after_sentence": self.joke}
 
-    async def render(self, copy, role, target_s):
+    async def render(self, copy, role, target_s, voice=None):
         return {"path": f"/tmp/{role}.flac", "duration_s": 15.0,
                 "sample_rate": 24000, "channels": 1,
                 "words": len(TEXT.split()), "words_per_s": 2.5}

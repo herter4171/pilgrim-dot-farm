@@ -20,7 +20,9 @@ class FakeVoice:
         self.calls = 0
 
     async def produce_item(self, role: str, target_s: float,
-                           context: str | None = None) -> dict:
+                           context: str | None = None,
+                           voice: str | None = None,
+                           host: str | None = None) -> dict:
         self.calls += 1
         dur = max(float(target_s), 2.0)
         words = max(int(dur * 2.8), 2)  # ~2.8 w/s: inside the [1.2, 3.6] gate
@@ -29,14 +31,16 @@ class FakeVoice:
                 "meta": {"text": " ".join(["word"] * words)}}
 
     async def write_copy(self, role: str, target_s: float,
-                         context: str | None = None) -> dict:
+                         context: str | None = None,
+                         host: str | None = None) -> dict:
         self.calls += 1
         dur = max(float(target_s), 2.0)
         words = max(int(dur * 2.8), 2)
         return {"text": " ".join(["word"] * words), "est_duration_s": dur,
                 "evergreen": True}
 
-    async def render(self, copy: dict, role: str, target_s: float) -> dict:
+    async def render(self, copy: dict, role: str, target_s: float,
+                     voice: str | None = None) -> dict:
         dur = max(float(target_s), 2.0)
         words = len(str(copy.get("text", "")).split())
         return {"path": f"/tmp/{role}_{self.calls}.flac", "duration_s": dur,

@@ -308,6 +308,11 @@ class Producer:
         topic = self._pick_topic()
         if topic:
             context_parts.append(f"Topic: {topic}.")
+        host = self._current_host()
+        host_name = host.name if host else "Liam"
+        host_voice = host.voice if host else None
+        if host and host.persona:
+            context_parts.append(f"Host persona: {host.persona}.")
         context_parts.extend(self._request_context())
         context = "\n".join(context_parts)
         # Expiry is stamped AFTER the LLM call (revision 3). A clock/day-part
@@ -316,17 +321,20 @@ class Producer:
         # may wait on the shelf.
         for _ in range(max(0, need)):
             try:
-                copy = await self.voice.write_copy("dj_talk", 18.0, context=context)
+                copy = await self.voice.write_copy(
+                    "dj_talk", 18.0, context=context, host=host_name)
                 reason = self._motif_reason(copy["text"])
                 if reason:
                     copy = await self.voice.write_copy(
                         "dj_talk", 18.0,
                         context=context + f"\nDo not use the word/phrase "
-                                          f"'{reason}' this time.")
+                                          f"'{reason}' this time.",
+                        host=host_name)
                     reason = self._motif_reason(copy["text"])
                     if reason:
                         log.warning("talk.motif_reuse", extra={"motif": reason})
-                rendered = await self.voice.render(copy, "dj_talk", 18.0)
+                rendered = await self.voice.render(copy, "dj_talk", 18.0,
+                                                   voice=host_voice)
                 item = self.voice.item_dict("dj_talk", copy, rendered)
                 text = copy["text"]
                 wall = self.clock.wall()  # after the LLM call, not before
@@ -357,6 +365,20 @@ class Producer:
         if 17 <= hour < 21:
             return "evening"
         return "overnight"
+
+    def _current_host(self):
+        """The host on shift now (by day part); None when hosts are not
+        configured (single-host station)."""
+        hosts = self.cfg.talk.hosts
+        if not hosts:
+            return None
+        hour = datetime.fromtimestamp(
+            self.clock.wall(), ZoneInfo(self.cfg.station.timezone)).hour
+        part = self._day_part(hour)
+        for h in hosts:
+            if not h.day_parts or part in h.day_parts:
+                return h
+        return hosts[0]
 
     def _weather_phrase(self) -> str:
         phrases = self.cfg.talk.weather_phrases
@@ -486,7 +508,9 @@ class Producer:
         if camp is not None:
             ctx = (f"Event: {camp.label}. Date: {camp.date}. CTA: {camp.cta}.\n"
                    f"Angles you may use: {'; '.join(camp.lines)}")
-            copy = await self.voice.write_copy("promo", 12.0, context=ctx)
+            host = self._current_host()
+            copy = await self.voice.write_copy(
+                "promo", 12.0, context=ctx, host=host.name if host else "Liam")
             reason = validate_promo_template(copy["text"], camp, cfg.station.name)
             if reason:
                 # one retry with the rejection fed back, then give up rather
@@ -494,7 +518,8 @@ class Producer:
                 copy = await self.voice.write_copy(
                     "promo", 12.0,
                     context=ctx + f"\nYour previous attempt was rejected "
-                                  f"({reason}); include the tokens.")
+                                  f"({reason}); include the tokens.",
+                    host=host.name if host else "Liam")
                 reason = validate_promo_template(copy["text"], camp,
                                                  cfg.station.name)
                 if reason:
@@ -515,7 +540,9 @@ class Producer:
             copy = {"text": lines[self.rng.randint(0, len(lines) - 1)],
                     "est_duration_s": 7.0, "evergreen": True}
             kind, campaign_id, expires = "request_line", None, None
-        rendered = await self.voice.render(copy, "promo", 12.0)
+        host = self._current_host()
+        rendered = await self.voice.render(copy, "promo", 12.0,
+                                           voice=host.voice if host else None)
         item = self.voice.item_dict("promo", copy, rendered)
         item["meta"]["kind"] = kind
         if campaign_id:
@@ -554,7 +581,9 @@ class Producer:
             copy = {"text": self._time_check_text(float(bucket), tz),
                     "est_duration_s": 4.0, "evergreen": False}
             try:
-                rendered = await self.voice.render(copy, "time_check", 4.0)
+                host = self._current_host()
+                rendered = await self.voice.render(
+                    copy, "time_check", 4.0, voice=host.voice if host else None)
             except Exception as e:
                 log.warning("time_check production failed: %s", err_text(e))
                 return
@@ -1101,9 +1130,11 @@ class Producer:
         title = item.get("title") or "this next one"
         artist = item.get("artist") or ""
         if req is None:
+            host = self._current_host()
             text = self._named_intro_text(title, artist)
             try:
-                r = await self.voice.render({"text": text}, "intro", 6.0)
+                r = await self.voice.render({"text": text}, "intro", 6.0,
+                                            voice=host.voice if host else None)
             except Exception as e:
                 log.warning("intro.failed", extra={"error": err_text(e)})
                 return None
@@ -1129,7 +1160,11 @@ class Producer:
         context += "Do not mention the clock time."
         for _ in range(2 if req is not None else 1):
             try:
-                return await self.voice.produce_item("intro", 10.0, context=context)
+                host = self._current_host()
+                return await self.voice.produce_item(
+                    "intro", 10.0, context=context,
+                    voice=host.voice if host else None,
+                    host=host.name if host else "Liam")
             except Exception as e:
                 log.warning("intro.failed", extra={
                     "error": err_text(e),
