@@ -110,15 +110,24 @@ item is made.
 
 | Class | Types | When produced | Recyclable |
 |-------|-------|---------------|-----------|
-| **Evergreen** | songs, commercials, generic liners, station IDs | Well ahead, into inventory | Yes |
-| **Expiring** | news bulletins | On a refresh cycle; carries `expires_at` | Never |
-| **Contextual** | DJ talk-ups (back-announce + intro), time checks, field reports | Just in time, once neighbors are known | Never |
+| **Evergreen** | songs, commercials, generic liners, station IDs, promos, named song intros | Well ahead, into inventory | Yes |
+| **Expiring** | news bulletins, clock reads, day-level promos | On a refresh cycle; carries `expires_at` | Never |
+| **Contextual** | DJ talk-ups (back-announce), field reports | Just in time, once neighbors are known | Never |
 
 Segment types the selector chooses from:
 - `song` — one song (fresh preferred over recycled).
 - `commercial_break` — 1–2 commercials, optionally closed by a liner.
-- `liner` — short station ID or gag line.
-- `dj_talk` — contextual talk-up referencing the previous and next items.
+- `liner` — short station ID or gag line; `meta.kind` ∈ `station_id | gag |
+  weather | town_notice | promo` (weather/town_notice are optional extras).
+- `dj_talk` — contextual talk-up about recent songs, the day, the town and a
+  rotated topic. **Time-free**: the clock is carried by `time_check` only.
+- `time_check` — a 3–5 s clock read, **code-written** (no LLM), airing at
+  :00/:15/:30/:45 (ANNOUNCER §A4).
+- `promo` — a 10–20 s station promo; `meta.kind` ∈ `campaign | request_line`.
+  Campaign promos are LLM-written with code-filled day tokens and expire at
+  local midnight; request-line plugs are code-written config lines.
+- `intro` — the named song intro; **evergreen** (recycled with its song), except
+  a listener-request intro, which is one-shot.
 - `news` — the current bulletin, if one is valid.
 - `field_report` — the British field reporter, filing invented farm factoids
   from a literal field; always closes with his "outstanding in my field"
@@ -178,6 +187,15 @@ types. Default weights (tunable in config):
 | liner | 0.10 |
 | news | 0.08 |
 | field_report | 0.05 |
+| promo | 0.05 |
+| time_check | 0.04 |
+
+Weights are **per-item draw probabilities, not airtime shares** (a 110 s song
+and a 5 s liner are drawn, not timed). The realized non-song share is bounded
+by `max_consecutive_non_song`: with 2 slots it cannot exceed
+`2 × mean_non_song / (mean_song + 2 × mean_non_song)` (21.7% at the measured
+110.3 s / 15.3 s averages). Do not configure weights that assume otherwise;
+`playout.hour_budget` is the explicit mix knob (ANNOUNCER B0).
 
 Constraints (applied before drawing):
 - At most **2 consecutive non-song segments**; after that, force `song`.
@@ -235,6 +253,19 @@ Constraints (applied before drawing):
 - `field_report` never adjacent to `news` (either order) or to another
   `field_report`, and is held back after a `serious` bulletin like a
   `commercial_break`.
+- `promo` never adjacent to `dj_talk` or another `promo`, and is held back after
+  a `serious` bulletin. A campaign under its `per_hour` target triples the
+  promo weight (soft nudge; never forced past a constraint).
+- `time_check` never adjacent to `dj_talk`, `news`, or another `time_check`.
+  It is **due** only when the next slot airs within
+  `talk.time_check_window_s` of a configured mark (`time_check_marks_min`,
+  default :00/:15/:30/:45) and the last check is at least
+  `talk.time_check_min_gap_s` old. When due it is **committed** (a
+  commitment, not a nudge), unless it would break the non-song run limit.
+  The variant aired is the one rendered for the slot's own 5-minute bucket, so
+  the spoken time is never more than the rounding off.
+- Same liner: not replayed within `liners.repeat_gap_items` committed items
+  (20) or `liners.repeat_gap_s` wall seconds (2,700).
 - **SFX at commit time** (`sfx_plan.py`, pure over the injected RNG): only
   the SFX host types carry overlays (never news); a `joke` overlay (the
   rimshot) airs on a coin flip (`sfx.joke_p`, 50/50); a stinger that would run
@@ -279,17 +310,25 @@ Constraints (applied before drawing):
 ### 5.3 Planned vs. committed
 
 - **Planned** items are chosen but may still need rendering (contextual items).
+  Contextual talk is produced ahead into a small stock shelf, not planned at
+  commit: the producer writes time-free copy, renders it, and the scheduler
+  commits only already-rendered items.
 - **Committed** items are fully rendered and visible to the client.
 - The scheduler keeps **≥5 min of committed audio** ahead of the client
   playhead (from heartbeat) and plans a few items past that, while songs are
   airable (song droughts and pending listener requests are the exceptions: see
   §5.2 — the window is held at `filler_horizon_s` while a request renders, and
   a ready request is spliced into the next song slot with a revision bump).
-- When a `dj_talk` is planned, the scheduler first fixes its neighbors, then
-  requests the copy from `qwen38` with previous/next metadata, then renders via
-  Kokoro. If it isn't rendered by the time it would enter the committed window,
-  it is **dropped and replaced with a liner** of similar length. Playout never
-  blocks on it.
+- **Time-bearing audio is rendered per 5-minute bucket, and the bucket is
+  chosen at commit** (ANNOUNCER §A3). The LLM writes copy once with a
+  `[[clock]]` token and no clock; the producer renders one cheap variant per
+  upcoming bucket (Kokoro ~0.2 s), each stamped `meta.bucket` and expiring at
+  its bucket's end. At commit the scheduler knows the exact air slot
+  (`_slot_wall`) and commits the variant whose bucket matches it, so the
+  spoken time is never more than the rounding off. A splice, skip or prepared
+  cutover bumps the revision and re-selects the variant for the new slot. A
+  slot with no valid variant falls back to a liner. Nothing in the commit loop
+  calls an LLM or Kokoro: playout never blocks on production.
 - **Epochs, revisions and prepared cutovers (TUI.md §5).** The station `epoch`
   changes on restart; the programme `revision` changes when already-published
   future playback changes, while ordinary append-only lookahead may keep its
@@ -386,7 +425,10 @@ target, per host worker.
 | Song briefs queued | none: each song job writes its own brief while other jobs render (`inventory.briefs_queued` is unused) |
 | Current news bulletin | 1 valid; refreshed every 30 min |
 | Commercials (library) | ≥ 20 at launch; top up slowly (they repeat on purpose) |
-| Liners, by length bucket (3 / 5 / 10 / 15 / 30 s) | ≥ 5 each |
+| Liners, by length bucket (3 / 5 / 10 / 15 / 30 s) | ≥ `inventory.liners_per_bucket` each (4 → 20 total) |
+| Promos | ≥ `inventory.promos_min` (4) per source: campaign or request-line |
+| Named song intros | one per song, rendered once with the song, evergreen |
+| Clock reads | one variant per 5-minute bucket for the next hour (12) |
 | Unaired field reports | ≥ `inventory.field_reports_min` (1) |
 | Emergency station IDs | `inventory.station_ids_min` (3), rendered once, never deleted |
 | Evergreen SFX stock | one per approved evergreen cue |
@@ -545,6 +587,14 @@ Workers:
    asterisks; expand times ("10:30" → "ten thirty"), numbers, and
    abbreviations; reject copy containing URLs. "Pilgrim Dot Farm" is already
    TTS-safe.
+   **Token contract (ANNOUNCER §A2/A6):** copy for `dj_talk`, `time_check` and
+   `promo` carries `[[clock]]`, `[[day_part]]`, `[[day]]`, `[[event_name]]`,
+   `[[days_until]]` or `[[cta]]` tokens; the code fills them, never the LLM.
+   In those roles a bare clock time or a relative day word ("tonight",
+   "tomorrow", "this Thursday") is **rejected**, not rewritten. News and
+   commercials are exempt: a spot saying "open till six" is correct and
+   `tts_cleanup` keeps rewriting it. `time_check` text is code-written and
+   never reaches the LLM.
 3. **Render** via Kokoro (`GET /tts?text=...&voice=...&speed=...&format=wav`),
    voice chosen by role (§10).
 4. **QC** (§8.1), then **normalize and encode** (§8.2).
@@ -819,7 +869,8 @@ voice are calibrated at setup and recorded in config.
 
 | Role | Voice | Used for |
 |------|-------|----------|
-| DJ / host | `am_liam` | `dj_talk`, liners, station IDs, **`intro`** (most airtime; intros name the next song and credit a listener request) |
+| DJ / host (morning) | `am_liam` | `dj_talk`, liners, station IDs, **`intro`** (intros name the next song and credit a listener request) |
+| DJ / host (afternoon/evening) | `af_bella` (PROVISIONAL) | same roles on the midday/afternoon/evening shift (`talk.hosts`, §12) |
 | News anchor | `am_michael` | `news` bulletins |
 | Commercial announcer | `af_aoede` | `commercial_break` spots (exaggerated read) |
 | Liners | `am_liam` (reuses DJ) | micro-filler, IDs |
@@ -827,6 +878,14 @@ voice are calibrated at setup and recorded in config.
 
 Remaining calibration: seconds-per-word and preferred speaking speed per
 voice, measured at setup.
+
+**Hosts and shifts (ANNOUNCER Q2):** `talk.hosts` lists each on-air host with
+its Kokoro voice, persona and `day_parts` (overnight / morning drive / midday /
+afternoon / evening). The producer picks the host on shift and renders
+`dj_talk`, promos, time checks and intros in that voice. An empty list is a
+single-host station. The operator picked "American, woman" for the second
+host; the exact id is still a listening decision (AGENTS §9) — samples are in
+`voice-samples/`, and `af_bella` is provisional.
 
 **Operator character (TUI.md §6, §10):** one operator-only character with a
 stable ID, display name and a reserved **unused** voice — present in Kokoro's
@@ -851,7 +910,7 @@ refill target.
 | GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, url, type, duration_s, sfx, title, artist}`. `url` is where the audio lives: the CloudFront URL once the item is in S3, else `/api/media/<id>` (§8.4). `sfx` is a list (usually empty) of overlays to play over that item: `{media_id, url, cue, kind, offset_s, duration_s, gain, duck}`. `title`/`artist` come from the referenced inventory item on both initial and incremental responses, normalized to empty strings when absent (song label, COSMETIC_PATCHING §3). |
 | POST | `/api/station/heartbeat` | `{seq, media_id, position, type}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events |
 | GET | `/api/media/<id>` | Transitional fallback (§8.4): the item's file from the origin library (`audio/mpeg` for MP3, `audio/flac` for a not-yet-migrated FLAC). Browsers use it only for items without an `s3_key` |
-| GET | `/api/health` | Backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate |
+| GET | `/api/health` | Backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report`, `promo` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
 | GET | `/api/requests` | Request board: `{queue: [{text, status, paid, stage, song_title}], recent: [{text, song_title, song_artist, paid, wait_s}], cap}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); recent = **last 5** aired. The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `wait_s` (Prep Time) is whole seconds from `prep_started_at` — the moment lyrics/brief writing began — to `aired_at`; time spent in line or waiting for the station to come back is not prep, and a row with no recorded writing start (aired before that column existed) sends `null`, which the page renders as an em dash (`—`) — measured-or-nothing, never queue idle dressed up as prep. `POST` answers `line_full: true` when the free line is at `free_queue_max` |
 | POST | `/api/paid-requests` | Paid priority request `{text}` (PAYMENT.md Step 12b): rate limit -> normalise -> operator-comp check (first line == `PAID_OVERRIDE_TOKEN`, stripped) -> prefilter. Prefilter reject: `{ok:false, rejected:true, reason}`. Otherwise the row is stored as `checking` and `{ok:true, token, stage:"moderation"}` returns at once; moderation, the copied-lyrics screen and the board summary run in the background. `503 {paid_closed:true}` when payments are inactive (comps still accepted) |
@@ -999,7 +1058,7 @@ inventory:
   fresh_songs_ready: 2
   briefs_queued: 3
   commercials_min: 20
-  liners_per_bucket: 5
+  liners_per_bucket: 4
   liner_buckets_s: [3, 5, 10, 15, 30]
   field_reports_min: 1       # unaired field reports kept ready
   station_ids_min: 3         # emergency station IDs (§8.3)
@@ -1114,8 +1173,54 @@ station:
   timezone: America/Detroit   # DJ clock time (OVERHAUL 5.3)
 
 talk:
-  time_mention_ttl_s: 900     # DJ clips that mention the time expire after this
+  time_mention_ttl_s: 900     # DJ clips that state a clock/day part expire after this
+  time_check_marks_min: [0, 15, 30, 45]  # top, quarter past, bottom, quarter til
+  time_check_window_s: 120    # a check airs only this close to its mark
+  time_check_min_gap_s: 600
+  time_check_variants:        # code-written clock reads (no LLM)
+    - "It is {clock}."
+    - "{clock} here at Pilgrim Dot Farm."
+  topic_repeat_gap_s: 1800
+  motif_gap_items: 8
+  motif_bank: [sprinkler, barn, "we just", "welcome back"]
+  topic_bank: [town_notice, farm_lore, station_lore, listener_request,
+               behind_the_mic, promo_tease]
+  weather_phrases: ["cool and clear", "spitting rain", "warm for November"]
+  intro_variants:             # code-written named song intros (no LLM)
+    - "Here's {title} from {artist}."
+    - "Next up, {title} by {artist}."
+  hosts:                      # ANNOUNCER Q2; empty = single-host station
+    - id: liam
+      name: Liam
+      voice: am_liam
+      persona: warm and wry, a little absurd
+      day_parts: [overnight, morning drive]
+    - id: mara                # PROVISIONAL voice until the operator picks
+      name: Mara
+      voice: af_bella
+      persona: dry and quick, a little conspiratorial
+      day_parts: [midday, afternoon, evening]
   field_reporter_name: Giles  # placeholder until named
+
+liners:                       # ANNOUNCER B4: the pool is small, so a repeat
+  repeat_gap_items: 20        # window in items and wall time
+  repeat_gap_s: 2700
+
+promotions:                   # ANNOUNCER C1: campaign calendar, config-driven
+  request_line_gap_s: 2700    # one request-line plug per 45 min
+  promo_min_spacing_s: 600    # no two promos closer than this
+  request_line_lines: ["The request line is open at Pilgrim Dot Farm."]
+  campaigns:
+    - id: thanksgiving-2026
+      label: Thanksgiving     # must appear verbatim in every promo
+      date: "2026-11-26"      # station-local
+      cta: the request line
+      light_touch: true
+      lines: [a song for the table, the great Thistledown turkey census]
+      schedule:
+        - {from: "2026-11-05", until: "2026-11-18", per_hour: 1}
+        - {from: "2026-11-19", until: "2026-11-25", per_hour: 2}
+        - {from: "2026-11-26", until: "2026-11-26", per_hour: 3, after_news: true}
 
 sfx:                          # SFX.md; never on news
   enabled: true
@@ -1343,6 +1448,19 @@ Random selection is chosen for Phase 1 partly because it is easy to test.
   songs < 12 h old get *more* airtime than their time-averaged pool share; no
   eligible song goes unheard longer than `max(6 h, pool_size × mean gap)`
   (starvation guard).
+- **ANNOUNCER §A1 (sim):** no committed `dj_talk`/`news`/`time_check` airs
+  after its `expires_at`, measured on the committed timeline (SimClock).
+- **ANNOUNCER §A3/A4 (sim):** every `time_check` speaks the 5-minute bucket it
+  actually airs in; ~4 clock reads per hour, one per mark; no `time_check`
+  adjacent to `dj_talk`, `news` or another `time_check`.
+- **ANNOUNCER §C1/C2 (sim):** promo airings follow the campaign ramp; every
+  campaign promo contains the station name and the label; a `promo` is never
+  adjacent to `dj_talk` or another `promo`.
+- **ANNOUNCER §A5 (sim/DB):** a greeting never contradicts the air time when
+  the same voice spoke immediately before; a new voice may greet.
+- **ANNOUNCER §B4/B5 (sim):** no liner repeats inside
+  `liners.repeat_gap_items`/`repeat_gap_s`; recycled songs air with their named
+  intro when one exists.
 
 **Scheduler unit tests (PRIORITIES §6):**
 - Restart regression: a recycled pool with no persisted history does not open
