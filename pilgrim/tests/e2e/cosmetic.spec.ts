@@ -8,10 +8,11 @@ import { test, expect } from "@playwright/test";
 test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", async ({ page }) => {
   await page.goto("/");
   const order = await page.$$eval(".window", els => els.map(e => e.getAttribute("data-win")));
-  expect(order).toEqual(["radio", "requests", "credits", "hit", "infra"]);
+  expect(order).toEqual(["radio", "requests", "credits", "hit", "motivation", "infra"]);
   expect(await page.textContent('[data-win="radio"] .win-title')).toBe("RADIO BROADCAST");
   expect(await page.$('[data-win="credits"]')).toBeTruthy();
   expect(await page.$('[data-win="hit"]')).toBeTruthy();
+  expect(await page.textContent('[data-win="motivation"] .win-title')).toBe("MOTIVATION");
   expect(await page.textContent('[data-win="infra"] .win-title')).toBe("INFRA AND DATA FLOW");
   // five documented models + Kokoro-82M = six credit rows, plus the asset credit
   expect(await page.$$eval(".credits-list li", els => els.length)).toBe(7);
@@ -36,20 +37,26 @@ test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", as
     "noopener noreferrer",
   ]);
   // the infra pane shows infra.png as content, linked to the full-size image
-  const infra = await page.$eval('.infra-link img.infra-img',
+  const infra = await page.$eval('[data-win="infra"] .infra-link img.infra-img',
     img => [img.getAttribute('src'), img.getAttribute('alt')]);
   expect(infra[0]).toBe("img/infra.png");
   expect(infra[1]).toMatch(/infrastructure and data flow/i);
-  const infraLink = await page.$eval(".infra-link",
+  const infraLink = await page.$eval('[data-win="infra"] .infra-link',
     a => [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")]);
   expect(infraLink).toEqual(["img/infra.png", "_blank", "noopener noreferrer"]);
   // and the asset actually loads (not a 404 placeholder)
-  const loaded = await page.$eval('.infra-img', img => img.complete && img.naturalWidth > 0);
+  // (loading="lazy" and below the fold since MOTIVATION: scroll to it first)
+  await page.locator('[data-win="infra"] .infra-img').scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => {
+    const img = document.querySelector('[data-win="infra"] .infra-img') as HTMLImageElement | null;
+    return !!img && img.complete && img.naturalWidth > 0;
+  }, null, { timeout: 10_000 });
+  const loaded = await page.$eval('[data-win="infra"] .infra-img', img => img.complete && img.naturalWidth > 0);
   expect(loaded).toBe(true);
   // COSMETIC_PATCHING §7: the diagram is scaled to the pane's INTERIOR width
   // (pane width minus borders and .win-body padding), never its intrinsic
   // 1024px (which .window{overflow:hidden} would clip).
-  const box = await page.$eval('.infra-img', img => {
+  const box = await page.$eval('[data-win="infra"] .infra-img', img => {
     const r = img.getBoundingClientRect();
     const body = img.closest('.win-body') as HTMLElement;
     const cs = getComputedStyle(body);

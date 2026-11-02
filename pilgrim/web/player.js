@@ -17,7 +17,7 @@
   // Cover art (ALBUM_ART.md Step 8): the placeholder always fills the frame,
   // so the PLAY row never moves. Art is cosmetic: a load error falls back
   // silently and never touches playback, the indicator or OFF AIR logic.
-  const ART_PLACEHOLDER = "img/placeholder.svg";
+  const ART_PLACEHOLDER = "img/fall.jpg";
   let shownArt = ART_PLACEHOLDER;
 
   let ctx = null, analyser = null, raf = null;

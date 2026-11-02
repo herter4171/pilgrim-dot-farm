@@ -219,7 +219,7 @@ test("cover art swaps with the song label and never moves PLAY", async ({ page }
     expect(s.w, "the cover actually decoded").toBeGreaterThan(0);
   }
   for (const s of others) {
-    expect(s.src, "non-song audio shows the placeholder").toContain("placeholder.svg");
+    expect(s.src, "non-song audio shows the placeholder").toContain("fall.jpg");
     expect(s.alt).toBe("");
   }
   // at least one swap happened (art is per-song, not a single static image)
