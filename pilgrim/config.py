@@ -113,6 +113,7 @@ class Models(BaseModel):
     commercials: str
     liners: str
     field_report: str = "qwen38"  # field reporter copy (SFX.md §4.2)
+    art_scene: str = "qwen38"  # cover-art scene writer (ALBUM_ART.md Step 3)
     # MiniMax Music 3 model group id, sent only to `auth: litellm` song
     # backends (the LiteLLM router picks the deployment by it).
     music: str | None = None
@@ -556,6 +557,23 @@ class Dj(BaseModel):
     character: DjCharacter = Field(default_factory=DjCharacter)
 
 
+class Art(BaseModel):
+    """Cover art per song (ALBUM_ART.md; RADIO §12, §8.4, §14). The FLUX
+    server is single-flight and blocks while it renders, so every value here
+    is a back-off knob, not a throughput knob."""
+    enabled: bool = True
+    size: str = "1024x1024"          # FLUX output; JPEG delivery keeps the square
+    steps: int = 16                   # server default; 37.6 s per image observed
+    timeout_s: float = 180.0          # generation call (docs/backends.md §10)
+    health_timeout_s: float = 60.0    # /health blocks for the whole render
+    min_free_gb: float = 20.0         # skip a render below this (server refuses < 15)
+    retry_after_s: float = 300.0      # after a 503 / failure / low memory
+    idle_poll_s: float = 30.0         # nothing to do -> look again
+    scene_attempts: int = 3           # LLM retries for a valid scene
+    key_prefix: str = "art/"          # S3 prefix (bucket/CloudFront from media:)
+    jpeg_quality: int = 3             # ffmpeg -q:v (2..5 is good; ~200-300 KB)
+
+
 class Media(BaseModel):
     """Public media delivery (RADIO §8.4): the station uploads every rendered
     MP3 to S3, CloudFront serves it, and the program/state API hands browsers
@@ -705,6 +723,7 @@ class Config(BaseModel):
     visitors: Visitors = Field(default_factory=Visitors)
     audio: Audio = Field(default_factory=Audio)
     media: Media = Field(default_factory=Media)
+    art: Art = Field(default_factory=Art)
     logging: Logging = Field(default_factory=Logging)
     talk: Talk = Field(default_factory=Talk)
     liners: Liners = Field(default_factory=Liners)

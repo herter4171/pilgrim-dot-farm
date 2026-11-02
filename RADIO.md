@@ -1278,6 +1278,19 @@ logging:
   # sorted key=value pairs. ANSI color is added only on the console when
   # writing to a TTY (or no NO_COLOR override); the file is always plain.
 
+art:                         # §8.4, §14 (ALBUM_ART.md): cover art per song
+  enabled: true              # art worker task in the station process
+  size: 1024x1024            # FLUX output size; delivered as a square JPEG
+  steps: 16                  # FLUX steps; 37.6 s per image observed (docs/backends.md §10)
+  timeout_s: 180             # generation call
+  health_timeout_s: 60       # /health blocks for the whole render
+  min_free_gb: 20            # skip a render below this (the server refuses < 15)
+  retry_after_s: 300         # back-off after a 503 / failure / low memory
+  idle_poll_s: 30            # nothing to render -> look again
+  scene_attempts: 3          # LLM retries for a valid scene
+  key_prefix: art/           # S3 key prefix for published JPEGs
+  jpeg_quality: 3            # ffmpeg -q:v for the delivered JPEG
+
 library:
   soft_cap_gb: 100          # past this, producer slows song generation and recycling share rises
 
