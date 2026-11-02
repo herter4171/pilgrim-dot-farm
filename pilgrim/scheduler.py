@@ -13,6 +13,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 from pilgrim.config import RNG, Clock, Config
 from pilgrim.pipelines.sfx import SFX_HOST_TYPES
@@ -1074,6 +1075,67 @@ class Scheduler:
         log.info("request.spliced", extra={
             "request_id": request_id, "item_id": song["id"],
             "seq": song_seq, "revision": self.revision})
+        return song_seq
+
+    def place_song_next(self, item_id: int) -> int | None:
+        """Operator: air this song next (RADIO §11 admin route).
+
+        Splices it into the slot right after whatever is playing, with a voice
+        bridge when the preceding committed item is a song and another when it
+        would land directly before a song (the words-between-songs rule, §5.2).
+        Future rows are renumbered with fresh seqs and the revision is bumped,
+        so revision-aware clients refetch and cancel obsolete future sources.
+        Returns the new seq, or None when the item is not an airable song or no
+        legal slot exists this cycle.
+        """
+        song = self.store.get_item(int(item_id))
+        if not song or song["type"] != "song" or song["retired"] or song["emergency"]:
+            return None
+        if not Path(str(song["media_path"])).exists():
+            return None
+        entries: list[dict] = [{"item_id": song["id"], "type": "song",
+                                "duration_s": song["duration_s"], "consume": True}]
+        k = self._request_splice_index()
+        if k > 0 and self._items[k - 1]["type"] == "song":
+            bridge = self._pick_callout_fallback()
+            if not bridge:
+                return None      # no voice item to separate two songs
+            entries = bridge + entries
+        if k < len(self._items) and self._items[k]["type"] == "song":
+            bridge = self._pick_callout_fallback()
+            if bridge:
+                entries = entries + bridge
+            else:
+                k = self._next_nonsong_index(k)
+        after = self._items[k:]
+        high = int(self.store.max_seq() or 0)
+        spliced = [(e, high + 1 + i) for i, e in enumerate(entries)]
+        shifted = [(r, high + 1 + len(entries) + i) for i, r in enumerate(after)]
+        remap = {r["seq"]: seq for r, seq in shifted}
+        if remap:
+            self._pending_aired = {
+                remap.get(s, s): rid for s, rid in self._pending_aired.items()}
+            self._sfx_by_seq = {
+                remap.get(s, s): v for s, v in self._sfx_by_seq.items()}
+        for e, seq in spliced:
+            self.store.append_program_at(
+                item_id=e["item_id"], type_=e["type"],
+                duration_s=e["duration_s"], seq=seq)
+        for r, seq in sorted(shifted, key=lambda x: x[0]["seq"], reverse=True):
+            self.store.update_program_seq(r["seq"], seq)
+        if shifted:
+            self.store.set_program_seq_high(shifted[-1][1])
+        song_seq = next(seq for e, seq in spliced if e["type"] == "song")
+        for e in entries:
+            if e.get("consume"):
+                self.store.mark_aired(e["item_id"])
+        self._air_clock += sum(e["duration_s"] for e in entries)
+        self._rebuild_program()
+        idx = next(i for i, r in enumerate(self._items) if r["seq"] == song_seq)
+        self.store.commit_song_air(song["id"], self._slot_wall(self._cum[idx]))
+        self.advance_revision()
+        log.info("program.song_placed_next", extra={
+            "item_id": song["id"], "seq": song_seq, "revision": self.revision})
         return song_seq
 
     # ------------------------------------------------------- operator phrases

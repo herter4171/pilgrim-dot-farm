@@ -843,3 +843,51 @@ def test_promo_kinds_have_their_own_gaps(cfg, tmp_env):
     assert sched._promo_available()
     picked = sched._pick_promo()
     assert [p["promo_kind"] for p in picked] == ["paid_tier"]
+
+
+# ------------------------------------------------ operator "play this next"
+def test_place_song_next_splices_after_the_current_item(tmp_env, cfg):
+    """ALBUM_ART demo path: a chosen song airs next, with the words-between-
+    songs bridge when it would land beside another song (§5.2)."""
+    _, store, tmp = tmp_env
+    seed_pool(store, cfg, n_song=12, n_liner=10, n_com=8, n_dj=6)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(3), cfg), clock, RNG(3))
+    sched.commit_lookahead()
+    # the operator's pick must exist on disk (playout only airs real files)
+    media = tmp / "pick.mp3"
+    media.write_bytes(b"fake mp3")
+    target = store.add_item(type_="song", media_path=str(media), duration_s=90.0,
+                            genre=list(cfg.songs.genres)[0])
+    rev = sched.revision
+
+    seq = sched.place_song_next(target)
+    assert seq is not None
+    assert sched.revision == rev + 1
+
+    rows = store.program_after(0)
+    seqs = [r["seq"] for r in rows]
+    assert seqs == sorted(set(seqs))          # ordered, never reusing an id
+    pos = sched.position()
+    nxt = next(i for i in range(len(sched._items))
+               if sched._cum[i] > pos + 1e-6)
+    # the chosen song is the first thing after "now" (possibly after a bridge)
+    assert target in [r["item_id"] for r in sched._items[nxt:nxt + 3]]
+    # no two songs adjacent without a voice item between them (§5.2)
+    for a, b in zip(sched._items, sched._items[1:], strict=False):
+        assert not (a["type"] == "song" and b["type"] == "song"), \
+            "two songs back to back with no words"
+
+
+def test_place_song_next_rejects_non_songs_and_missing_files(tmp_env, cfg):
+    _, store, tmp = tmp_env
+    seed_pool(store, cfg, n_song=4, n_liner=4, n_com=2, n_dj=2)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(5), cfg), clock, RNG(5))
+    sched.commit_lookahead()
+    com = store.list_items("commercial")[0]["id"]
+    assert sched.place_song_next(com) is None
+    assert sched.place_song_next(999999) is None
+    # seed_pool writes /tmp/... paths that do not exist: no file -> no splice
+    song = store.list_items("song")[0]["id"]
+    assert sched.place_song_next(song) is None

@@ -710,6 +710,16 @@ async def _admin_health(station: Station) -> dict:
     return await station.health()
 
 
+class PlayNextIn(BaseModel):
+    """Operator "play this song next" (POST /api/admin/dj/play).
+
+    Deliberately not the full `dj.QueueRequest` command contract (command_id /
+    expected_epoch / expected_revision): this route is the narrow operator
+    convenience, not the scheduler command service."""
+
+    media_id: int
+
+
 class _RevalidatingStaticFiles(StaticFiles):
     """Static client files are served with `Cache-Control: no-cache`, so a
     browser (or Cloudflare) revalidates them on each load instead of keeping a
@@ -1036,6 +1046,26 @@ def _add_admin_routes(app: FastAPI, station: Station) -> None:
     # ---- DJ console (RADIO §11): read-only behind the operator token. Control
     # mutations (skip/queue/phrases) land with the scheduler command service and
     # additionally require dj.enabled (TUI.md §7). ----
+    @app.post("/api/admin/dj/play", dependencies=[Depends(require_dj)])
+    async def dj_play(payload: PlayNextIn):
+        """Operator: air this song next (ALBUM_ART demo / TUI §5).
+
+        A narrow control mutation: it splices a *ready, airable song* into the
+        slot after whatever is playing, with the words-between-songs bridges,
+        and bumps the revision so clients refetch. It does not create a
+        request, does not touch payments, and never waits on production.
+        """
+        if not cfg.dj.enabled:
+            raise HTTPException(403, detail={
+                "code": "dj_disabled", "detail": "DJ control is disabled"})
+        seq = station.scheduler.place_song_next(int(payload.media_id))
+        if seq is None:
+            raise HTTPException(409, detail={
+                "code": "cannot_place",
+                "detail": "not an airable song, or no legal slot this cycle"})
+        return {"ok": True, "seq": seq,
+                "revision": station.scheduler.revision}
+
     @app.get("/api/admin/dj/state", response_model=dj.DjState,
              dependencies=[Depends(require_dj)])
     async def dj_state():
