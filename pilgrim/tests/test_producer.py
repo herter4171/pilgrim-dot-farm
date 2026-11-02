@@ -20,7 +20,31 @@ class FakeVoice:
         self.calls += 1
         self.contexts.append(context)
         return {"media_path": f"/tmp/{role}_{self.calls}.flac", "duration_s": target_s,
-                "sample_rate": 24000, "channels": 1, "role": role}
+                "sample_rate": 24000, "channels": 1, "role": role,
+                "meta": {"text": "Pilgrim Dot Farm."}}
+
+    async def write_copy(self, role: str, target_s: float,
+                         context: str | None = None) -> dict:
+        self.calls += 1
+        self.contexts.append(context)
+        return {"text": "Pilgrim Dot Farm. [[event_name]] [[days_until]].",
+                "est_duration_s": target_s, "evergreen": True}
+
+    async def render(self, copy: dict, role: str, target_s: float) -> dict:
+        return {"path": f"/tmp/{role}_{self.calls}.flac", "duration_s": target_s,
+                "sample_rate": 24000, "channels": 1,
+                "words": len(str(copy.get("text", "")).split()),
+                "words_per_s": 2.5}
+
+    @staticmethod
+    def item_dict(role: str, copy: dict, rendered: dict) -> dict:
+        return {"type": role, "media_path": rendered["path"],
+                "duration_s": rendered["duration_s"],
+                "sample_rate": rendered["sample_rate"],
+                "channels": rendered["channels"], "role": role,
+                "evergreen": bool(copy.get("evergreen", True)),
+                "gravity": copy.get("gravity"),
+                "meta": {"text": copy.get("text")}}
 
 
 class _Sink:
@@ -30,12 +54,12 @@ class _Sink:
         pass
 
 
-def make_producer(cfg, store, voice: FakeVoice) -> Producer:
+def make_producer(cfg, store, voice: FakeVoice, clock_override=None) -> Producer:
     # Duck-typed fakes in place of LLM/Kokoro/VoicePipeline/SongPipeline/NewsPipeline.
     from typing import Any
     sink: Any = _Sink()
     voice_any: Any = voice
-    clock: Any = SimClock()
+    clock: Any = clock_override or SimClock()
     return Producer(
         cfg, store, llm=sink, kokoro=sink, voice=voice_any, songs=sink,
         clock=clock, prompts={}, media_dir=cfg.library.dir, api_key="",
@@ -309,9 +333,10 @@ def test_request_intro_context_contains_request_text(cfg, tmp_env):
     assert 'Listener request: "play a song for Mittens"' in intro_calls[0]
 
 
-def test_stock_song_gets_intro_without_request_line(cfg, tmp_env):
-    """Stock songs get an intro too (non-fatal, no request line), stored as a
-    non-evergreen 'intro' item whose meta.song_item_id points at the song."""
+def test_stock_song_gets_named_intro_and_recycles(cfg, tmp_env):
+    """Revision 11: a stock song's intro is code-written (no LLM) from
+    "Here's <title> from <artist>", rendered once, and EVERGREEN so it recycles
+    with the song. meta.song_item_id points at the song."""
     _, store, _ = tmp_env
     voice = _RecordingVoice()
     prod = make_song_producer(cfg, store, voice, FakeSong())
@@ -320,11 +345,13 @@ def test_stock_song_gets_intro_without_request_line(cfg, tmp_env):
     intros = store.list_items("intro")
     assert intros, "stock song should produce an intro"
     intro = intros[0]
-    assert intro["evergreen"] == 0
-    song_id = _meta(store, intro["id"])["song_item_id"]
-    assert store.get_item(song_id)["type"] == "song"
-    intro_calls = [ctx for role, ctx in voice.role_contexts if role == "intro"]
-    assert "Listener request" not in intro_calls[0]
+    assert intro["evergreen"] == 1, "stock intros recycle like liners"
+    meta = _meta(store, intro["id"])
+    song = store.get_item(meta["song_item_id"])
+    assert song["type"] == "song"
+    assert song["title"] in meta["text"] and song["artist"] in meta["text"]
+    # no LLM call for a stock intro: write_copy was never asked for one
+    assert all(role != "intro" for role, _ in voice.role_contexts)
 
 
 def test_ensure_dj_context_has_recent_songs_not_next(cfg, tmp_env):
@@ -378,6 +405,11 @@ class _SnoopVoice(FakeVoice):
             self.songs_during_intro.append(len(self.store.list_items("song")))
         return await super().produce_item(role, target_s, context)
 
+    async def render(self, copy, role, target_s):
+        if role == "intro":  # stock intros are code-written (revision 11)
+            self.songs_during_intro.append(len(self.store.list_items("song")))
+        return await super().render(copy, role, target_s)
+
 
 def test_song_not_in_library_while_its_intro_renders(cfg, tmp_env):
     """The scheduler shares the event loop: if the song is stored before its
@@ -392,8 +424,8 @@ def test_song_not_in_library_while_its_intro_renders(cfg, tmp_env):
     asyncio.run(prod.song_step())  # stock song (below fresh target)
     assert voice.songs_during_intro == [0, 1]
     assert store.get_request(req["id"])["status"] == "ready"
-    stock_intro = [c for c in voice.contexts if c and "Listener request" not in c][0]
-    assert "Thank the listener" not in stock_intro  # nobody to thank
+    # the stock intro is code-written, so it carries no LLM context at all
+    assert not [c for c in voice.contexts if c and "Listener request" not in c]
 
 
 def test_ensure_station_ids_builds_the_emergency_pack_once(cfg, tmp_env):
@@ -587,3 +619,63 @@ def test_stock_cap_zero_disables_the_cap(cfg, tmp_env):
 def test_default_library_cap_is_100(cfg):
     assert cfg.songs.stock_max_library == 100
 
+
+
+def test_ensure_promos_request_line_when_no_campaign(cfg, tmp_env):
+    """With no active campaign the producer fills the request-line plugs from
+    code-written config lines (no LLM, no expiry)."""
+    import asyncio
+    import json
+    cfg.promotions.campaigns = []
+    _, store, _ = tmp_env
+    prod = make_producer(cfg, store, FakeVoice())
+    asyncio.run(prod.ensure_promos())
+    items = store.list_items("promo")
+    assert len(items) == cfg.inventory.promos_min
+    meta = json.loads(items[0]["meta_json"])
+    assert meta["kind"] == "request_line"
+    assert items[0]["expires_at"] is None
+    assert cfg.station.name in meta["text"]
+
+
+def test_ensure_promos_campaign_fills_day_tokens_and_expires_at_midnight(cfg, tmp_env):
+    """Campaign promos are LLM-written but the code fills the event tokens and
+    stamps expiry at local midnight (revision 6)."""
+    import asyncio
+    import json
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from pilgrim.config import Campaign, CampaignStep
+    _, store, _ = tmp_env
+    today = datetime.now(ZoneInfo(cfg.station.timezone)).date().isoformat()
+    cfg.promotions.campaigns = [Campaign(
+        id="t", label="Thanksgiving", date="2026-11-26", cta="the request line",
+        lines=["a song for the table"],
+        schedule=[CampaignStep.model_validate(
+            {"from": today, "until": today, "per_hour": 1})])]
+    import time as _time
+    prod = make_producer(cfg, store, FakeVoice(),
+                         clock_override=SimClock(epoch=_time.time()))
+    asyncio.run(prod.ensure_promos())
+    items = store.list_items("promo")
+    assert len(items) == cfg.inventory.promos_min
+    meta = json.loads(items[0]["meta_json"])
+    assert meta["campaign_id"] == "t"
+    assert "Thanksgiving" in meta["text"]
+    assert cfg.station.name in meta["text"]
+    assert items[0]["expires_at"] is not None
+
+
+def test_ensure_time_checks_renders_one_per_upcoming_mark(cfg, tmp_env):
+    import asyncio
+    import json
+    _, store, _ = tmp_env
+    prod = make_producer(cfg, store, FakeVoice())
+    asyncio.run(prod.ensure_time_checks())
+    items = store.list_items("time_check")
+    assert len(items) == 12  # one 5-minute bucket per hour
+    buckets = [json.loads(i["meta_json"])["bucket"] for i in items]
+    assert len(set(buckets)) == 12
+    assert all(b % 300 == 0 for b in buckets)
+    assert all(i["expires_at"] for i in items)

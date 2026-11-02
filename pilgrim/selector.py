@@ -8,11 +8,13 @@ from typing import Protocol
 from pilgrim.config import RNG, Config
 
 # Segment types the selector chooses from.
-SEGMENTS = ["song", "dj_talk", "commercial_break", "liner", "news", "field_report"]
+SEGMENTS = ["song", "dj_talk", "commercial_break", "liner", "news", "field_report",
+            "promo", "time_check"]
 
 # Voice segments that count as "words between songs" (a song's own intro also
 # counts; the scheduler folds that in). Commercials and news don't (§5.2).
-CALLOUT_SEGMENTS = frozenset({"liner", "dj_talk", "field_report"})
+CALLOUT_SEGMENTS = frozenset({"liner", "dj_talk", "field_report", "promo",
+                              "time_check"})
 
 # Segment types whose inventory must be present for the type to be drawable.
 INVENTORY_TYPES = {
@@ -22,6 +24,8 @@ INVENTORY_TYPES = {
     "liner": "liner",
     "news": "news",
     "field_report": "field_report",
+    "promo": "promo",
+    "time_check": "time_check",
 }
 
 
@@ -48,6 +52,10 @@ class PlayoutState:
         self.callout_pending: bool = False
         # the next slot airs near the top of the hour (playout.top_of_hour_window_s)
         self.near_top_of_hour: bool = False
+        # an active campaign is under its per-hour promo target
+        self.campaign_due: bool = False
+        # the next slot sits inside a clock mark's window and no check aired yet
+        self.time_check_due: bool = False
 
 
 class Selector(Protocol):
@@ -99,7 +107,7 @@ class RandomSelector:
         if last in ("dj_talk", "operator_phrase", "news"):
             available.discard("dj_talk")
             weights.pop("dj_talk", None)
-        if last in ("dj_talk", "operator_phrase"):  # ...in either order (§5.2)
+        if last in ("dj_talk", "operator_phrase", "time_check"):  # either order
             available.discard("news")
             weights.pop("news", None)
 
@@ -112,9 +120,21 @@ class RandomSelector:
             available.discard("news")
             weights.pop("news", None)
 
+        # promos and time checks are voice segments: never two DJ-ish clips in
+        # a row, and never right after serious news (a promo is comic).
+        if last in ("dj_talk", "operator_phrase", "promo", "time_check"):
+            available.discard("promo")
+            weights.pop("promo", None)
+        if last in ("dj_talk", "operator_phrase", "news", "time_check"):
+            available.discard("time_check")
+            weights.pop("time_check", None)
+        if last in ("promo", "time_check"):
+            available.discard("dj_talk")
+            weights.pop("dj_talk", None)
+
         # seriousness adjacency: serious bulletin -> next non-song isn't a commercial
         if state.news_gravity == "serious" and (last is None or last != "song"):
-            for comic in ("commercial_break", "field_report"):
+            for comic in ("commercial_break", "field_report", "promo"):
                 available.discard(comic)
                 weights.pop(comic, None)
 
@@ -129,6 +149,22 @@ class RandomSelector:
         # the slot before a forced song must be a callout. Near the top of the
         # hour any pending callout comes first, like a real station's ID. Soft:
         # if no callout is drawable, the scheduler's fallback supplies one.
+        # Operator pick: a clock read at :00/:15/:30/:45. When the slot is
+        # inside a mark's window the check is committed (the scheduler already
+        # gated availability on the exact bucket), unless it would break the
+        # non-song run limit. This is a commitment, not a nudge.
+        if (state.time_check_due and "time_check" in available
+                and non_song_run < cfg.max_consecutive_non_song):
+            return "time_check"
+
+        # Campaign under target: lean toward a promo. Time checks are only
+        # available inside their mark window (the scheduler gates them), so a
+        # bump here just makes the due mark win.
+        if state.campaign_due and "promo" in available:
+            weights["promo"] = weights.get("promo", 0.0) * 3
+        if state.time_check_due and "time_check" in available:
+            weights["time_check"] = weights.get("time_check", 0.0) * 4
+
         if state.callout_pending:
             callouts = available & CALLOUT_SEGMENTS
             last_slot = non_song_run >= cfg.max_consecutive_non_song - 1

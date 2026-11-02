@@ -762,6 +762,16 @@ class Store:
                 f"SELECT * FROM requests WHERE status='ready' {QUEUE_ORDER}").fetchall()
         return [dict(r) for r in rows]
 
+    def recently_aired_request(self, since_iso: str) -> dict[str, Any] | None:
+        """The most recently aired request at/after `since_iso` (wall ISO), if
+        any. Used for the DJ's back-announce (never a name or email)."""
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM requests WHERE status='aired' AND aired_at IS NOT NULL "
+                "AND aired_at >= ? ORDER BY aired_at DESC LIMIT 1",
+                (since_iso,)).fetchone()
+        return dict(r) if r else None
+
     def reset_producing_to_queued(self) -> None:
         """Startup: a crash mid-generation must not strand a request in
         `producing` (OVERHAUL 4.4)."""

@@ -28,6 +28,31 @@ class FakeVoice:
                 "sample_rate": 24000, "channels": 1, "role": role,
                 "meta": {"text": " ".join(["word"] * words)}}
 
+    async def write_copy(self, role: str, target_s: float,
+                         context: str | None = None) -> dict:
+        self.calls += 1
+        dur = max(float(target_s), 2.0)
+        words = max(int(dur * 2.8), 2)
+        return {"text": " ".join(["word"] * words), "est_duration_s": dur,
+                "evergreen": True}
+
+    async def render(self, copy: dict, role: str, target_s: float) -> dict:
+        dur = max(float(target_s), 2.0)
+        words = len(str(copy.get("text", "")).split())
+        return {"path": f"/tmp/{role}_{self.calls}.flac", "duration_s": dur,
+                "sample_rate": 24000, "channels": 1, "words": words,
+                "words_per_s": words / dur}
+
+    @staticmethod
+    def item_dict(role: str, copy: dict, rendered: dict) -> dict:
+        return {"type": role, "media_path": rendered["path"],
+                "duration_s": rendered["duration_s"],
+                "sample_rate": rendered["sample_rate"],
+                "channels": rendered["channels"], "role": role,
+                "evergreen": bool(copy.get("evergreen", True)),
+                "gravity": copy.get("gravity"),
+                "meta": {"text": copy.get("text")}}
+
 
 class FakeSong:
     def __init__(self) -> None:

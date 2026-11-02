@@ -12,7 +12,7 @@ import json as _json
 import logging
 import re
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from pilgrim.config import Config
@@ -125,6 +125,42 @@ _CLOCK = re.compile(
     r"|\bat night\b"
     r"|\bgood (?:morning|afternoon|evening)\b",
     re.IGNORECASE)
+
+
+def next_marks(now_wall: float, tz: str, marks_min: list[int],
+               count: int = 4) -> list[float]:
+    """Wall epochs of the next `count` local clock marks (e.g. :00/:15/:30/:45).
+
+    Minute marks are timezone-independent for whole-hour offsets, but the
+    local date is computed through `tz` so DST transitions behave.
+    """
+    zone = ZoneInfo(tz)
+    cur = datetime.fromtimestamp(now_wall, zone).replace(second=0, microsecond=0)
+    out: list[float] = []
+    for _ in range(24 * 60):
+        if cur.minute in marks_min:
+            m = cur.timestamp()
+            if m > now_wall:
+                out.append(m)
+                if len(out) >= count:
+                    break
+        cur += timedelta(minutes=1)
+    return out
+
+
+_DAY_LEVEL = re.compile(
+    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"january|february|march|april|may|june|july|august|september|october|"
+    r"november|december)\b", re.IGNORECASE)
+
+
+def mentions_day(text: str) -> bool:
+    """True when copy states a weekday or date (day-level fact, revision 6).
+
+    Such a clip expires at the next local midnight rather than after the short
+    time-mention TTL, because the fact stays true all day.
+    """
+    return bool(_DAY_LEVEL.search(text or ""))
 
 
 def mentions_clock(text: str) -> bool:

@@ -16,18 +16,21 @@ from datetime import UTC, datetime
 
 from pilgrim.config import RNG, Clock, Config
 from pilgrim.pipelines.sfx import SFX_HOST_TYPES
+from pilgrim.promotions import active_campaign, target_per_hour
 from pilgrim.selector import PlayoutState, Selector
 from pilgrim.sfx_plan import plan_overlays
 from pilgrim.store import Store
 
 # Committed types that put words between songs (§5.2). `intro` counts: it
 # names the song that follows it.
-CALLOUT_TYPES = frozenset({"liner", "station_id", "dj_talk", "field_report", "intro"})
+CALLOUT_TYPES = frozenset({"liner", "station_id", "dj_talk", "field_report", "intro",
+                           "promo", "time_check"})
 
 # Segment types that can bridge air while a listener request waits for its
 # song slot. A stock song is never one of them: it would queue ahead of the
 # request (§5.2, request priority).
-NON_SONG_TYPES = ("dj_talk", "commercial_break", "liner", "news", "field_report")
+NON_SONG_TYPES = ("dj_talk", "commercial_break", "liner", "news", "field_report",
+                  "promo", "time_check")
 
 # Types a manually-placed operator phrase must never sit adjacent to in either
 # order (RADIO §11: "DJ-like news adjacency", TUI.md §6). A song is the only
@@ -85,6 +88,12 @@ class Scheduler:
         # restart keeps the rotation (§PRIORITIES §4). Only commercials keep an
         # in-memory air map (they can follow the same pattern later).
         self._last_comm_air: dict[int, float] = {}  # item_id -> air-clock of last commit
+        # Promo / time-check spacing is live-only like commercials (a restart
+        # re-derives the calendar target from the committed window).
+        self._last_promo_air = -1e9
+        self._last_request_line_air = -1e9
+        self._last_time_check_air = -1e9
+        self._last_liner_air: dict[int, float] = {}
         self._air_clock = 0.0  # monotonic committed-program time (independent of trimming)
         # in-memory cumulative mapping built each cycle
         self._program_start = 0.0  # absolute start of retained program history
@@ -178,6 +187,8 @@ class Scheduler:
             "commercial_break": st.inventory_counts["commercial"] > 0,
             "liner": st.inventory_counts["liner"] > 0,
             "news": self._news_valid() is not None,
+            "promo": self._promo_available(),
+            "time_check": self._time_check_item() is not None,
         }
         st.request_songs_ready = len(self._uncommitted_ready_requests())
         # recent types / genres in COMMITTED order (the air order). Constraints
@@ -191,7 +202,9 @@ class Scheduler:
             self._genre_for(r["item_id"]) for r in self._items if r["type"] == "song"][-3:]
         # seconds (program time) since each category last aired (committed order)
         st.secs_since = {}
-        for cat, ctype in (("news", "news"), ("commercial_break", "commercial"), ("song", "song")):
+        for cat, ctype in (("news", "news"), ("commercial_break", "commercial"),
+                           ("song", "song"), ("promo", "promo"),
+                           ("time_check", "time_check")):
             st.secs_since[cat] = self._secs_since(self._total, ctype)
         ni = self._news_valid()
         if ni:
@@ -199,6 +212,8 @@ class Scheduler:
             st.news_gravity = ni.get("gravity") or "normal"
         st.callout_pending = self._callout_pending() and not self._next_song_has_intro()
         st.near_top_of_hour = self._near_top_of_hour()
+        st.time_check_due = st.available["time_check"]
+        st.campaign_due = self._campaign_due()
         return st
 
     # ------------------------------------------------- words between songs
@@ -223,7 +238,7 @@ class Scheduler:
         if not fresh:
             return False
         song_id = max(fresh, key=lambda i: i["id"])["id"]
-        return self._fresh_intro_for(song_id) is not None
+        return self._intro_for(song_id) is not None
 
     def _slot_wall(self, program_s: float) -> float:
         """Wall-clock time at which program position `program_s` airs."""
@@ -396,6 +411,14 @@ class Scheduler:
         self._plan_sfx(seq, e, host_start)
         if e.get("consume"):
             self.store.mark_aired(item_id)
+        if e["type"] == "promo":
+            self._last_promo_air = host_start
+            if e.get("promo_kind") == "request_line":
+                self._last_request_line_air = host_start
+        if e["type"] == "time_check":
+            self._last_time_check_air = host_start
+        if e["type"] in ("liner", "station_id"):
+            self._last_liner_air[item_id] = self._slot_wall(host_start)
         if e["type"] == "song":
             # persist the wall-clock air (injected clock, never time.time) so
             # spacing + weighting survive a restart (PRIORITIES §4)
@@ -508,6 +531,10 @@ class Scheduler:
                 return self._pick_commercial_break(st)
             if type_ == "news":
                 return self._pick_news(st)
+            if type_ == "promo":
+                return self._pick_promo()
+            if type_ == "time_check":
+                return self._pick_time_check()
             if type_ == "station_id":
                 return self._pick_liner(st)
         except Exception as e:  # inventory race or constraint: skip
@@ -638,17 +665,40 @@ class Scheduler:
                     i["fresh"] or i.get("last_aired_at") is None or
                     now - i["last_aired_at"] >= floor)]
 
+    def _intro_for(self, song_id: int) -> dict | None:
+        """The intro naming `song_id`, if any. Stock intros recycle (revision
+        11); a request intro is one-shot, so an aired one is skipped."""
+        for it in self.store.list_items("intro"):
+            if it["retired"] or it["emergency"]:
+                continue
+            try:
+                meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            except Exception:
+                continue
+            if meta.get("song_item_id") != song_id:
+                continue
+            if meta.get("request_id") is not None and not it["fresh"]:
+                continue
+            return it
+        return None
+
     def _glue_intro(self, song_id: int, song_dur: float) -> list[dict]:
         """If this song has an unaired intro, materialize [intro, song] with the
         intro first. Intros are consumed when committed and never recycled. A
         recycled song with no fresh intro airs alone. DJ adjacency: if the last
         committed item is dj_talk, skip the intro (two DJ segments back to back
         is worse than a missing intro — intros are cheap, the song is not; 4.7)."""
-        it = self._fresh_intro_for(song_id)
+        it = self._intro_for(song_id)
         if it is not None and not (self._items and self._items[-1]["type"] == "dj_talk"):
+            try:
+                meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            except Exception:
+                meta = {}
+            # request intros are contextual: one-shot (AGENTS rule 10)
             return [
                 {"item_id": it["id"], "type": "intro",
-                 "duration_s": it["duration_s"], "consume": True},
+                 "duration_s": it["duration_s"],
+                 "consume": meta.get("request_id") is not None},
                 {"item_id": song_id, "type": "song",
                  "duration_s": song_dur, "consume": True},
             ]
@@ -673,9 +723,14 @@ class Scheduler:
                  if not i["emergency"] and not i["retired"]]
         if not items:
             return []
-        # don't replay a liner that aired in the last few committed items
-        recent = {r["item_id"] for r in self._items[-10:]}
-        unspent = [i for i in items if i["id"] not in recent]
+        # B4: no liner inside its committed-item window or wall-time gap
+        gap_items = self.cfg.liners.repeat_gap_items
+        recent = {r["item_id"] for r in self._items[-gap_items:]}
+        now = self._slot_wall(self._total)
+        unspent = [i for i in items
+                   if i["id"] not in recent
+                   and now - self._last_liner_air.get(i["id"], -1e9)
+                   >= self.cfg.liners.repeat_gap_s]
         if not unspent and not self._may_repeat():
             return []
         it = self.rng.choice(unspent or items)
@@ -705,6 +760,106 @@ class Scheduler:
         it = max(items, key=lambda i: i["id"])
         return [{"item_id": it["id"], "type": type_, "duration_s": it["duration_s"],
                  "consume": True, "expires_at": it.get("expires_at")}]
+
+    # --------------------------------------------------- promo / time check
+    def _promos(self) -> list[dict]:
+        """Recyclable promos still valid when they would air (A1)."""
+        air_wall = self._slot_wall(self._total)
+        out = []
+        for it in self.store.list_items("promo"):
+            if it["emergency"]:
+                continue
+            exp = _parse_iso(it.get("expires_at"))
+            if exp is not None and exp < air_wall:
+                continue
+            out.append(it)
+        return out
+
+    def _promo_available(self) -> bool:
+        if self._air_clock - self._last_promo_air < self.cfg.promotions.promo_min_spacing_s:
+            return False
+        for it in self._promos():
+            meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            if meta.get("kind") == "request_line" and (
+                    self._air_clock - self._last_request_line_air
+                    < self.cfg.promotions.request_line_gap_s):
+                continue
+            return True
+        return False
+
+    def _campaign_due(self) -> bool:
+        """An active campaign is under its per-hour target for the committed
+        hour (a soft nudge; never forced past a constraint)."""
+        air_wall = self._slot_wall(self._total)
+        camp = active_campaign(air_wall, self.cfg.station.timezone,
+                               self.cfg.promotions.campaigns)
+        if camp is None:
+            return False
+        target = target_per_hour(air_wall, self.cfg.station.timezone, camp)
+        if target <= 0:
+            return False
+        cutoff = self._total - 3600.0
+        aired = sum(1 for i, r in enumerate(self._items)
+                    if r["type"] == "promo" and self._cum[i] >= cutoff)
+        return aired < target
+
+    def _pick_promo(self) -> list[dict]:
+        items: list[tuple[dict, dict]] = []
+        for it in self._promos():
+            meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            if meta.get("kind") == "request_line" and (
+                    self._air_clock - self._last_request_line_air
+                    < self.cfg.promotions.request_line_gap_s):
+                continue
+            items.append((it, meta))
+        if not items:
+            return []
+        it, meta = max(items, key=lambda p: p[0]["id"])  # newest first
+        return [{"item_id": it["id"], "type": "promo",
+                 "duration_s": it["duration_s"], "consume": True,
+                 "expires_at": it.get("expires_at"),
+                 "promo_kind": meta.get("kind")}]
+
+    def _near_mark(self, air_wall: float) -> bool:
+        """Does this wall time sit within the window of a configured clock mark
+        (:00/:15/:30/:45)?"""
+        marks = self.cfg.talk.time_check_marks_min
+        if not marks:
+            return False
+        minute = int((air_wall % 3600) // 60)
+        d = min(abs(minute - k) for k in marks)
+        d = min(d, 60 - d)  # wrap across the hour
+        return d * 60 <= self.cfg.talk.time_check_window_s
+
+    def _time_check_item(self) -> dict | None:
+        """The clock read for the slot that is about to air: due only near a
+        quarter mark, and the variant must be the slot's own 5-minute bucket so
+        the spoken time is never more than the rounding off."""
+        if self._air_clock - self._last_time_check_air < self.cfg.talk.time_check_min_gap_s:
+            return None
+        air_wall = self._slot_wall(self._total)
+        if not self._near_mark(air_wall):
+            return None
+        bucket = int(air_wall // 300 * 300)
+        for it in self.store.list_items("time_check"):
+            if it["retired"] or it["emergency"]:
+                continue
+            meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            if meta.get("bucket") != bucket:
+                continue
+            exp = _parse_iso(it.get("expires_at"))
+            if exp is not None and exp < air_wall:
+                continue
+            return it
+        return None
+
+    def _pick_time_check(self) -> list[dict]:
+        it = self._time_check_item()
+        if it is None:
+            return []
+        return [{"item_id": it["id"], "type": "time_check",
+                 "duration_s": it["duration_s"], "consume": True,
+                 "expires_at": it.get("expires_at")}]
 
     def _pick_commercial_break(self, st: PlayoutState) -> list[dict]:
         items = [i for i in self.store.list_items("commercial") if not i["emergency"]]

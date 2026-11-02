@@ -67,15 +67,28 @@ def run(hours=24):
     # floor). New songs are added during the run for the young-song assertions.
     seed_pool(store, cfg, n_song=0, n_liner=50, n_com=30, n_dj=25)
     seed_aged_songs(cfg, store, 41, 1_800_000_000.0, 120.0, 12.0, fresh=False)
-    # glue intros to a few stock songs so the intro path is exercised (4.7)
+    # Every song carries a code-written named intro (revision 11: evergreen,
+    # recycled), so the intro path is exercised on every recycled airing.
     import json as _json
-    for s in store.list_items("song")[:4]:
-        store.add_item(type_="intro", media_path="intro.flac", duration_s=8.0,
-                       evergreen=False, fresh=True,
-                       meta={"song_item_id": s["id"]})
+    for s in store.list_items("song"):
+        store.add_item(type_="intro", media_path="intro.flac", duration_s=5.0,
+                       evergreen=True, fresh=True,
+                       meta={"song_item_id": s["id"],
+                             "text": f"Here's {s['title']} from {s['artist']}."})
     joke_hosts = _seed_sfx(store)
 
     clock = SimClock()
+    # Promos (recyclable) and clock checks for the whole run, so the promo and
+    # time_check paths are exercised (ANNOUNCER_OVERHAUL).
+    for _ in range(6):
+        store.add_item(type_="promo", media_path="promo.flac", duration_s=12.0,
+                       evergreen=True, meta={"kind": "request_line"})
+    buckets = [int((clock.wall() + k * 300) // 300 * 300)
+               for k in range(24 * 12 + 12)]
+    for b in buckets:
+        store.add_item(type_="time_check", media_path="tc.flac", duration_s=4.0,
+                       evergreen=False, expires_at=iso_from_epoch(b + 300),
+                       meta={"bucket": b})
     sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
     seen = []
     last_seq = 0
@@ -155,13 +168,14 @@ def run(hours=24):
         fails.append("non-positive duration")
 
     runn = 0
-    for t in types:
+    for i, t in enumerate(types):
         if t == "intro":
             continue  # intros are part of their song: no non-song run (4.7 rule 6)
         runn = 0 if t == "song" else runn + 1
         max_run_non_song = max(max_run_non_song, runn)
         if runn > cfg.playout.max_consecutive_non_song:
-            fails.append("too many consecutive non-song segments")
+            fails.append(f"too many consecutive non-song segments: "
+                         f"{types[max(0, i - 3):i + 1]}")
             break
 
     for i, t in enumerate(types):
@@ -189,7 +203,8 @@ def run(hours=24):
 
     # words between songs (§5.2): every pair of songs has a voice item between
     # them (liner / station ID / DJ talk / field report / the song's intro)
-    callouts = {"liner", "station_id", "dj_talk", "field_report", "intro"}
+    callouts = {"liner", "station_id", "dj_talk", "field_report", "intro",
+                "promo", "time_check"}
     bare_gaps = 0
     since_song: list[str] | None = None
     for t in types:
@@ -201,6 +216,35 @@ def run(hours=24):
             since_song.append(t)
     if bare_gaps:
         fails.append(f"{bare_gaps} song gaps with no words between songs")
+
+    # promos / time checks are voice segments: never two Liam-ish clips in a
+    # row, and never right after serious news (ANNOUNCER_OVERHAUL)
+    for i, t in enumerate(types):
+        if t == "promo":
+            for j in (i - 1, i + 1):
+                if 0 <= j < len(types) and types[j] in ("dj_talk", "promo"):
+                    fails.append("promo adjacent to dj_talk/promo")
+        if t == "time_check":
+            for j in (i - 1, i + 1):
+                if 0 <= j < len(types) and types[j] in ("dj_talk", "news", "time_check"):
+                    fails.append(f"time_check adjacent to dj_talk/news/time_check: "
+                                 f"{types[max(0, i - 2):i + 3]}")
+
+    # clock checks must speak the mark they were rendered for (window only)
+    wall0 = clock.wall() - hours * 3600
+    t_cursor = 0.0
+    for _seq, t, dur, iid in seen:
+        if t == "time_check":
+            it = store.get_item(iid)
+            meta = _json.loads(it["meta_json"] or "{}") if it else {}
+            bucket = meta.get("bucket")
+            if not isinstance(bucket, (int, float)):
+                fails.append("time_check without a bucket")
+            else:
+                air_wall = wall0 + t_cursor
+                if int(air_wall // 300 * 300) != int(bucket):
+                    fails.append("time_check spoke a different bucket than it aired in")
+        t_cursor += dur
 
     # field reports are comic: never next to news (SFX.md §4.2)
     for a, b in zip(types, types[1:], strict=False):

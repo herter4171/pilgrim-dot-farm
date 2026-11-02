@@ -211,6 +211,7 @@ class Station:
             "field_report": {"have": have["field_report"], "target": inv.field_reports_min},
             "news": {"have": have["news"], "target": 1},
             "sfx": {"have": have["sfx"], "target": self.producer.sfx_stock_target()},
+            "promo": {"have": have["promo"], "target": inv.promos_min},
         }
 
     def rotation(self) -> dict[str, int]:
@@ -225,6 +226,7 @@ class Station:
             "dj_talk": have["dj_talk"],
             "field_report": have["field_report"],
             "news": have["news"],
+            "promo": have["promo"],
         }
 
     @property
@@ -472,7 +474,7 @@ def _load_prompts(cfg: Config) -> dict:
     out = {}
     for f in ("voice.md", "song_brief.md", "station_song.md", "news.md", "moderation.md",
               "field.md", "sfx_cues.md", "sfx_joke.md", "paid_request.md",
-              "paid_summary.md"):
+              "paid_summary.md", "promo.md"):
         p = pdir / f
         if p.exists():
             out[f.replace(".md", "")] = p.read_text()

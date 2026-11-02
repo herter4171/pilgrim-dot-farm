@@ -33,7 +33,7 @@ def _prompts(cfg: Config) -> dict:
     pdir = ROOT / cfg.library.prompts_dir
     return {f.replace(".md", ""): (pdir / f).read_text()
             for f in ("voice.md", "song_brief.md", "station_song.md", "news.md", "field.md",
-                      "sfx_cues.md", "sfx_joke.md") if (pdir / f).exists()}
+                      "sfx_cues.md", "sfx_joke.md", "promo.md") if (pdir / f).exists()}
 
 
 async def seed(cfg: Config, api_key: str) -> int:
@@ -68,6 +68,12 @@ async def seed(cfg: Config, api_key: str) -> int:
     n0 = db.count_fresh_of_type("liner")
     await prod.ensure_liners()
     made += db.count_fresh_of_type("liner") - n0
+    log.info("seeding promos...")
+    n0 = db.count_usable_of_type("promo")
+    await prod.ensure_promos()
+    made += db.count_usable_of_type("promo") - n0
+    log.info("seeding time checks...")
+    await prod.ensure_time_checks()
     log.info("seeding dj talk...")
     n0 = db.count_fresh_of_type("dj_talk")
     await prod.ensure_dj()

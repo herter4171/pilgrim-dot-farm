@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 ROOT = Path(__file__).resolve().parent
 
@@ -163,7 +163,8 @@ class Playout(BaseModel):
     weights: dict[str, float] = Field(
         default_factory=lambda: {"song": .55, "dj_talk": .12,
                                  "commercial_break": .15, "liner": .10, "news": .08,
-                                 "field_report": .05})
+                                 "field_report": .05, "promo": .05,
+                                 "time_check": .04})
     max_consecutive_non_song: int = 2
     top_of_hour_window_s: float = 240.0  # a song gap this close to :00 leads with words
     news_min_spacing_s: int = 1200
@@ -178,11 +179,59 @@ class Inventory(BaseModel):
     fresh_songs_ready: int = 2
     briefs_queued: int = 3
     commercials_min: int = 6
-    liners_per_bucket: int = 3
+    liners_per_bucket: int = 4
     liner_buckets_s: list[int] = Field(default_factory=lambda: [3, 5, 10, 15, 30])
     dj_talk_min: int = 2
     field_reports_min: int = 1  # unaired field reports kept ready (SFX.md §4.2)
     station_ids_min: int = 3  # emergency station IDs: words between songs from cold start
+    promos_min: int = 4  # ready promo clips (campaign or request-line)
+
+
+class CampaignStep(BaseModel):
+    """One range of a campaign's airing ramp (ANNOUNCER_OVERHAUL)."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_date: str = Field(alias="from")   # station-local YYYY-MM-DD, inclusive
+    until: str                              # inclusive
+    per_hour: float = 1.0                   # target promos per hour in range
+    after_news: bool = False                # also air one after each bulletin
+
+
+class Campaign(BaseModel):
+    """A station marketing campaign (ANNOUNCER_OVERHAUL, Thanksgiving).
+
+    Dates are station-local calendar dates in `station.timezone`; the code
+    computes days-out phrases and midnight expiry from them, so no date is
+    ever written by the LLM or hardcoded elsewhere (AGENTS rule 4).
+    """
+    id: str
+    label: str                    # must appear verbatim in every promo
+    date: str                     # the day being promoted (YYYY-MM-DD)
+    cta: str = ""                 # what listeners should do
+    light_touch: bool = True      # timing is optional; most promos just name it
+    date_label: str = ""          # optional override; empty = never spoken
+    lines: list[str] = Field(default_factory=list)   # operator-approved angles
+    schedule: list[CampaignStep] = Field(default_factory=list)
+
+
+class Liners(BaseModel):
+    """Liner rotation (ANNOUNCER_OVERHAUL B4): the pool is small, so a repeat
+    window in both committed items and wall time keeps the same ID from coming
+    back too soon."""
+    repeat_gap_items: int = 20
+    repeat_gap_s: int = 2700
+
+
+class Promotions(BaseModel):
+    request_line_gap_s: int = 2700   # one request-line plug per 45 min
+    promo_min_spacing_s: int = 600   # no two promos closer than this
+    campaigns: list[Campaign] = Field(default_factory=list)
+    # Code-written request-line plugs (no LLM, AGENTS rule 11: copy only).
+    request_line_lines: list[str] = Field(default_factory=lambda: [
+        "The request line is open at Pilgrim Dot Farm.",
+        "You can ask for a song at Pilgrim Dot Farm. The request line is open.",
+        "Pilgrim Dot Farm takes requests. Tell us what to play.",
+    ])
 
 
 class MusicBackend(BaseModel):
@@ -531,9 +580,37 @@ class Station(BaseModel):
 
 
 class Talk(BaseModel):
-    """Contextual talk settings (OVERHAUL 5.3)."""
+    """Contextual talk settings (OVERHAUL 5.3, ANNOUNCER_OVERHAUL)."""
     time_mention_ttl_s: int = 900  # DJ clips that mention the time expire after this
     field_reporter_name: str = "Giles"  # placeholder until the user names him (SFX.md §10)
+    # Time checks are code-written and targeted at quarter marks (operator pick:
+    # top, quarter past, bottom, quarter til). A check airs only inside the
+    # window around its mark, so it can never be stale by more than the window.
+    time_check_marks_min: list[int] = Field(default_factory=lambda: [0, 15, 30, 45])
+    time_check_window_s: int = 120
+    time_check_min_gap_s: int = 600
+    # Code-written clock reads (revision 7: no LLM). `{clock}` is filled with
+    # spoken_time(mark) at render time.
+    topic_repeat_gap_s: int = 1800
+    motif_gap_items: int = 8
+    motif_bank: list[str] = Field(default_factory=lambda: [
+        "sprinkler", "barn", "we just", "welcome back"])
+    topic_bank: list[str] = Field(default_factory=lambda: [
+        "town_notice", "farm_lore", "station_lore", "listener_request",
+        "behind_the_mic", "promo_tease"])
+    weather_phrases: list[str] = Field(default_factory=lambda: [
+        "cool and clear", "spitting rain", "warm for November"])
+    # Code-written named song intros (revision 11: no LLM).
+    intro_variants: list[str] = Field(default_factory=lambda: [
+        "Here's {title} from {artist}.",
+        "Next up, {title} by {artist}.",
+        "{title}, from {artist}.",
+    ])
+    time_check_variants: list[str] = Field(default_factory=lambda: [
+        "It is {clock}.",
+        "{clock} here at Pilgrim Dot Farm.",
+        "Just checking the clock: {clock}.",
+    ])
 
 
 class SfxCue(BaseModel):
@@ -587,6 +664,8 @@ class Config(BaseModel):
     media: Media = Field(default_factory=Media)
     logging: Logging = Field(default_factory=Logging)
     talk: Talk = Field(default_factory=Talk)
+    liners: Liners = Field(default_factory=Liners)
+    promotions: Promotions = Field(default_factory=Promotions)
     sfx: Sfx = Field(default_factory=Sfx)
     dj: Dj = Field(default_factory=Dj)
     library: Library = Field(default_factory=Library)

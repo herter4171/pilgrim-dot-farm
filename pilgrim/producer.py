@@ -17,18 +17,32 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from pilgrim import genres
 from pilgrim.config import RNG, Clock, Config
 from pilgrim.logging_setup import err_text
-from pilgrim.pipelines.clocktime import current_local_time, mentions_clock, spoken_time
+from pilgrim.pipelines.clocktime import (
+    current_local_time,
+    mentions_clock,
+    mentions_day,
+    spoken_time,
+)
 from pilgrim.pipelines.llm import LLM, LLMTruncated
 from pilgrim.pipelines.news import NewsPipeline
 from pilgrim.pipelines.sfx import SFX_HOST_TYPES, SfxPipeline, beat_offset
 from pilgrim.pipelines.songs import SongPipeline
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
+from pilgrim.promotions import (
+    active_campaign,
+    fill_day_tokens,
+    next_local_midnight,
+    target_per_hour,
+    validate_promo_copy,
+    validate_promo_template,
+)
 from pilgrim.store import Store
 
 log = logging.getLogger("radio.producer")
@@ -166,6 +180,7 @@ class Producer:
             "field_report": self._count_fresh_unexpired("field_report"),
             "news": self._count_fresh_unexpired("news"),
             "sfx": self.count_sfx_stock(),
+            "promo": self._count_promos(),
         }
 
     def sfx_stock_target(self) -> int:
@@ -271,38 +286,127 @@ class Producer:
             "target": self.cfg.inventory.dj_talk_min})
         if need <= 0:
             return
-        # Real material to talk about: the songs that just played (chosen NOW,
-        # so no fake 'next song' claims) and the real local time (5.3).
+        # Material to talk about: the songs that just played (chosen NOW, so
+        # no fake 'next song' claims), code-computed day-level facts (revision
+        # 6), a weather phrase from config, and a rotated topic. The CLOCK is
+        # deliberately absent: time_check carries it (A4), so the DJ stops
+        # reading the time on every break.
         recent = self._recent_committed_songs(3)
+        tz = self.cfg.station.timezone
+        now_wall = self.clock.wall()
+        now_dt = datetime.fromtimestamp(now_wall, ZoneInfo(tz))
         context_parts: list[str] = []
         if recent:
             context_parts.append("Songs that played recently: " + "; ".join(
                 f'"{t}" by {a} ({genres.display(g)})' for t, a, g in recent))
-        try:
-            now_dt = await self._clock_time(self.cfg, self.api_key)
-            context_parts.append(f"Time of day right now: {spoken_time(now_dt)}")
-        except Exception:
-            pass  # never block DJ production on the time
+        context_parts.append(
+            f"Day: {now_dt.strftime('%A')}, {now_dt.strftime('%B')} {now_dt.day}.")
+        context_parts.append(f"Day part: {self._day_part(now_dt.hour)}.")
+        weather = self._weather_phrase()
+        if weather:
+            context_parts.append(f"Thistledown weather: {weather}.")
+        topic = self._pick_topic()
+        if topic:
+            context_parts.append(f"Topic: {topic}.")
+        context_parts.extend(self._request_context())
         context = "\n".join(context_parts)
-        # Expiry is stamped AFTER the LLM call (revision 3), and only when the
-        # copy actually states the clock (A2). A clip that never mentions a
-        # time is not perishable, so it may wait on the shelf instead of dying
-        # after 15 minutes — that was 43% of last run's renders.
+        # Expiry is stamped AFTER the LLM call (revision 3). A clock/day-part
+        # statement expires on the short TTL; a weekday/date fact expires at
+        # local midnight (revision 6); copy with neither is not perishable and
+        # may wait on the shelf.
         for _ in range(max(0, need)):
             try:
-                item = await self.voice.produce_item("dj_talk", 18.0, context=context)
-                text = (item.get("meta") or {}).get("text") or ""
+                copy = await self.voice.write_copy("dj_talk", 18.0, context=context)
+                reason = self._motif_reason(copy["text"])
+                if reason:
+                    copy = await self.voice.write_copy(
+                        "dj_talk", 18.0,
+                        context=context + f"\nDo not use the word/phrase "
+                                          f"'{reason}' this time.")
+                    reason = self._motif_reason(copy["text"])
+                    if reason:
+                        log.warning("talk.motif_reuse", extra={"motif": reason})
+                rendered = await self.voice.render(copy, "dj_talk", 18.0)
+                item = self.voice.item_dict("dj_talk", copy, rendered)
+                text = copy["text"]
+                wall = self.clock.wall()  # after the LLM call, not before
                 expires = None
                 if mentions_clock(text):
-                    wall = self.clock.wall()  # after the LLM call, not before
                     expires = (datetime.fromtimestamp(wall, UTC) + timedelta(
                         seconds=self.cfg.talk.time_mention_ttl_s)).isoformat()
+                elif mentions_day(text):
+                    expires = datetime.fromtimestamp(
+                        next_local_midnight(wall, tz), UTC).isoformat()
+                item["meta"]["topic"] = topic
+                item["meta"]["motifs"] = [
+                    m for m in self.cfg.talk.motif_bank if m.lower() in text.lower()]
                 self._store_voice(item, "dj_talk", evergreen=True,
                                   expires_at=expires)
                 log.info("produced dj_talk %.1fs", item["duration_s"])
             except Exception as e:
                 log.warning("dj talk production failed: %s", err_text(e))
                 return
+
+    def _day_part(self, hour: int) -> str:
+        if 5 <= hour < 11:
+            return "morning drive"
+        if 11 <= hour < 14:
+            return "midday"
+        if 14 <= hour < 17:
+            return "afternoon"
+        if 17 <= hour < 21:
+            return "evening"
+        return "overnight"
+
+    def _weather_phrase(self) -> str:
+        phrases = self.cfg.talk.weather_phrases
+        return phrases[self.rng.randint(0, len(phrases) - 1)] if phrases else ""
+
+    def _recent_dj_meta(self, n: int) -> list[dict]:
+        """meta of the newest n fresh dj_talk clips (for topic/motif rotation)."""
+        out: list[dict] = []
+        for it in reversed(self.store.list_items("dj_talk")):
+            if not it["fresh"] or it["emergency"]:
+                continue
+            try:
+                out.append(json.loads(it["meta_json"]) if it.get("meta_json") else {})
+            except ValueError:
+                out.append({})
+            if len(out) >= n:
+                break
+        return out
+
+    def _pick_topic(self) -> str:
+        topics = self.cfg.talk.topic_bank
+        if not topics:
+            return ""
+        recent = {m.get("topic") for m in self._recent_dj_meta(8)}
+        candidates = [t for t in topics if t not in recent] or topics
+        return candidates[self.rng.randint(0, len(candidates) - 1)]
+
+    def _request_context(self) -> list[str]:
+        """Request back-announce / tease (revision 8). Copy only: never a name
+        or email (AGENTS rule 11 / PAYMENT §0.3)."""
+        out: list[str] = []
+        ready = self.store.ready_request_songs()
+        if ready:
+            out.append(f'A listener request is coming up: "{ready[0]["text"]}".')
+        since = datetime.fromtimestamp(self.clock.wall() - 1800, UTC).isoformat()
+        recent = self.store.recently_aired_request(since)
+        if recent:
+            out.append(f'You just played a listener request: "{recent["text"]}".')
+        return out
+
+    def _motif_reason(self, text: str) -> str | None:
+        """A banked motif that aired inside the gap, or None (revision 10)."""
+        recent: set[str] = set()
+        for m in self._recent_dj_meta(self.cfg.talk.motif_gap_items):
+            recent.update(w.lower() for w in (m.get("motifs") or []))
+        low = text.lower()
+        for motif in self.cfg.talk.motif_bank:
+            if motif.lower() in low and motif.lower() in recent:
+                return motif
+        return None
 
     async def ensure_field_reports(self) -> None:
         """Keep `field_reports_min` unaired field reports (SFX.md §4.2). Like
@@ -322,6 +426,144 @@ class Producer:
             except Exception as e:
                 log.warning("field report production failed: %s", err_text(e))
                 return
+
+    # --------------------------------------------------------------- promos
+    def _count_promos(self, campaign_id: str | None = None,
+                      kind: str | None = None) -> int:
+        """Ready promos (recyclable), optionally filtered by campaign or kind."""
+        n = 0
+        for it in self.store.list_items("promo"):
+            if it["emergency"]:
+                continue
+            meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            if campaign_id is not None and meta.get("campaign_id") != campaign_id:
+                continue
+            if kind is not None and meta.get("kind") != kind:
+                continue
+            n += 1
+        return n
+
+    def _retire_finished_promos(self, now_wall: float, tz: str) -> None:
+        """A campaign's promos are retired (not deleted) once its ramp ends, so
+        nothing recycles into next year (ANNOUNCER_OVERHAUL C5)."""
+        for it in self.store.list_items("promo"):
+            meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            cid = meta.get("campaign_id")
+            if not cid:
+                continue
+            camp = next((c for c in self.cfg.promotions.campaigns if c.id == cid), None)
+            if camp is None or target_per_hour(now_wall, tz, camp) <= 0:
+                self.store.retire_item(it["id"], "campaign ended")
+
+    async def ensure_promos(self) -> None:
+        """Keep `inventory.promos_min` ready promos per source. Campaign promos
+        use the active campaign and code-filled day tokens (expiring at local
+        midnight, revision 6); otherwise the request-line plug is refilled.
+        Promos are evergreen: they recycle while the campaign runs."""
+        cfg = self.cfg
+        tz = cfg.station.timezone
+        now = self.clock.wall()
+        camp = active_campaign(now, tz, cfg.promotions.campaigns)
+        if camp is None:
+            self._retire_finished_promos(now, tz)
+        have = (self._count_promos(campaign_id=camp.id) if camp is not None
+                else self._count_promos(kind="request_line"))
+        need = cfg.inventory.promos_min - have
+        log.debug("producer.need", extra={
+            "item_type": "promo", "have": have, "target": cfg.inventory.promos_min})
+        for _ in range(max(0, need)):
+            try:
+                if await self._make_promo(camp) is None:
+                    return
+            except Exception as e:
+                log.warning("promo production failed: %s", err_text(e))
+                return
+
+    async def _make_promo(self, camp) -> dict | None:
+        cfg = self.cfg
+        tz = cfg.station.timezone
+        now = self.clock.wall()
+        if camp is not None:
+            ctx = (f"Event: {camp.label}. Date: {camp.date}. CTA: {camp.cta}.\n"
+                   f"Angles you may use: {'; '.join(camp.lines)}")
+            copy = await self.voice.write_copy("promo", 12.0, context=ctx)
+            reason = validate_promo_template(copy["text"], camp, cfg.station.name)
+            if reason:
+                # one retry with the rejection fed back, then give up rather
+                # than air a wrong claim
+                copy = await self.voice.write_copy(
+                    "promo", 12.0,
+                    context=ctx + f"\nYour previous attempt was rejected "
+                                  f"({reason}); include the tokens.")
+                reason = validate_promo_template(copy["text"], camp,
+                                                 cfg.station.name)
+                if reason:
+                    log.warning("promo.rejected", extra={"reason": reason})
+                    return None
+            copy["text"] = fill_day_tokens(copy["text"], now, tz, camp)
+            reason = validate_promo_copy(copy["text"], camp, cfg.station.name)
+            if reason:
+                log.warning("promo.rejected", extra={"reason": reason})
+                return None
+            kind, campaign_id = "campaign", camp.id
+            expires = datetime.fromtimestamp(
+                next_local_midnight(now, tz), UTC).isoformat()
+        else:
+            lines = cfg.promotions.request_line_lines
+            if not lines:
+                return None
+            copy = {"text": lines[self.rng.randint(0, len(lines) - 1)],
+                    "est_duration_s": 7.0, "evergreen": True}
+            kind, campaign_id, expires = "request_line", None, None
+        rendered = await self.voice.render(copy, "promo", 12.0)
+        item = self.voice.item_dict("promo", copy, rendered)
+        item["meta"]["kind"] = kind
+        if campaign_id:
+            item["meta"]["campaign_id"] = campaign_id
+        self._store_voice(item, "promo", evergreen=True, expires_at=expires)
+        log.info("produced promo %.1fs", item["duration_s"])
+        return item
+
+    # ----------------------------------------------------------- time checks
+    def _time_check_text(self, bucket: float, tz: str) -> str:
+        variants = self.cfg.talk.time_check_variants or ["It is {clock}."]
+        clock = spoken_time(datetime.fromtimestamp(bucket, ZoneInfo(tz)))
+        idx = int(bucket // 300) % len(variants)  # rotate deterministically
+        return variants[idx].format(clock=clock)
+
+    async def ensure_time_checks(self) -> None:
+        """Render a code-written clock read for each 5-minute bucket in the
+        next hour. The scheduler airs one only near a quarter mark (operator
+        pick: top, quarter past, bottom, quarter til) and picks the variant
+        whose bucket matches the ACTUAL slot, so the clock is never more than
+        the 5-minute rounding off. Kokoro is ~0.2 s: a dozen variants an hour
+        is nearly free, and each expires at the end of its bucket."""
+        cfg = self.cfg
+        tz = cfg.station.timezone
+        now = self.clock.wall()
+        buckets = [int((now + k * 300) // 300 * 300) for k in range(12)]
+        existing = set()
+        for it in self.store.list_items("time_check"):
+            if it["retired"]:
+                continue
+            meta = json.loads(it["meta_json"]) if it.get("meta_json") else {}
+            existing.add(meta.get("bucket"))
+        for bucket in buckets:
+            if bucket in existing:
+                continue
+            copy = {"text": self._time_check_text(float(bucket), tz),
+                    "est_duration_s": 4.0, "evergreen": False}
+            try:
+                rendered = await self.voice.render(copy, "time_check", 4.0)
+            except Exception as e:
+                log.warning("time_check production failed: %s", err_text(e))
+                return
+            item = self.voice.item_dict("time_check", copy, rendered)
+            item["meta"]["bucket"] = bucket
+            expires = datetime.fromtimestamp(bucket + 300, UTC).isoformat()
+            self._store_voice(item, "time_check", evergreen=False,
+                              expires_at=expires)
+            log.info("produced time_check %.1fs", item["duration_s"])
 
     # ------------------------------------------------------------------ sfx
     async def ensure_sfx_pool(self, limit: int | None = None) -> int:
@@ -505,6 +747,8 @@ class Producer:
                 await self.ensure_station_ids()
                 await self.ensure_liners()
                 await self.ensure_dj()
+                await self.ensure_time_checks()
+                await self.ensure_promos()
                 await self.ensure_commercials()
                 await self.ensure_field_reports()
             except Exception as e:
@@ -843,13 +1087,29 @@ class Producer:
                 "request_id": req["id"],
                 "payment_intent_id": req.get("payment_intent_id")})
 
+    def _named_intro_text(self, title: str, artist: str) -> str:
+        variants = self.cfg.talk.intro_variants or ["Here's {title} from {artist}."]
+        return variants[self.rng.randint(0, len(variants) - 1)].format(
+            title=title, artist=artist or "the house band")
+
     async def _render_intro(self, item: dict, req: dict | None) -> dict | None:
-        """Render a short DJ intro naming the just-created song, crediting the
-        listener for request songs. Stock intros are non-fatal (None). A request
-        intro MUST exist so the listener hears their request was serviced: two
-        LLM-written tries, then a scripted shout-out rendered directly."""
+        """Render a short DJ intro naming the just-created song. Stock intros
+        are code-written and recycle (revision 11: no LLM, every airing of the
+        song gets its name said). A request intro credits the listener and MUST
+        exist so they hear their request was serviced: two LLM tries, then a
+        scripted shout-out rendered directly."""
         title = item.get("title") or "this next one"
         artist = item.get("artist") or ""
+        if req is None:
+            text = self._named_intro_text(title, artist)
+            try:
+                r = await self.voice.render({"text": text}, "intro", 6.0)
+            except Exception as e:
+                log.warning("intro.failed", extra={"error": err_text(e)})
+                return None
+            return {"media_path": str(r["path"]), "duration_s": r["duration_s"],
+                    "sample_rate": r.get("sample_rate"),
+                    "channels": r.get("channels"), "meta": {"text": text}}
         genre = genres.display(item.get("genre") or "")
         context = f'Next song: "{title}" by {artist} ({genre}).\n'
         if req is not None:
@@ -904,7 +1164,7 @@ class Producer:
         return self.store.add_item(
             type_="intro", media_path=str(intro["media_path"]),
             duration_s=intro["duration_s"], sample_rate=intro.get("sample_rate"),
-            channels=intro.get("channels"), role="intro", evergreen=False,
+            channels=intro.get("channels"), role="intro", evergreen=req is None,
             fresh=True, meta=meta)
 
     def _recent_genres(self) -> list[str]:

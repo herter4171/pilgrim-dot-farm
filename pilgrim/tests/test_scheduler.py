@@ -755,3 +755,73 @@ def test_news_expiry_checked_at_air_slot(cfg, tmp_env):
     stale = datetime.fromtimestamp(clock.wall() + 120, UTC).isoformat()
     make_item(cfg, store, "news", 19.0, fresh=True, expires_at=stale)
     assert sched._news_valid() is None
+
+
+def test_time_check_only_airs_inside_its_mark_window(cfg, tmp_env):
+    """Operator pick: clock reads at :00/:15/:30/:45. A check airs only within
+    time_check_window_s of its mark, so it can never be stale."""
+    from datetime import UTC, datetime
+    _, store, _ = tmp_env
+    clock = SimClock(epoch=1_800_000_000.0)
+    sched = Scheduler(cfg, store, RandomSelector(RNG(1), cfg), clock, RNG(1))
+    from pilgrim.pipelines.clocktime import next_marks
+    mark = int(next_marks(clock.wall() + 60, cfg.station.timezone,
+                          cfg.talk.time_check_marks_min, count=1)[0])
+    dur = mark - clock.wall()  # next slot airs exactly on the mark
+    song = make_item(cfg, store, "song", dur)
+    sched._append({"item_id": song, "type": "song", "duration_s": dur})
+    sched._rebuild_program()
+    item = make_item(cfg, store, "time_check", 4.0, meta={"bucket": mark},
+                     expires_at=datetime.fromtimestamp(mark + 300, UTC).isoformat())
+    assert sched._time_check_item()["id"] == item
+    assert [e["type"] for e in sched._pick_time_check()] == ["time_check"]
+
+
+def test_time_check_not_due_away_from_the_mark(cfg, tmp_env):
+    from datetime import UTC, datetime
+    _, store, _ = tmp_env
+    clock = SimClock(epoch=1_800_000_000.0)
+    sched = Scheduler(cfg, store, RandomSelector(RNG(1), cfg), clock, RNG(1))
+    from pilgrim.pipelines.clocktime import next_marks
+    mark = int(next_marks(clock.wall() + 60, cfg.station.timezone,
+                          cfg.talk.time_check_marks_min, count=1)[0])
+    dur = mark + 600 - clock.wall()  # slot is 10 minutes after the mark
+    song = make_item(cfg, store, "song", dur)
+    sched._append({"item_id": song, "type": "song", "duration_s": dur})
+    sched._rebuild_program()
+    make_item(cfg, store, "time_check", 4.0, meta={"bucket": mark + 600},
+              expires_at=datetime.fromtimestamp(mark + 900, UTC).isoformat())
+    assert sched._time_check_item() is None
+    assert sched._pick_time_check() == []
+
+
+def test_promo_spacing_and_request_line_gap(cfg, tmp_env):
+    """No two promos inside promo_min_spacing_s; request-line plugs have their
+    own longer gap (ANNOUNCER_OVERHAUL C3)."""
+    _, store, _ = tmp_env
+    make_item(cfg, store, "promo", 12.0, meta={"kind": "request_line"})
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(1), cfg), clock, RNG(1))
+    assert sched._promo_available()
+    sched._last_promo_air = sched._air_clock - 100  # inside 600 s
+    assert not sched._promo_available()
+    sched._last_promo_air = sched._air_clock - 1000
+    sched._last_request_line_air = sched._air_clock - 100  # inside 2700 s
+    assert not sched._promo_available()
+    sched._last_request_line_air = sched._air_clock - 3000
+    assert sched._promo_available()
+
+
+def test_promo_never_adjacent_to_dj_talk(cfg):
+    """Two Liam-voice segments in a row sound wrong: a promo is not drawn right
+    after dj_talk, and dj_talk is not drawn right after a promo."""
+    from pilgrim.selector import SEGMENTS, PlayoutState, RandomSelector
+    sel = RandomSelector(RNG(1), cfg)
+    st = PlayoutState(cfg)
+    st.available = {s: False for s in SEGMENTS}
+    st.available.update(song=True, promo=True)
+    st.recent_types = ["dj_talk"]
+    assert sel.choose_next(st) == "song"
+    st.available.update(song=False, dj_talk=True, promo=False)
+    st.recent_types = ["promo"]
+    assert sel.choose_next(st) == "dj_talk"

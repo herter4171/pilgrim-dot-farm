@@ -53,7 +53,7 @@ playout:
   request_hold_max_s: 0          # 0 = no hold: songs keep airing while a request is written/generated; a ready request splices into the next song slot. >0 = hold the window (talk only) up to this long per request
   window_trim_keep_s: 120        # keep this much committed history behind "now"
   weights: {song: 0.55, dj_talk: 0.12, commercial_break: 0.15, liner: 0.10, news: 0.08,
-            field_report: 0.05}
+            field_report: 0.05, promo: 0.05, time_check: 0.04}
   max_consecutive_non_song: 2
   top_of_hour_window_s: 240      # a song gap this close to :00 leads with a callout (soft)
   news_min_spacing_s: 1200
@@ -76,7 +76,7 @@ inventory:
   fresh_songs_ready: 2
   briefs_queued: 3
   commercials_min: 20            # RADIO.md §6.1/§12: >= 20 so a song drought has spots to air
-  liners_per_bucket: 3
+  liners_per_bucket: 4
   liner_buckets_s: [3, 5, 10, 15, 30]
   dj_talk_min: 2
   field_reports_min: 1
@@ -213,6 +213,9 @@ dj:                          # DJ console (TUI.md §7, RADIO §12)
 
 talk:
   time_mention_ttl_s: 900   # DJ clips that mention the time expire after this
+  time_check_marks_min: [0, 15, 30, 45]   # top, quarter past, bottom, quarter til
+  time_check_window_s: 120                 # a check airs only this close to its mark
+  time_check_min_gap_s: 600
   field_reporter_name: Giles  # PLACEHOLDER until the user names him (SFX.md §10.1)
 
 # Sound effects overlaid on non-news talk (SFX.md). Never on news, by construction.
@@ -304,3 +307,22 @@ payments:
     ngram: 6                   # consecutive matching words = a hit
     results: 5
     timeout_s: 20
+
+promotions:
+  request_line_gap_s: 2700     # one request-line plug per 45 min
+  promo_min_spacing_s: 600     # no two promos closer than this
+  campaigns:
+    - id: thanksgiving-2026
+      label: Thanksgiving      # must appear verbatim in every promo
+      date: "2026-11-26"       # station-local (America/Detroit)
+      cta: the request line
+      light_touch: true        # timing is optional; most promos just name the day
+      lines:
+        - a song for the table
+        - the great Thistledown turkey census
+        - what we are thankful for
+        - the request line is open for Thanksgiving
+      schedule:
+        - {from: "2026-11-05", until: "2026-11-18", per_hour: 1}
+        - {from: "2026-11-19", until: "2026-11-25", per_hour: 2}
+        - {from: "2026-11-26", until: "2026-11-26", per_hour: 3, after_news: true}

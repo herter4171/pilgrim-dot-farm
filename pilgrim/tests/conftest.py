@@ -60,11 +60,11 @@ def tmp_env(tmp_path, base_config):
 
 
 def make_item(cfg, store, type_, duration, genre=None, fresh=True,
-              expires_at=None, gravity=None):
+              expires_at=None, gravity=None, meta=None):
     return store.add_item(
         type_=type_, media_path=f"/tmp/{type_}_{store.max_seq()}.flac",
         duration_s=duration, genre=genre, fresh=fresh, evergreen=True,
-        expires_at=expires_at, gravity=gravity)
+        expires_at=expires_at, gravity=gravity, meta=meta)
 
 
 def seed_pool(store, cfg, n_song=40, n_liner=30, n_com=20, n_dj=15):

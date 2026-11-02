@@ -176,6 +176,9 @@ class VoicePipeline:
         "intro": ("dj_talk", "short DJ intro for the very next song; name the title and artist"),
         "field_report": ("field_report", "a field report filed from a literal field: "
                          "farm factoids delivered as serious news"),
+        "promo": ("liners", "10-20s station promo naming Pilgrim Dot Farm and one "
+                  "thing it is promoting"),
+        "time_check": ("dj_talk", "a short clock read (code-written, no LLM)"),
     }
     CATCH_PHRASE = "outstanding in my field"
 
@@ -288,6 +291,23 @@ class VoicePipeline:
                                 min_dur=0.5, max_dur=float("inf"))
         return {**r, "clean": clean, "voice": voice, "speed": speed}
 
+    @staticmethod
+    def item_dict(role: str, copy: dict, rendered: dict) -> dict:
+        """The stored-item shape for a rendered voice clip (shared by
+        produce_item and callers that need to fill tokens between write and
+        render, e.g. promos)."""
+        return {
+            "type": role, "media_path": str(rendered["path"]),
+            "duration_s": rendered["duration_s"],
+            "sample_rate": rendered["sample_rate"], "channels": rendered["channels"],
+            "role": role, "evergreen": bool(copy.get("evergreen", True)),
+            "gravity": copy.get("gravity"),
+            "meta": {"text": copy.get("text"), "words": rendered.get("words"),
+                     "words_per_s": rendered.get("words_per_s"),
+                     "sfx_cues": copy.get("sfx_cues") or [],
+                     "joke_after_sentence": copy.get("joke_after_sentence")},
+        }
+
     async def produce_item(self, role: str, target_s: float,
                            context: str | None = None) -> dict:
         base = {"item_type": role, "target_s": target_s}
@@ -301,16 +321,7 @@ class VoicePipeline:
         except Exception as e:
             log.warning("voice.rejected", extra={**base, "stage": "render", "error": err_text(e)})
             raise
-        item = {
-            "type": role, "media_path": str(rendered["path"]), "duration_s": rendered["duration_s"],
-            "sample_rate": rendered["sample_rate"], "channels": rendered["channels"],
-            "role": role, "evergreen": bool(copy.get("evergreen", True)),
-            "gravity": copy.get("gravity"),
-            "meta": {"text": copy.get("text"), "words": rendered.get("words"),
-                      "words_per_s": rendered.get("words_per_s"),
-                      "sfx_cues": copy.get("sfx_cues") or [],
-                      "joke_after_sentence": copy.get("joke_after_sentence")},
-        }
+        item = self.item_dict(role, copy, rendered)
         log.info("voice.produced", extra={
             **base, "words": len(copy.get("text", "").split()),
             "duration_s": rendered["duration_s"]})

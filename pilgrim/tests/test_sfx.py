@@ -127,6 +127,27 @@ class CueVoice:
                 "meta": {"text": TEXT, "sfx_cues": list(self.cues),
                          "joke_after_sentence": self.joke}}
 
+    async def write_copy(self, role, target_s, context=None):
+        return {"text": TEXT, "est_duration_s": target_s, "evergreen": True,
+                "sfx_cues": list(self.cues), "joke_after_sentence": self.joke}
+
+    async def render(self, copy, role, target_s):
+        return {"path": f"/tmp/{role}.flac", "duration_s": 15.0,
+                "sample_rate": 24000, "channels": 1,
+                "words": len(TEXT.split()), "words_per_s": 2.5}
+
+    @staticmethod
+    def item_dict(role, copy, rendered):
+        return {"type": role, "media_path": rendered["path"],
+                "duration_s": rendered["duration_s"],
+                "sample_rate": rendered["sample_rate"],
+                "channels": rendered["channels"], "role": role,
+                "evergreen": bool(copy.get("evergreen", True)),
+                "gravity": copy.get("gravity"),
+                "meta": {"text": copy.get("text"),
+                         "sfx_cues": copy.get("sfx_cues") or [],
+                         "joke_after_sentence": copy.get("joke_after_sentence")}}
+
 
 def _producer(cfg, store, tmp, voice, sfx_fake=None) -> tuple[Producer, FakeSfx]:
     sink: Any = object()
