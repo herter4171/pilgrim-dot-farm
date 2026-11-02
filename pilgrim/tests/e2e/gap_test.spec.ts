@@ -180,3 +180,48 @@ test("a stalled CloudFront fetch falls back to the origin instead of dead air", 
   await expect(page.locator("#indicator")).toHaveClass(/onair/);
   expect(errors).toEqual([]);
 });
+
+test("cover art swaps with the song label and never moves PLAY", async ({ page }) => {
+  await page.goto("/");
+  const btnBefore = await page.locator("#btn-play").boundingBox();
+  const frame = await page.locator(".art-frame").boundingBox();
+  expect(frame, "the art frame is above the play row").toBeTruthy();
+  expect(Math.abs(frame!.width - frame!.height), "the frame is square")
+    .toBeLessThanOrEqual(1);
+  expect(frame!.y, "frame sits above PLAY").toBeLessThan(btnBefore!.y);
+
+  await page.click("#btn-play");
+  await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 15_000 });
+
+  type Sample = { src: string; alt: string; label: string; w: number };
+  const samples: Sample[] = [];
+  for (let k = 0; k < 14; k++) {
+    await page.waitForTimeout(1200);
+    samples.push(await page.evaluate(() => {
+      const img = document.getElementById("cover-art") as HTMLImageElement;
+      const label = document.getElementById("song-label")!;
+      return { src: img.getAttribute("src") || "", alt: img.getAttribute("alt") || "",
+               label: label.textContent || "", w: img.naturalWidth };
+    }));
+  }
+
+  const btnAfter = await page.locator("#btn-play").boundingBox();
+  expect(Math.abs(btnAfter!.y - btnBefore!.y), "PLAY never moves when art swaps")
+    .toBeLessThanOrEqual(0.5);
+  expect(Math.abs(btnAfter!.height - btnBefore!.height)).toBeLessThanOrEqual(0.5);
+
+  const songs = samples.filter(s => s.label);
+  const others = samples.filter(s => !s.label);
+  expect(songs.length, "songs aired during the sample window").toBeGreaterThan(0);
+  for (const s of songs) {
+    expect(s.src, "a named song shows its cover").toContain("/api/art/");
+    expect(s.alt, "alt is title - artist").toBe(s.label);
+    expect(s.w, "the cover actually decoded").toBeGreaterThan(0);
+  }
+  for (const s of others) {
+    expect(s.src, "non-song audio shows the placeholder").toContain("placeholder.svg");
+    expect(s.alt).toBe("");
+  }
+  // at least one swap happened (art is per-song, not a single static image)
+  expect(new Set(songs.map(s => s.src)).size).toBeGreaterThan(1);
+});

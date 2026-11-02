@@ -13,6 +13,12 @@
   const level = $("level"); const lctx = level.getContext("2d");
   const offairEl = $("offair"), statusEl = $("status");
   const songLabel = $("song-label");
+  const coverArt = $("cover-art");
+  // Cover art (ALBUM_ART.md Step 8): the placeholder always fills the frame,
+  // so the PLAY row never moves. Art is cosmetic: a load error falls back
+  // silently and never touches playback, the indicator or OFF AIR logic.
+  const ART_PLACEHOLDER = "img/placeholder.svg";
+  let shownArt = ART_PLACEHOLDER;
 
   let ctx = null, analyser = null, raf = null;
   let items = [];            // {seq, media_id, type, duration_s, sfx[], buffer}
@@ -190,6 +196,7 @@
     const it = items[i];
     if (!it) return null;
     if (!it.buffer) it.buffer = await decode(it, ctx);
+    preloadArt(it);
     // SFX overlays decode in the background and are never awaited: a slow or
     // failed stinger is skipped, it never delays its host (SFX.md §7.4).
     for (const ov of it.sfx || []) {
@@ -318,8 +325,37 @@
      `title - artist` for a song with both fields; otherwise empty. Fetching,
      decoding, or scheduling the NEXT song must never announce it early. */
   function setSongLabel(it) {
-    songLabel.textContent = (it && it.type === "song" && it.title && it.artist)
-      ? (it.title + " - " + it.artist) : "";
+    const named = !!(it && it.type === "song" && it.title && it.artist);
+    songLabel.textContent = named ? (it.title + " - " + it.artist) : "";
+    setCoverArt(named ? it : null, named);
+  }
+
+  /* The cover swaps with the label, from the same playhead decision: an
+     audible song with an uploaded art_url shows its cover, anything else
+     shows the placeholder. The next song's art is never shown early. */
+  function setCoverArt(it, named) {
+    const url = (named && it && it.art_url) ? it.art_url : ART_PLACEHOLDER;
+    if (url === shownArt) return;
+    shownArt = url;
+    coverArt.src = url;
+    coverArt.alt = named ? (it.title + " - " + it.artist) : "";
+  }
+
+  coverArt.addEventListener("error", () => {
+    // A dead cover URL is cosmetic: fall back once, silently.
+    if (shownArt !== ART_PLACEHOLDER) {
+      shownArt = ART_PLACEHOLDER;
+      coverArt.src = ART_PLACEHOLDER;
+      coverArt.alt = "";
+    }
+  });
+
+  /* Warm the next covers while the next songs decode (Step 8 preload). */
+  function preloadArt(it) {
+    if (it && it.art_url && it.type === "song") {
+      const img = new Image();
+      img.src = it.art_url;
+    }
   }
 
   function advancePlayhead() {
@@ -536,6 +572,7 @@
     analyser = null;
     items = []; cursor = 0; scheduleCursor = 0;
     songLabel.textContent = "";
+    setCoverArt(null, false);
     btn.textContent = "▶  PLAY"; btn.classList.remove("stop");
     setState("idle"); lctx.clearRect(0, 0, level.width, level.height);
   }

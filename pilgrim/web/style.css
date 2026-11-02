@@ -181,6 +181,26 @@ body {
   display: inline-flex; align-items: center; justify-content: center;
 }
 
+/* Cover art (ALBUM_ART.md Step 8): a square frame above the play row. The
+   placeholder always fills it, so PLAY never moves when art appears or
+   changes. 300px keeps the pane compact (the desktop scrolls). */
+.art-frame {
+  width: min(100%, 300px);
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  border: 1px solid var(--violet);
+  border-radius: 6px;
+  box-shadow: 0 0 12px rgba(166,61,255,.35);
+  background: var(--panel);
+  overflow: hidden;
+}
+.art-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 /* Half-height level meter: 20px tall (was 40px). */
 #level { width: 100%; height: 20px; display: block; }
 

@@ -27,6 +27,7 @@ from pilgrim.config import RNG, Clock, Config, ensure_dirs, load_config
 from pilgrim.scheduler import Scheduler
 from pilgrim.selector import RandomSelector
 from pilgrim.store import Store
+from pilgrim.tests.fakes.fake_flux import encode_png
 
 _CFG = load_config()
 
@@ -51,9 +52,13 @@ def _seed(cfg: Config, store: Store, tmp: Path) -> None:
     for i in range(30):  # songs
         f = lib / f"song_{i}.mp3"
         _make_audio(f, 1.5 + (i % 3) * 0.5)
-        store.add_item(type_="song", media_path=str(f), duration_s=1.5 + (i % 3) * 0.5,
-                       genre=genres[i % len(genres)], evergreen=True, fresh=True,
-                       title=f"Song {i}", artist="The Fakes")
+        sid = store.add_item(type_="song", media_path=str(f), duration_s=1.5 + (i % 3) * 0.5,
+                             genre=genres[i % len(genres)], evergreen=True, fresh=True,
+                             title=f"Song {i}", artist="The Fakes")
+        # cover art (ALBUM_ART.md Step 8): every song has one, served locally
+        art = lib / f"art_{i}.png"
+        art.write_bytes(encode_png(48, 48, color=(20 + i, 140, 90)))
+        store.set_art(sid, str(art), {"scene": "e2e", "seed": i})
     # one short SFX stinger that rides on talk clips (SFX.md §7.4): exercises
     # the client's overlay path without touching the host joins
     sfx = lib / "sfx_0.mp3"
@@ -130,7 +135,8 @@ def build_app() -> FastAPI:
                            "type": it["type"], "duration_s": it["duration_s"],
                            "sfx": sched.overlays_for(it["seq"]),
                            "title": (store.get_item(it["item_id"]) or {}).get("title") or "",
-                           "artist": (store.get_item(it["item_id"]) or {}).get("artist") or ""}
+                           "artist": (store.get_item(it["item_id"]) or {}).get("artist") or "",
+                           "art_url": _art_url(store, it["item_id"])}
                           for it in items], "start_offset_s": start_offset,
                 "epoch": sched.epoch, "revision": sched.revision,
                 "reset": stale, "server_time": time.time()},
@@ -156,6 +162,21 @@ def build_app() -> FastAPI:
             underrun=1 if payload.get("underrun") else 0)
         return JSONResponse({"ok": True},
                             headers={"Cache-Control": "no-store"})
+
+    def _art_url(store: Store, item_id: int) -> str:
+        """e2e mirror of art_url (ALBUM_ART Step 7): the local art route when
+        the item has a rendered cover, else ""."""
+        it = store.get_item(item_id) or {}
+        return f"/api/art/{item_id}" if it.get("art_path") else ""
+
+    @app.get("/api/art/{item_id}")
+    async def art(item_id: int):
+        it = store.get_item(item_id)
+        if not it or not it.get("art_path"):
+            return JSONResponse({"detail": "no art"}, status_code=404)
+        return FileResponse(str(it["art_path"]), media_type="image/png",
+                            headers={"Cache-Control":
+                                     "public, max-age=31536000, immutable"})
 
     @app.get("/api/media/{item_id}")
     async def media(item_id: int):

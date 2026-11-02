@@ -792,7 +792,16 @@ S3 is the source of truth for listener audio; the M5 no longer streams it
 Retro window shell on a vertical stack, scrollable `#desktop` so every pane
 stays reachable on small screens:
 
-- **RADIO BROADCAST** (title exactly `RADIO BROADCAST`): one row split into
+- **RADIO BROADCAST** (title exactly `RADIO BROADCAST`): a square **cover
+art frame** above the play row (`min(100%, 300px)`, 1:1, retro-pane border,
+centred; ALBUM_ART.md Step 8). It always shows something — the audible song's
+cover from `art_url` when it has one, else the static station placeholder
+(`web/img/placeholder.svg`) — so the PLAY row never moves when art appears or
+changes. The cover swaps from the same audio-clock playhead decision as the
+song label (never the buffered next song early), is preloaded when the item is
+decoded ahead, and an image load error falls back to the placeholder
+silently; art never affects playback, the indicator or OFF AIR logic. Then
+one row split into
 two equal half-width cells — the streaming indicator (idle / buffering / on
 air, with the pulsing dot) centered in the left half and PLAY/STOP centered
 in the right half, both 44 px tall; the indicator sizes itself to its label
