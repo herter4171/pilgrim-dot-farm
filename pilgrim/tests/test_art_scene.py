@@ -15,6 +15,7 @@ from pilgrim.pipelines.art import (
     build_flux_prompt,
     has_non_latin_script,
     lyric_excerpt,
+    pick_typography,
     sanitize_text,
     style_hint,
     typography_sentence,
@@ -87,6 +88,22 @@ def test_typography_sentence_quotes_are_straightened():
     assert '"The \'Best\' Band"' in t
 
 
+def test_build_flux_prompt_includes_lettering_style():
+    out = build_flux_prompt(TEMPLATE, GOOD_SCENE, "Biscuits and Gravy",
+                            "The Dirty Gravy Boys", "heavy slab serif")
+    assert "heavy slab serif lettering" in out
+    assert 'reads exactly "Biscuits and Gravy"' in out
+    assert 'reads exactly "The Dirty Gravy Boys"' in out
+
+
+def test_pick_typography_uses_art_style_and_varies_by_seed():
+    assert pick_typography("a risograph print", 0) == "rough screenprint caps"
+    assert pick_typography("a woodcut print", 0) == "woodcut carved serif"
+    assert pick_typography("a gouache painting", 0) == "hand-painted sign lettering"
+    styles = {pick_typography("a plain scene", s) for s in range(12)}
+    assert len(styles) > 1
+
+
 # ------------------------------------------------------------ scene validation
 def test_banned_words_are_whole_word_only():
     assert banned_hits("a single sleeve and a vinyl disc") == ["disc", "single", "sleeve", "vinyl"]
@@ -153,6 +170,30 @@ async def test_writer_returns_a_valid_scene(cfg):
                           hint="polka", lyrics="line", item_id=1)
     assert scene == GOOD_SCENE
     assert llm.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_writer_includes_listener_request_and_paid_flag(cfg):
+    class Recorder:
+        def __init__(self):
+            self.user = ""
+
+        async def chat_json(self, model, system, user, max_tokens=800):
+            self.user = user
+            return {"scene": GOOD_SCENE}
+
+    llm = Recorder()
+    w = SceneWriter(cfg, llm, SCENE_PROMPT)
+    await w.write(title="T", artist="A", genre="country-americana", hint="",
+                  lyrics="", request_text="two horses looking on", paid=False)
+    assert "two horses looking on" in llm.user
+    assert "Request type: free" in llm.user
+    await w.write(title="T", artist="A", genre="country-americana", hint="",
+                  lyrics="", request_text="a neon city at midnight", paid=True)
+    assert "Request type: paid" in llm.user
+    await w.write(title="T", artist="A", genre="country-americana", hint="",
+                  lyrics="")
+    assert "Request type: station song" in llm.user
 
 
 @pytest.mark.asyncio

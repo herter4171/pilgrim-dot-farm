@@ -31,6 +31,7 @@ from pilgrim.pipelines.art import (
     SceneWriter,
     build_flux_prompt,
     lyric_excerpt,
+    pick_typography,
     sanitize_text,
     style_hint,
 )
@@ -185,7 +186,9 @@ class ArtWorker:
 
     # -- one song ----------------------------------------------------------
     async def _render_one(self, item: dict[str, Any], seed: int,
-                          item_id: int | None = None
+                          item_id: int | None = None,
+                          request_text: str | None = None,
+                          paid: bool = False
                           ) -> tuple[Path, Path, dict[str, Any]] | None:
         """Scene -> FLUX -> files. Returns None when the memory gate says no.
         Raises on any real failure; the caller decides whether to back off."""
@@ -205,8 +208,10 @@ class ArtWorker:
         scene = await self.scene.write(
             title=title, artist=artist, genre=item.get("genre"),
             hint=style_hint(_meta(item)), lyrics=lyric_excerpt(_meta(item)),
-            item_id=iid)
-        prompt = build_flux_prompt(self.template, scene, title, artist)
+            item_id=iid, request_text=request_text, paid=paid)
+        typography_style = pick_typography(scene, seed)
+        prompt = build_flux_prompt(self.template, scene, title, artist,
+                                   typography_style)
         log.info("art.prompt", extra={
             "item_id": iid, "stage": "scene",
             "duration_ms": round((time.monotonic() - t0) * 1000)})
@@ -232,6 +237,8 @@ class ArtWorker:
         meta = {
             "scene": scene, "prompt": prompt, "seed": seed,
             "title_text": title, "artist_text": artist,
+            "typography": typography_style,
+            "request_text": request_text, "paid": bool(paid),
             "png_path": str(png_path), "model": self.cfg.art.size,
             "rendered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
@@ -245,9 +252,14 @@ class ArtWorker:
         """
         iid = int(item["id"])
         seed = art_seed(iid) if seed is None else int(seed)
+        meta = _meta(item)
+        request_text = str(meta.get("request_text") or "") or None
+        paid = bool(meta.get("paid"))
         async with self._render_lock:
             try:
-                result = await self._render_one(item, seed)
+                result = await self._render_one(item, seed,
+                                                request_text=request_text,
+                                                paid=paid)
             except FluxBusy as e:
                 self.backend = "busy"
                 self._failed(iid, "render", e)
@@ -270,7 +282,9 @@ class ArtWorker:
         self.backend = "ok"
         return True
 
-    async def render_brief(self, brief: dict[str, Any], token: str
+    async def render_brief(self, brief: dict[str, Any], token: str,
+                           request_text: str | None = None,
+                           paid: bool = False
                            ) -> tuple[str, dict[str, Any]] | None:
         """Render a cover from a song brief before the song item exists.
 
@@ -291,12 +305,15 @@ class ArtWorker:
             "artist": brief.get("artist"),
             "genre": brief.get("genre"),
             "meta_json": {"brief": brief, "lyrics": brief.get("lyrics", ""),
-                          "style_prompt": brief.get("style_prompt", "")},
+                          "style_prompt": brief.get("style_prompt", ""),
+                          "request_text": request_text, "paid": bool(paid)},
         }
         seed = int(brief.get("seed") or art_seed(iid))
         async with self._render_lock:
             try:
-                result = await self._render_one(item, seed)
+                result = await self._render_one(item, seed,
+                                                request_text=request_text,
+                                                paid=paid)
             except Exception as e:  # noqa: BLE001 - early art never blocks a song
                 log.warning("art.early_failed", extra={
                     "request_id": iid or None, "stage": "render",

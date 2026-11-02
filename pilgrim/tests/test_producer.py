@@ -284,8 +284,8 @@ class FakeArtWorker:
         self.calls = []
         self.attached = []
 
-    async def render_brief(self, brief, token):
-        self.calls.append((brief["title"], token))
+    async def render_brief(self, brief, token, request_text=None, paid=False):
+        self.calls.append((brief["title"], token, request_text, paid))
         return "/tmp/early.jpg", {"scene": "early", "seed": brief.get("seed")}
 
     def attach(self, item_id, jpg_path, meta):
@@ -308,7 +308,26 @@ def test_request_song_starts_and_attaches_early_art(cfg, tmp_env):
     song_id = store.get_request(req["id"])["song_item_id"]
     assert art.calls and art.calls[0][0] == "Mittens the Night"
     assert art.calls[0][1] == f"req{req['id']}"
+    assert art.calls[0][2] == "early art please"
+    assert art.calls[0][3] is False
     assert art.attached == [(song_id, "/tmp/early.jpg")]
+    meta = _meta(store, song_id)
+    assert meta["request_text"] == "early art please" and meta["paid"] is False
+
+
+def test_paid_request_passes_paid_true_to_early_art(cfg, tmp_env):
+    _, store, _ = tmp_env
+    cfg.art.enabled = True
+    req = store.add_request("paid art please", cap=10, priority=1)
+    prod = make_song_producer(cfg, store, FakeVoice(), FakeSong())
+    art = FakeArtWorker()
+    prod.art_worker = art
+    assert asyncio.run(prod.song_step()) is True
+    song_id = store.get_request(req["id"])["song_item_id"]
+    assert art.calls and art.calls[0][2] == "paid art please"
+    assert art.calls[0][3] is True
+    meta = _meta(store, song_id)
+    assert meta["request_text"] == "paid art please" and meta["paid"] is True
 
 
 def test_request_production_starts_prep_clock_at_writing(cfg, tmp_env):

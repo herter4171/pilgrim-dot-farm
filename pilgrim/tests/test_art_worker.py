@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from pilgrim.album_art import LEASE_KEY, ArtWorker, art_dir
+from pilgrim.pipelines.art import TYPOGRAPHY_STYLES
 from pilgrim.server import build_station, create_admin_app, create_public_app
 from pilgrim.tests.fakes import FakeLLM
 from pilgrim.tests.fakes.fake_flux import FakeFlux
@@ -88,6 +89,43 @@ async def test_render_brief_renders_before_the_item_exists(tmp_env):
     assert w.rendered == 1
     # no item was created by the early path
     assert store.all_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_render_brief_records_request_and_typography(tmp_env):
+    cfg, store, tmp = tmp_env
+    _cfg(cfg)
+    w = _worker(cfg, store)
+    brief = {
+        "title": "Two Horses", "artist": "The Fence Sitters",
+        "genre": "country-americana", "seed": 7, "request_id": 1000,
+        "lyrics": "[verse]\ntwo horses looking on",
+        "style_prompt": "Global Emotional Progression: warm and curious",
+    }
+    res = await w.render_brief(brief, "req1000",
+                               request_text="two horses looking on", paid=False)
+    assert res is not None
+    _, meta = res
+    assert meta["request_text"] == "two horses looking on"
+    assert meta["paid"] is False
+    assert meta["typography"] in TYPOGRAPHY_STYLES
+
+
+@pytest.mark.asyncio
+async def test_process_reads_request_and_paid_from_item_meta(tmp_env):
+    cfg, store, tmp = tmp_env
+    _cfg(cfg)
+    iid = store.add_item(
+        type_="song", media_path=str(tmp / "meta.mp3"), duration_s=1,
+        title="Paid Barn", artist="The Haybalers", genre="country-americana",
+        meta={"lyrics": "[verse]\nneigh", "request_text": "a neon city",
+              "paid": True})
+    w = _worker(cfg, store)
+    assert await w.process(store.get_item(iid)) is True
+    meta = json.loads(store.get_item(iid)["meta_json"])
+    assert meta["art"]["request_text"] == "a neon city"
+    assert meta["art"]["paid"] is True
+    assert meta["art"]["typography"] in TYPOGRAPHY_STYLES
 
 
 @pytest.mark.asyncio
