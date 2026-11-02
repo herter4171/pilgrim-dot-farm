@@ -133,7 +133,8 @@ news:
   budget_s: 60
 
 # Listener request line. FIFO top-N with LLM moderation: clean/playful requests ok,
-# adult *allusion* ok, but explicit/crass/hate/illegal are rejected by the moderator.
+# innuendo and mild rude words ok ("Keep it cleanish. Innuendo welcome."), but
+# explicit sexual content, hate, illegal, or contact info are rejected.
 requests:
   queue_cap: 50          # request-board display size (public line never evicts)
   free_queue_max: 100    # free requests waiting (queued/producing/ready); new ones refused beyond. Paid never capped

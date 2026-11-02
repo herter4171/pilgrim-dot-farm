@@ -14,17 +14,18 @@ test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", as
   expect(await page.$('[data-win="hit"]')).toBeTruthy();
   expect(await page.textContent('[data-win="motivation"] .win-title')).toBe("MOTIVATION");
   expect(await page.textContent('[data-win="infra"] .win-title')).toBe("INFRA AND DATA FLOW");
-  // five documented models + Kokoro-82M = six credit rows, plus the asset credit
-  expect(await page.$$eval(".credits-list li", els => els.length)).toBe(7);
+  // six documented models + Kokoro-82M + the DeepSeek dev model = seven credit
+  // rows, plus the asset credit
+  expect(await page.$$eval(".credits-list li", els => els.length)).toBe(8);
   expect(await page.textContent('[data-win="credits"] .win-title')).toBe("CREDITS");
   const attr = await page.$eval(".cred-attr a", a => [a.textContent, a.getAttribute("href")]);
   expect(attr).toEqual(["Cornucopia LQ", "https://commons.wikimedia.org/wiki/File:Cornucopia_LQ.svg"]);
   // every model links to its HF model card in a new tab
   const links = await page.$$eval(".credits-list a.cred-model",
     els => els.map(a => [a.textContent, a.getAttribute("href"), a.getAttribute("target")]));
-  expect(links).toHaveLength(6);
+  expect(links).toHaveLength(7);
   expect(links[0]).toEqual(["Qwen 3.8 27B", "https://huggingface.co/Qwen/Qwen3.8-27B", "_blank"]);
-  expect(links[4]).toEqual(["Kokoro-82M", "https://huggingface.co/hexgrad/Kokoro-82M", "_blank"]);
+  expect(links[5]).toEqual(["Kokoro-82M", "https://huggingface.co/hexgrad/Kokoro-82M", "_blank"]);
   for (const [, href] of links) expect(href).toMatch(/^https:\/\/huggingface\.co\//);
   expect(await page.textContent(".visitors")).toMatch(/^Unique visitors:/);
   await expect(page.locator("#listeners")).toHaveText("Listening now: 69.10");
