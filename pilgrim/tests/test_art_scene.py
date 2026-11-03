@@ -7,6 +7,7 @@ import pytest
 from pilgrim.pipelines.art import (
     ARTIST_CAP,
     BANNED_WORDS,
+    MINOR_WORDS,
     NO_TEXT_SENTENCE,
     TITLE_CAP,
     SceneError,
@@ -15,6 +16,7 @@ from pilgrim.pipelines.art import (
     build_flux_prompt,
     has_non_latin_script,
     lyric_excerpt,
+    minor_hits,
     pick_typography,
     sanitize_text,
     style_hint,
@@ -76,6 +78,21 @@ def test_template_is_code_owned_and_has_no_stray_braces():
     assert "{" not in out and "}" not in out
 
 
+def test_template_requires_every_person_to_be_an_adult():
+    out = build_flux_prompt(TEMPLATE, GOOD_SCENE, "Lot's Daughters",
+                            "The Canning Ladies")
+    assert "Every person depicted is a clearly adult" in out
+    assert "no children, no teenagers" in out
+
+
+def test_scene_prompt_requires_adults():
+    low = SCENE_PROMPT.lower()
+    assert "adult" in low and "18 or older" in low
+    assert "unmistakably adult" in low
+    for w in MINOR_WORDS:
+        assert w in low        # named explicitly so the model avoids them
+
+
 def test_non_latin_names_render_text_free():
     out = build_flux_prompt(TEMPLATE, GOOD_SCENE, "サンドイッチの夢戦隊", "The Haybale Heroines")
     assert NO_TEXT_SENTENCE in out
@@ -113,6 +130,14 @@ def test_banned_words_are_whole_word_only():
     assert banned_hits("An Album Cover") == ["album", "cover"]
 
 
+def test_minor_words_are_whole_word_only():
+    assert minor_hits("two girls in Sunday dresses") == ["girls"]
+    assert minor_hits("a boy and a toddler") == ["boy", "toddler"]
+    assert minor_hits("a cowboy and a showgirl") == []       # substrings
+    assert minor_hits("a childhood memory") == []
+    assert minor_hits("two adult women and a grown man") == []
+
+
 def test_validate_scene_accepts_a_good_scene():
     assert validate_scene({"scene": GOOD_SCENE}) == GOOD_SCENE
 
@@ -128,6 +153,18 @@ def test_validate_scene_rejects_short_long_and_banned():
         validate_scene({"scene": 7})
     with pytest.raises(SceneError):
         validate_scene({})
+
+
+def test_validate_scene_rejects_minor_age_words():
+    with pytest.raises(SceneError, match="minor-age"):
+        validate_scene({"scene": GOOD_SCENE + " Two girls carry a pickle."})
+    with pytest.raises(SceneError, match="minor-age"):
+        validate_scene({"scene": GOOD_SCENE + " A boy watches from the porch."})
+
+
+def test_validate_scene_accepts_adults():
+    scene = GOOD_SCENE + " Two adult women in Sunday dresses carry a pickle."
+    assert validate_scene({"scene": scene}) == scene
 
 
 # ------------------------------------------------------------- brief plumbing
@@ -243,4 +280,5 @@ def test_scene_prompt_forbids_the_banned_words_and_writing_props():
     low = SCENE_PROMPT.lower()
     for w in BANNED_WORDS:
         assert w in low        # named explicitly so the model avoids them
-    assert "no text" in low and "labels" in low and "screens" in low
+    assert "no additional text" in low and "carries writing" in low
+    assert "labels" in low and "screens" in low

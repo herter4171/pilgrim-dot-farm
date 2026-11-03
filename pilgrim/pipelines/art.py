@@ -210,6 +210,18 @@ BANNED_WORDS = ("album", "cover", "record", "vinyl", "lp", "disc", "cd",
 _BANNED_RE = re.compile(
     r"\b(?:" + "|".join(BANNED_WORDS) + r")\b", re.I)
 
+# Cover art must never depict minors. The fixed template states the rule, and
+# the scene validator rejects any minor-age noun so an untrusted LLM cannot
+# route around it (AGENTS §5). Whole-word, case-insensitive, like BANNED_WORDS.
+MINOR_WORDS = ("child", "children", "kid", "kids", "baby", "babies",
+               "toddler", "toddlers", "infant", "infants", "teen", "teens",
+               "teenager", "teenagers", "teenage", "adolescent",
+               "adolescents", "boy", "boys", "girl", "girls", "schoolboy",
+               "schoolgirl", "schoolchildren", "preteen", "pre-teens",
+               "youth", "youths")
+_MINOR_RE = re.compile(
+    r"\b(?:" + "|".join(MINOR_WORDS) + r")\b", re.I)
+
 TITLE_CAP = 70          # art text only; the DB title is never changed
 ARTIST_CAP = 48
 STYLE_HINT_CAP = 300
@@ -275,6 +287,11 @@ class SceneError(ArtError):
 def banned_hits(text: str) -> list[str]:
     """Whole-word, case-insensitive banned-word matches (§0.3)."""
     return sorted({m.group(0).lower() for m in _BANNED_RE.finditer(text)})
+
+
+def minor_hits(text: str) -> list[str]:
+    """Whole-word, case-insensitive minor-age word matches (adults only)."""
+    return sorted({m.group(0).lower() for m in _MINOR_RE.finditer(text)})
 
 
 def has_non_latin_script(text: str) -> bool:
@@ -344,6 +361,10 @@ def validate_scene(obj: dict[str, Any]) -> str:
     hits = banned_hits(scene)
     if hits:
         raise SceneError(f"banned words in scene: {', '.join(hits)}")
+    minors = minor_hits(scene)
+    if minors:
+        raise SceneError(f"minor-age words in scene (people must be adults): "
+                         f"{', '.join(minors)}")
     return scene
 
 

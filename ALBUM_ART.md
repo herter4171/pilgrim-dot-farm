@@ -118,10 +118,21 @@ code, **never** by the LLM:
 ```
 Square 1:1 graphic artwork that fills the entire frame edge to edge, flat and
 full-bleed, no border, no frame, no vinyl record, no disc, no circle, no CD,
-no mockup, no product photo. {scene} Large clear typography at the top reads
-exactly "{title}". Smaller text at the bottom reads exactly "{artist}". No
-other text, no signs, no labels, no logos.
+no mockup, no product photo. {scene} Every person depicted is a clearly adult
+man or woman; no children, no teenagers. Large clear typography at the top
+reads exactly "{title}". Smaller text at the bottom reads exactly
+"{artist}". No other text, no signs, no labels, no logos.
 ```
+
+**Adults only.** Every person in a cover must be a clearly adult man or
+woman. The fixed template states this, the scene prompt repeats it, and
+`validate_scene` rejects any scene containing a minor-age word (`child`,
+`children`, `kid`, `kids`, `baby`, `babies`, `toddler`, `infant`, `teen`,
+`teenager`, `teenage`, `adolescent`, `boy`, `boys`, `girl`, `girls`,
+`schoolboy`, `schoolgirl`, `schoolchildren`, `preteen`, `pre-teens`, `youth`,
+`youths`; whole-word, case-insensitive) and asks the LLM again. This applies
+regardless of the listener request: a premise about "daughters", students or
+siblings is rendered with unmistakably adult figures.
 
 Banned words in the scene and the template: `album`, `cover`, `record`,
 `vinyl`, `LP`, `disc`, `CD`, `single`, `sleeve`, `cassette`. Enforce this in
