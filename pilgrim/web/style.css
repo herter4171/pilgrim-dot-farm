@@ -303,31 +303,37 @@ body {
    min-height, so the art, PLAY row and meter never move when it enables or
    disables (the same rule as .dl-row). */
 .rate-row {
-  width: var(--art-w, min(100%, 300px)); min-height: 62px;
+  width: var(--art-w, min(100%, 300px)); min-height: 68px;
   display: flex; flex-wrap: wrap; align-items: center;
   justify-content: space-between; gap: 2px 8px;
 }
 .rate-label { flex: 1 1 auto; white-space: nowrap;
-  color: var(--dim); font-size: 12px; letter-spacing: 1px; }
+  color: var(--dim); font-size: 14px; letter-spacing: 1.5px; }
 .turkeys { order: 3; flex: 0 0 100%; display: flex;
   align-items: center; justify-content: center; }
+/* Empty turkeys are a dim lavender outline; a star you illuminated is filled
+   bright gold. The colour difference is the "on" signal, so it must read at a
+   glance (operator feedback: empty stars were too easy to miss). */
 .turkey {
-  width: 44px; height: 44px; padding: 0; background: none; border: 0;
-  border-radius: 6px; cursor: pointer; color: var(--warn);
+  width: 48px; height: 48px; padding: 0; background: none; border: 0;
+  border-radius: 6px; cursor: pointer; color: var(--dim);
   display: inline-flex; align-items: center; justify-content: center;
 }
-.turkey svg { width: 28px; height: 28px; display: block; fill: none; }
+.turkey svg { width: 34px; height: 34px; display: block; fill: none; }
 /* <use> clones the symbol into a shadow tree: document selectors cannot reach
    its <g>, but `fill` is inherited through the <use> host. So the outlined
    default and the filled selection are set on the <svg>, and the symbol's
    group carries no fill attribute of its own. */
-.turkey.filled svg { fill: currentColor; }
+.turkey.filled { color: var(--warn); }
+.turkey.filled svg { fill: currentColor;
+  filter: drop-shadow(0 0 4px rgba(255, 210, 74, .45)); }
 .turkey:hover:not(:disabled), .turkey:focus-visible {
+  color: var(--warn);
   filter: brightness(1.2); outline: 2px solid var(--warn); outline-offset: -2px;
 }
 .turkey:disabled { cursor: default; }
 .rate-row[aria-disabled="true"] { opacity: .45; }
-.rate-agg { order: 2; flex: 0 0 auto; color: var(--dim); font-size: 12px;
+.rate-agg { order: 2; flex: 0 0 auto; color: var(--dim); font-size: 14px;
   letter-spacing: 1px; min-width: 0; white-space: nowrap; }
 
 /* Model credits pane (COSMETIC_PATCHING §5). */
@@ -392,12 +398,12 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   .play-row { gap: 10px; }
   .play-cell .indicator { font-size: 14px; letter-spacing: 1px; padding: 0 10px; gap: 6px; }
   .play-cell .big-btn { font-size: 18px; padding: 0 16px; }
-  /* Rating row: label 12 px + aggregate on one line, turkeys 40x40 below. */
-  .rate-row { gap: 2px 4px; }
-  .rate-label { font-size: 11px; letter-spacing: 1px; }
-  .turkey { width: 40px; height: 40px; }
-  .turkey svg { width: 26px; height: 26px; }
-  .rate-agg { font-size: 11px; }
+  /* Rating row: label + aggregate on one line, turkeys 44x44 below. */
+  .rate-row { gap: 2px 4px; min-height: 64px; }
+  .rate-label { font-size: 13px; letter-spacing: 1px; }
+  .turkey { width: 44px; height: 44px; }
+  .turkey svg { width: 30px; height: 30px; }
+  .rate-agg { font-size: 13px; }
   /* Queue: three visual columns — Request / Title+status / Vote. */
   .req-table td { padding: 6px 4px; }
   .req-text { hyphens: auto; }
