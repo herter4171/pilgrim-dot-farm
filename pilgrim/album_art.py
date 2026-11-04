@@ -34,6 +34,7 @@ from pilgrim.pipelines.art import (
     pick_typography,
     sanitize_text,
     style_hint,
+    validate_scene,
 )
 
 log = logging.getLogger("radio.art")
@@ -188,7 +189,8 @@ class ArtWorker:
     async def _render_one(self, item: dict[str, Any], seed: int,
                           item_id: int | None = None,
                           request_text: str | None = None,
-                          paid: bool = False
+                          paid: bool = False,
+                          scene: str | None = None
                           ) -> tuple[Path, Path, dict[str, Any]] | None:
         """Scene -> FLUX -> files. Returns None when the memory gate says no.
         Raises on any real failure; the caller decides whether to back off."""
@@ -205,10 +207,15 @@ class ArtWorker:
             return None
 
         t0 = time.monotonic()
-        scene = await self.scene.write(
-            title=title, artist=artist, genre=item.get("genre"),
-            hint=style_hint(_meta(item)), lyrics=lyric_excerpt(_meta(item)),
-            item_id=iid, request_text=request_text, paid=paid)
+        if scene is None:
+            scene = await self.scene.write(
+                title=title, artist=artist, genre=item.get("genre"),
+                hint=style_hint(_meta(item)), lyrics=lyric_excerpt(_meta(item)),
+                item_id=iid, request_text=request_text, paid=paid)
+        else:
+            # Operator-supplied scene (art_backfill --scene): same validation
+            # as LLM output (length, banned words, adult-only), no LLM call.
+            scene = validate_scene({"scene": scene})
         typography_style = pick_typography(scene, seed)
         prompt = build_flux_prompt(self.template, scene, title, artist,
                                    typography_style)
@@ -244,11 +251,14 @@ class ArtWorker:
         }
         return png_path, jpg_path, meta
 
-    async def process(self, item: dict[str, Any], seed: int | None = None) -> bool:
+    async def process(self, item: dict[str, Any], seed: int | None = None,
+                      scene: str | None = None) -> bool:
         """Render one song's cover. Returns True on success; records a failed
         attempt (back-off) and returns False otherwise. Never raises.
 
         `seed` overrides the deterministic per-item seed (art_backfill --seed).
+        `scene` skips the scene LLM and renders an operator-supplied scene
+        (art_backfill --scene); it is validated like any other scene.
         """
         iid = int(item["id"])
         seed = art_seed(iid) if seed is None else int(seed)
@@ -259,7 +269,7 @@ class ArtWorker:
             try:
                 result = await self._render_one(item, seed,
                                                 request_text=request_text,
-                                                paid=paid)
+                                                paid=paid, scene=scene)
             except FluxBusy as e:
                 self.backend = "busy"
                 self._failed(iid, "render", e)

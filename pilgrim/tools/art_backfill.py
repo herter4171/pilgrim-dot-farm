@@ -6,12 +6,20 @@ per-song path and memory gate. The live worker gets through the backlog on
 its own; this tool is for doing it deliberately (overnight) or re-rendering
 one song with `--item ID --force [--seed N]`.
 
+`--scene` skips the scene LLM and renders an operator-supplied scene (same
+validation as LLM output); it is for a targeted re-render that must change
+the picture, e.g. "more skeletons". `--ignore-lease` is the operator override
+for that case while the station worker is active: FLUX serializes the two
+renders, so nothing corrupts, but the second waits.
+
 Refuses to run with `--apply` while the station's art worker holds a fresh
 lease, so two renderers never contend for the single-flight FLUX server.
 
     python -m pilgrim.tools.art_backfill                  # dry run
     python -m pilgrim.tools.art_backfill --apply --limit 20
     python -m pilgrim.tools.art_backfill --item 132 --force --seed 7
+    python -m pilgrim.tools.art_backfill --item 132 --force --apply \
+        --scene "..." --ignore-lease
 """
 from __future__ import annotations
 
@@ -88,7 +96,7 @@ async def run(cfg: Config, store: Store, args: argparse.Namespace) -> int:
     ok = 0
     try:
         for it in targets:
-            got = await worker.process(it, seed=args.seed)
+            got = await worker.process(it, seed=args.seed, scene=args.scene)
             ok += 1 if got else 0
             print(f"{it['id']}: {'rendered' if got else 'skipped (back-off set)'}",
                   flush=True)
@@ -117,15 +125,25 @@ def main(argv: list[str] | None = None) -> None:
                     help="re-render a song that already has art")
     ap.add_argument("--seed", type=int, default=None,
                     help="override the deterministic seed")
+    ap.add_argument("--scene", type=str, default=None,
+                    help="operator-supplied scene (skips the scene LLM; "
+                         "requires --item, e.g. to force a visual change)")
+    ap.add_argument("--ignore-lease", action="store_true",
+                    help="run even if the station's art worker is active "
+                         "(single targeted re-render only; FLUX serializes)")
     args = ap.parse_args(argv)
 
     cfg = load_config()
     setup_logging(cfg)
     store = Store(ROOT / cfg.library.db)
 
-    if args.apply and lease_is_fresh(store):
+    if args.scene and not args.item:
+        print("--scene requires --item (targeted re-render only)", file=sys.stderr)
+        raise SystemExit(2)
+    if args.apply and lease_is_fresh(store) and not args.ignore_lease:
         print("the station's art worker is running (fresh lease): refusing to "
-              "render, so two renderers never contend", file=sys.stderr)
+              "render, so two renderers never contend "
+              "(use --ignore-lease for one targeted re-render)", file=sys.stderr)
         raise SystemExit(2)
     raise SystemExit(asyncio.run(run(cfg, store, args)))
 
