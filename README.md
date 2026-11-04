@@ -5,6 +5,8 @@ Music 3 generates songs; LLMs write the news, ads, and DJ copy; Kokoro gives the
 station its voices. The browser plays finished, checked audio from the library,
 so listeners never wait for a song to render.
 
+![Bottom text](image.png)
+
 ## Get started
 
 The Makefile uses Python 3.14. Install `ffmpeg` and `ffprobe`, then set the
@@ -158,6 +160,3 @@ disables it (the test suite does this so a live `.env` can never leak in).
 
 Never commit them. Rotate the webhook secret, or the override token, if it is
 ever exposed.
-
-
-![Pilgrim Dot Farm Radio](image.png)
