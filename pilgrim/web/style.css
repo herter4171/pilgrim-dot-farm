@@ -44,6 +44,16 @@ body {
 #desktop { position: relative; z-index: 3; flex: 1; min-height: 0;
   display: flex; flex-direction: column; align-items: center;
   justify-content: flex-start; gap: 16px; padding: 16px; overflow-y: auto; }
+/* More-below cue for the scrolling stack (same idea as the queue's .has-more):
+   a sticky 36 px gradient pinned to the bottom of the scrollport, shown only
+   while content continues past the fold. titlebar.js toggles the class. */
+#desktop::after {
+  content: ""; position: sticky; bottom: 0; flex: 0 0 36px;
+  width: 100%; margin-top: -36px; pointer-events: none;
+  background: linear-gradient(to bottom, transparent, rgba(10,1,24,.95));
+  opacity: 0; transition: opacity .2s;
+}
+#desktop.has-more::after { opacity: 1; }
 
 .window.requests { width: min(94vw, 484px); }
 .win-body.requests { align-items: stretch; text-align: left; gap: 12px; }
@@ -215,18 +225,30 @@ body {
 .indicator.onair { border-color: var(--ok); color: var(--ok); }
 .indicator.onair .dot { background: var(--ok); animation: pulse 1s infinite; }
 .indicator.buffering { border-color: var(--cyan); color: var(--cyan); }
-.indicator.buffering .dot { background: var(--cyan); animation: pulse .5s infinite; }
+.indicator.buffering .dot { background: var(--cyan); animation: pulse-cyan .5s infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(58,255,163,.5);} 50% { opacity:.4; box-shadow: 0 0 0 6px rgba(58,255,163,0);} }
+@keyframes pulse-cyan { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(36,224,255,.5);} 50% { opacity:.4; box-shadow: 0 0 0 6px rgba(36,224,255,0);} }
 
+/* PLAY/STOP shares the indicator's pill geometry (44 px, radius 20, 16 px
+   type) so the row reads as one control with two states. PLAY is the only
+   thing worth clicking when idle, so it stays solid magenta; once the green
+   ON AIR pill takes over as the focal point, STOP becomes its outlined twin
+   instead of the loudest thing in the palette. */
 .big-btn {
-  font-family: inherit; font-size: 20px; font-weight: bold; letter-spacing: 2px;
-  padding: 16px 40px; cursor: pointer;
-  color: #0a0118; background: linear-gradient(90deg, var(--magenta), var(--violet));
-  border: none; border-radius: 6px; box-shadow: 0 0 16px rgba(255,47,214,.6);
+  font-family: inherit; font-size: 16px; font-weight: bold; letter-spacing: 2px;
+  height: 44px; padding: 0 22px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border-radius: 20px; border: 1px solid var(--magenta);
+  color: #0a0118; background: var(--magenta);
+  box-shadow: 0 0 12px rgba(255,47,214,.55);
 }
 .big-btn:hover { filter: brightness(1.15); }
 .big-btn:disabled { filter: grayscale(.7); cursor: not-allowed; }
-.big-btn.stop { background: linear-gradient(90deg, var(--warn), var(--magenta)); }
+.big-btn.stop {
+  color: var(--magenta); background: rgba(10,1,24,.6);
+  box-shadow: 0 0 8px rgba(255,47,214,.25);
+}
+.big-btn.stop:hover { background: rgba(255,47,214,.12); }
 
 /* Radio pane: compact body, and the streaming indicator shares one row with
    PLAY/STOP at the same height (operator layout request, 2026-10-30). The row
@@ -243,10 +265,7 @@ body {
   display: flex; align-items: center;
 }
 .play-cell .indicator { flex: 0 1 auto; max-width: 100%; height: 44px; padding: 0 16px; }
-.play-cell .big-btn {
-  flex: 0 1 auto; max-width: 100%; height: 44px; padding: 0 24px;
-  display: inline-flex; align-items: center; justify-content: center;
-}
+.play-cell .big-btn { flex: 0 1 auto; max-width: 100%; }
 
 /* Cover art (ALBUM_ART.md Step 8): a square frame above the play row. The
    placeholder always fills it, so PLAY never moves when art appears or
@@ -269,7 +288,11 @@ body {
 }
 
 /* Half-height level meter: 20px tall (was 40px), as wide as the cover art. */
-#level { width: var(--art-w, min(100%, 300px)); height: 20px; display: block; }
+#level {
+  width: var(--art-w, min(100%, 300px)); height: 20px; display: block;
+  border: 1px solid var(--violet); border-radius: 3px;
+  background: rgba(10,1,24,.6);
+}
 
 /* Song label under the meter (COSMETIC_PATCHING §3): centered, wraps for long
    names. Empty (not 'undefined'/'null'/bare hyphen) when not a named song. */
@@ -398,7 +421,7 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   .win-body.radio { padding: 14px 16px; gap: 10px; }
   .play-row { gap: 10px; }
   .play-cell .indicator { font-size: 14px; letter-spacing: 1px; padding: 0 10px; gap: 6px; }
-  .play-cell .big-btn { font-size: 18px; padding: 0 16px; }
+  .play-cell .big-btn { font-size: 14px; letter-spacing: 1px; padding: 0 16px; }
   /* Rating row: label + aggregate on one line, turkeys 44x44 below. */
   .rate-row { gap: 2px 4px; min-height: 64px; }
   .rate-label { font-size: 13px; letter-spacing: 1px; }

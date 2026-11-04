@@ -27,3 +27,23 @@
   addEventListener("resize", fit);
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
 })();
+
+
+/* Bottom fade cue for the scrolling #desktop stack (COSMETIC_PATCHING §3).
+   Shows while there is content below the fold, like the queue's .has-more. */
+(() => {
+  "use strict";
+  const desk = document.getElementById("desktop");
+  if (!desk) return;
+  function cue() {
+    desk.classList.toggle(
+      "has-more",
+      desk.scrollHeight - desk.scrollTop - desk.clientHeight > 4);
+  }
+  desk.addEventListener("scroll", cue);
+  addEventListener("resize", cue);
+  if (window.MutationObserver) {
+    new MutationObserver(cue).observe(desk, { childList: true, subtree: true });
+  }
+  cue();
+})();
