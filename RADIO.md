@@ -928,6 +928,33 @@ the station name.
 
 - The `AudioContext` is created inside the PLAY click handler (satisfies
   autoplay policy).
+- **Mobile continuity (2026-11-04).** All decoding and scheduling stays in
+  Web Audio, but the graph's output goes through **one persistent `<audio>`
+  element** (`#sink`, fed by a `MediaStreamAudioDestinationNode`, played once
+  inside the PLAY gesture). Phones treat a page playing a media element as
+  media playback: it keeps playing in the background and when the device is
+  locked, uses the media volume rather than the ringer, and gets lock-screen /
+  notification controls. This is a single output sink for the whole session,
+  never a per-item element or a handoff between elements (hard rule 9 still
+  holds: joins are sample-accurate `AudioBufferSourceNode.start(when)` on one
+  context). If the element cannot play (old browser, policy), the graph
+  connects straight to `ctx.destination` (`sink: direct`). Before the context
+  is created, PLAY sets `navigator.audioSession.type = "playback"` (Audio
+  Session API, Safari 17+; a no-op elsewhere) so iOS does not mute Web Audio
+  with the ringer switch. The **Media Session API** carries the audible song's
+  title/artist/cover (from the same `pd:nowplaying` decision as the label,
+  never the next song early); lock-screen *pause*/*stop* is STOP and *play*
+  restarts. A context that stops running (`interrupted` on iOS, `suspended`
+  elsewhere: a call, Siri, another app, the OS pausing the page) is resumed
+  on its `statechange`, on `visibilitychange`/`pageshow`/`focus` and every
+  2 s while interrupted; the audio clock pauses with it, so buffered sources
+  continue where they stopped, and an interruption of 5 s or more rejoins the
+  live programme through the revision-reset path. Heartbeats carry playback
+  telemetry (`platform`, `ctx_state`, `hidden`, `sink`, `resumed`; §11) so
+  background/lock behaviour on phones is measurable from the admin health
+  and the `listener.telemetry` log lines. Verified with Playwright only for
+  the sink element and Media Session metadata; the background/lock/ringer
+  behaviour needs a real iPhone and Android device (or emulator).
 - **`pd:nowplaying` (VOTING.md).** `player.js` dispatches a `CustomEvent` on
   `document` from the same audio-clock decision as the song label: detail =
   `{epoch, seq, media_id, title, artist}` for the audible named song, else
@@ -979,8 +1006,9 @@ the station name.
   audio and rejoin at the latest offset — never silence everyone waiting for
   one slow client. With no active listeners the server applies a validated edit
   without waiting for a browser.
-- Known limitation: mobile browsers (especially iOS) may suspend audio in
-  background tabs. Documented, not solved, in Phase 1.
+- Background/locked playback on phones is handled by the persistent output
+  sink + interruption recovery above. Known limitation: a page the OS has
+  killed outright (battery optimisation, memory) cannot resume itself.
 
 ---
 
@@ -1030,11 +1058,11 @@ refill target.
 | POST | `/api/station/start` | Start playout session |
 | POST | `/api/station/stop` | Stop playout session |
 | GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, url, art_url, type, duration_s, sfx, title, artist}`. `art_url` is the song's cover on CloudFront (`public_base_url + "/" + art_s3_key`) once uploaded, else `""` — there is no origin art fallback (ALBUM_ART.md Step 7); non-song items always send `""`. `url` is where the audio lives: the CloudFront URL once the item is in S3, else `/api/media/<id>` (§8.4). `sfx` is a list (usually empty) of overlays to play over that item: `{media_id, url, cue, kind, offset_s, duration_s, gain, duck}`. `title`/`artist` come from the referenced inventory item on both initial and incremental responses, normalized to empty strings when absent (song label, COSMETIC_PATCHING §3). |
-| POST | `/api/station/heartbeat` | `{seq, media_id, position, type}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events |
+| POST | `/api/station/heartbeat` | `{seq, media_id, position, type, player_id}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events. Optional playback telemetry (§9.2): `platform` (`ios`\|`android`\|`other`), `ctx_state` (`running`\|`suspended`\|`interrupted`\|`closed`), `hidden` (page in background / device locked), `sink` (`element`\|`direct`), `resumed` (interruption recoveries this session). Kept per live player (pruned with the listener map, bounded by `visitors.max_listeners`), summarised on the admin `/api/health` as `listeners: {count, reporting, by_platform, hidden, not_running, sink_element, resumed_total}`, and logged as `listener.telemetry` on change. Reported, never acted on |
 | GET | `/api/media/<id>` | Transitional fallback (§8.4): the item's file from the origin library (`audio/mpeg` for MP3, `audio/flac` for a not-yet-migrated FLAC). Browsers use it only for items without an `s3_key` |
 | GET | `/api/health` | Admin: backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report`, `promo` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate, `art` = `{backend: ok\|down\|busy\|disabled, with_art, without_art}`, and `idle` = `{idle, since, wakes}` (IDLE.md: the frozen playhead, when it began, and how many wakes this process has served). Public listener: `{on_air, art: {backend}, time}` only — no DB read, no FLUX probe, and **no `idle` field** (the browser's OFF AIR logic must not see idle; `on_air` stays true while frozen) (ALBUM_ART.md Step 5) |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
-| GET | `/api/requests` | Request board: `{queue: [{id, text, status, paid, stage, song_title, score, votable, buried}], recent: [{text, song_title, song_artist, paid, wait_s}], cap, voting_enabled}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); `score` is the vote sum, `votable` false for paid rows or when `voting.enabled` is false, `buried` true for a free queued row at/below `voting.bury_threshold` (VOTING.md §1); recent = **last 5** aired, never scored (no retrospective voting). The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `wait_s` (Prep Time) is whole seconds from `prep_started_at` — the moment lyrics/brief writing began — to `aired_at`; time spent in line or waiting for the station to come back is not prep, and a row with no recorded writing start (aired before that column existed) sends `null`, which the page renders as an em dash (`—`) — measured-or-nothing, never queue idle dressed up as prep. `POST` answers `line_full: true` when the free line is at `free_queue_max` |
+| GET | `/api/requests` | Request board: `{queue: [{id, text, status, paid, stage, song_title, score, votable, buried}], recent: [{text, song_title, song_artist, paid, wait_s}], cap, voting_enabled}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); `score` is the vote sum, `votable` false for paid rows or when `voting.enabled` is false, `buried` true for a free queued row at/below `voting.bury_threshold` (VOTING.md §1); recent = **last 5** aired, never scored (no retrospective voting). The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `wait_s` (Prep Time) is whole seconds from `prep_started_at` — the moment lyrics/brief writing began — to the **earlier of `aired_at` and `due_at`**. `due_at` is the wall time the song was scheduled to air when it was teed up (committed or spliced into the programme, §5.2); with listeners present it agrees with `aired_at` to within seconds, but with nobody listening the playhead is frozen (§3, IDLE.md D3) and `aired_at` only lands on the next PLAY, hours later: that wait is capped at when the song would have aired. Time spent in line or waiting for the station to come back is not prep, and a row with no recorded writing start (aired before that column existed) sends `null`, which the page renders as an em dash (`—`) — measured-or-nothing, never queue idle dressed up as prep. Rows that aired before `due_at` existed are recovered from the station log by `make due-backfill` (tee-up line + frozen spans; dry run unless `DUE_ARGS="--apply"`). `POST` answers `line_full: true` when the free line is at `free_queue_max` |
 | POST | `/api/requests/{id}/vote` | VOTING.md: `{voter_id, value}` where `voter_id` is the browser's 32-hex id and `value` ∈ {−1, 0, +1} (0 retracts). Upsert per `(request_id, voter_id)`; only free rows in `queued/producing/ready` are votable. `200 {ok, score, mine, open}`; `404 not_found`; `409 {code: voting_closed\|not_votable, score}`; `422` bad body/id; `429` rate limit or `too_many_voters` (max distinct ids per IP per request); `404` when `voting.enabled` is false. `no-store` |
 | POST | `/api/station/rating` | VOTING.md: `{voter_id, epoch, seq, stars 1-5}` for the on-air song. The window is server-authoritative (epoch must match, `seq` must be the on-air song or the song that just ended within `ratings.grace_s`; a frozen station is closed). `200 {ok, item_id, count, avg, mine}`; `409 {code: rating_closed}`; `422`; `429`; `404` when `ratings.enabled` is false. `no-store` |
 | POST | `/api/paid-requests` | Paid priority request `{text}` (PAYMENT.md Step 12b): rate limit -> normalise -> operator-comp check (first line == `PAID_OVERRIDE_TOKEN`, stripped) -> prefilter. Prefilter reject: `{ok:false, rejected:true, reason}`. Otherwise the row is stored as `checking` and `{ok:true, token, stage:"moderation"}` returns at once; moderation, the copied-lyrics screen and the board summary run in the background. `503 {paid_closed:true}` when payments are inactive (comps still accepted) |
@@ -1513,7 +1541,7 @@ them. The flag is set by `python -m pilgrim.tools.audit_library` (OVERHAUL 2.2)
 or `store.retire_item(id, reason)` (reason merged into `meta_json`).
 
 The `requests` table carries lifecycle columns (`attempts`, `song_item_id`,
-`intro_item_id`, `updated_at`, `prep_started_at`, `claimed_at`) and statuses `queued -> producing -> ready ->
+`intro_item_id`, `updated_at`, `prep_started_at`, `due_at`, `claimed_at`) and statuses `queued -> producing -> ready ->
 aired`, plus `rejected`, `evicted`, `failed` (legacy `serviced` reads as
 `aired`; OVERHAUL 4.4). `prep_started_at` is stamped by `mark_request_writing`
 when the request gets its turn at the brief LLM and the lyrics/brief are
@@ -1523,7 +1551,11 @@ queue idle: a request that sat in line overnight no longer reads as a
 multi-hour prep. A row that never recorded a writing start (aired before the
 column existed) sends `wait_s: null` and the page shows an em dash (`—`): the
 measurement is missing, not zero, and not the queue wait.
-A request becomes `aired` when the playhead reaches
+`due_at` (ISO wall time, additive migration) is stamped by `mark_request_due`
+when the song is committed or spliced: the slot's wall time (`_slot_wall`),
+which while frozen is "now + distance from the frozen playhead" — when it
+would air if woken now. The board's Prep Time stops at the earlier of
+`aired_at` and `due_at` (§11). A request becomes `aired` when the playhead reaches
 its song, not when the song is committed; until then it stays `ready` ("up
 next"). The request's song and intro enter the library together with the
 `ready` flag, so the song can never air bare as stock first. Only `queued` rows are ever FIFO-evicted; a crash

@@ -83,17 +83,25 @@ def _project_text(text: str, paid: bool, max_length: int,
     return first
 
 
-def _wait_s(prep_started_at: str | None, aired_at: str | None) -> int | None:
+def _wait_s(prep_started_at: str | None, aired_at: str | None,
+            due_at: str | None = None) -> int | None:
     """Prep time on the board: the prep clock starts when the lyrics/brief
     are first written (`prep_started_at`), NOT at submission — time spent in
     line or waiting for the station to come back is not prep work. Rows that
     never recorded a writing start (aired before this column existed) read
-    null, so the UI omits the label rather than showing queue idle time."""
+    null, so the UI omits the label rather than showing queue idle time.
+
+    The clock stops at the earlier of `aired_at` and `due_at` (RADIO §11):
+    `due_at` is the wall time the song was scheduled to air when it was teed
+    up (committed or spliced). With listeners present the two agree to within
+    seconds; with nobody listening the playhead is frozen (IDLE.md D3) and
+    `aired_at` only lands on the next PLAY, hours later — that wait is nobody's
+    prep, so the metric is capped at when the song WOULD have aired."""
     start = _parse_epoch(prep_started_at)
-    end = _parse_epoch(aired_at)
-    if start is None or end is None:
+    ends = [t for t in (_parse_epoch(aired_at), _parse_epoch(due_at)) if t is not None]
+    if start is None or not ends:
         return None
-    return max(0, int(round(end - start)))
+    return max(0, int(round(min(ends) - start)))
 
 
 def _project_queue_row(row: dict[str, Any], max_length: int,
@@ -123,7 +131,8 @@ def _project_recent_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
             "song_title": row.get("song_title") or "",
             "song_artist": row.get("song_artist") or "",
             "paid": paid,
-            "wait_s": _wait_s(row.get("prep_started_at"), row.get("aired_at"))}
+            "wait_s": _wait_s(row.get("prep_started_at"), row.get("aired_at"),
+                              row.get("due_at"))}
 
 
 REQUEST_PRIORITY_H = 24.0   # a request song made this recently jumps the queue
@@ -308,6 +317,10 @@ class Store:
                              # board "Prep Time" starts here (first lyrics write),
                              # not at created_at (queue idle must not count)
                              ("prep_started_at", "TEXT"),
+                             # wall time the song was scheduled to air when it
+                             # was teed up (committed/spliced); caps Prep Time
+                             # so a frozen station does not inflate it
+                             ("due_at", "TEXT"),
                              ("summary", "TEXT"),
                              # PAYMENT.md Step 12b: staged checks + operator comp
                              ("stage", "TEXT"),
@@ -924,6 +937,17 @@ class Store:
                 (song_item_id, intro_item_id, _now_iso(), request_id))
             self._conn.commit()
 
+    def mark_request_due(self, request_id: int, due_wall: float) -> None:
+        """The request's song was teed up (committed or spliced into the
+        programme): record the wall time its slot airs (RADIO §11). Stamped
+        again if the song is re-committed; never cleared."""
+        due = datetime.fromtimestamp(float(due_wall), UTC).isoformat()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE requests SET due_at=?, updated_at=? WHERE id=?",
+                (due, _now_iso(), request_id))
+            self._conn.commit()
+
     def mark_request_aired(self, request_id: int) -> None:
         with self._lock:
             self._conn.execute(
@@ -1031,7 +1055,7 @@ class Store:
                 "GROUP BY request_id").fetchall()}
             recent = [dict(r) for r in self._conn.execute(
                 "SELECT r.id, r.text, r.summary, r.created_at, r.aired_at, "
-                "r.prep_started_at, r.priority, "
+                "r.prep_started_at, r.due_at, r.priority, "
                 "i.title AS song_title, i.artist AS song_artist FROM requests r "
                 "LEFT JOIN items i ON i.id = r.song_item_id "
                 "WHERE r.status IN ('aired','serviced') "

@@ -580,8 +580,12 @@ class Scheduler:
         if e.get("request_id"):
             # committed, not yet heard: _settle_aired marks it when it airs
             self._pending_aired[seq] = e["request_id"]
+            # teed up: the slot's wall time caps the board's Prep Time so a
+            # frozen station (IDLE.md D3) cannot inflate it (RADIO §11)
+            self.store.mark_request_due(e["request_id"], self._slot_wall(host_start))
             log.info("request.committed", extra={
-                "request_id": e["request_id"], "item_id": item_id, "seq": seq})
+                "request_id": e["request_id"], "item_id": item_id, "seq": seq,
+                "due_in_s": round(host_start - self.position(), 1)})
         # a break commits several entries before the next rebuild: advance the
         # end now so each entry's start (and SFX timing) is its own
         self._total += e["duration_s"]
@@ -1228,10 +1232,14 @@ class Scheduler:
         # it cannot be re-picked as recycled stock inside its spacing window.
         idx = next(i for i, r in enumerate(self._items) if r["seq"] == song_seq)
         self.store.commit_song_air(song["id"], self._slot_wall(self._cum[idx]))
+        # Teed up: while frozen, _slot_wall is "now + offset from the frozen
+        # playhead", i.e. when the song would air if woken now (RADIO §11).
+        self.store.mark_request_due(request_id, self._slot_wall(self._cum[idx]))
         self.advance_revision()
         log.info("request.spliced", extra={
             "request_id": request_id, "item_id": song["id"],
-            "seq": song_seq, "revision": self.revision})
+            "seq": song_seq, "revision": self.revision,
+            "due_in_s": round(self._cum[idx] - self.position(), 1)})
         return song_seq
 
     def place_song_next(self, item_id: int) -> int | None:

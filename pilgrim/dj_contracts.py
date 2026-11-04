@@ -106,6 +106,14 @@ class HeartbeatIn(BaseModel):
     observed_revision: int | None = None
     prepared_cutover_id: int | None = None
     buffered_ahead_s: float | None = None
+    # Playback telemetry (RADIO §9.2/§11): what the browser sees on its
+    # platform. Reported, summarised on the admin health, never acted on.
+    platform: str | None = Field(default=None, max_length=16)   # ios|android|other
+    # running|suspended|interrupted|closed
+    ctx_state: str | None = Field(default=None, max_length=16)
+    hidden: bool | None = None            # document.hidden (background / locked)
+    sink: str | None = Field(default=None, max_length=16)       # element|direct
+    resumed: int | None = Field(default=None, ge=0)  # interruption recoveries this session
 
 
 # --------------------------------------------------------------------------- #

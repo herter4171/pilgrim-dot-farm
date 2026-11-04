@@ -50,6 +50,9 @@ If a task cannot be done without breaking one, stop and report.
    so in your report.
 9. **Client audio uses the Web Audio API** (`decodeAudioData` +
    `AudioBufferSourceNode.start(when)`). Never chain `<audio>` elements.
+   The one persistent `#sink` element fed by a `MediaStreamDestination`
+   (RADIO §9.2 "Mobile continuity") is the graph's output device, not a
+   chain; do not add per-item elements or hand off between elements.
 10. **News is never recycled.** Contextual items (DJ talk-ups, time checks) are
     never recycled. Enforce this in code, not just in prompts.
 11. **Payments never touch playout, and the browser is never trusted about
@@ -173,6 +176,7 @@ make split-smoke  # origin + gateway + edge PASS/FAIL checks (real public app)
 make pay-smoke    # Stripe test-mode smoke; refuses a live key (only when asked)
 make media-smoke  # one 2 s tone through S3 + CloudFront (only when asked)
 make mp3-migrate  # library backfill to MP3 + S3; dry run unless MIGRATE_ARGS="--apply --upload"
+make due-backfill # requests.due_at (Prep Time cap) from the station log; dry run unless DUE_ARGS="--apply"
 ```
 
 ---

@@ -101,6 +101,11 @@ class Station:
         self.sfx = SfxPipeline(cfg, self.sfx_client, self.media_dir)
         self.clock = Clock()
         self._listeners: dict[str, float] = {}  # player_id -> last heartbeat (clock.now)
+        # Playback telemetry per live player (RADIO §9.2/§11): platform, audio
+        # context state, hidden, output sink, interruption recoveries. Pruned
+        # with the listener map; transitions are logged (`listener.telemetry`)
+        # so background/lock behaviour on phones is visible after the fact.
+        self._player_tel: dict[str, dict] = {}
         # IDLE.md (RADIO §3): the playhead freezes and production pauses when
         # nobody has been listening for `idle.after_s`. Policy lives here; the
         # mechanics are Scheduler.freeze()/thaw().
@@ -280,6 +285,7 @@ class Station:
             "idle": {"idle": self.is_idle(),
                      "since": self._idle_since,
                      "wakes": self.idle_wakes},
+            "listeners": self.listener_telemetry(),
         }
 
     # ------------------------------------------------------------------ program
@@ -420,6 +426,49 @@ class Station:
         cutoff = self.clock.now() - self.cfg.visitors.listener_timeout_s
         for pid in [p for p, t in self._listeners.items() if t < cutoff]:
             del self._listeners[pid]
+            self._player_tel.pop(pid, None)
+
+    def record_player_telemetry(self, player_id: str | None,
+                                payload: dj.HeartbeatIn) -> None:
+        """Keep the latest playback telemetry per live player and log a
+        `listener.telemetry` line whenever it changes (RADIO §9.2/§11). Only
+        players already in the listener map are kept (bounded by
+        `visitors.max_listeners`); a heartbeat without telemetry is ignored."""
+        if not player_id or player_id not in self._listeners:
+            return
+        if (payload.platform is None and payload.ctx_state is None
+                and payload.hidden is None and payload.sink is None
+                and payload.resumed is None):
+            return
+        tel = {"platform": payload.platform or "other",
+               "ctx_state": payload.ctx_state or "",
+               "hidden": bool(payload.hidden),
+               "sink": payload.sink or "",
+               "resumed": int(payload.resumed or 0)}
+        prev = self._player_tel.get(player_id)
+        self._player_tel[player_id] = tel
+        if prev != tel:
+            log.info("listener.telemetry", extra={
+                "player_id": player_id[:16], **tel,
+                "underrun": bool(payload.underrun)})
+
+    def listener_telemetry(self) -> dict:
+        """Admin health summary of live players' playback telemetry."""
+        self._prune_listeners()
+        tels = list(self._player_tel.values())
+        by_platform: dict[str, int] = {}
+        for t in tels:
+            by_platform[t["platform"]] = by_platform.get(t["platform"], 0) + 1
+        return {
+            "count": len(self._listeners),
+            "reporting": len(tels),
+            "by_platform": by_platform,
+            "hidden": sum(1 for t in tels if t["hidden"]),
+            "not_running": sum(1 for t in tels
+                               if t["ctx_state"] and t["ctx_state"] != "running"),
+            "sink_element": sum(1 for t in tels if t["sink"] == "element"),
+            "resumed_total": sum(t["resumed"] for t in tels),
+        }
 
     def touch_listener(self, player_id: str | None) -> None:
         """Mark a player as listening (RADIO §9.1, §14). In-memory only: a
@@ -893,6 +942,7 @@ def _add_public_routes(app: FastAPI, station: Station,
         # are accepted and ignored until the browser upgrade lands (TUI.md §9.2),
         # except player_id, which feeds the live listener count (RADIO §14).
         station.touch_listener(payload.player_id)
+        station.record_player_telemetry(payload.player_id, payload)
         station.db.record_airplay(
             item_id=int(payload.media_id or 0),
             seq=int(payload.seq or 0),

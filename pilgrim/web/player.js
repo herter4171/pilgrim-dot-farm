@@ -4,6 +4,14 @@
    sample-accurate gapless joins, proves audio flows via an AnalyserNode meter.
    Production health never interrupts already buffered audio. The station stays on
    air server-side; the client just joins the committed program at "now".
+
+   Phones (RADIO §9.2 "Mobile continuity"): the graph's output goes through ONE
+   persistent <audio> element (#sink, a MediaStreamDestination) so iOS/Android
+   treat the page as media playback: it keeps running in the background and
+   when the phone is locked, obeys the media volume (not the ringer switch),
+   and gets lock-screen controls via the Media Session API. An interrupted or
+   suspended context (phone call, Siri, another app) is resumed when the
+   interruption ends and the page rejoins the live programme.
 */
 (() => {
   "use strict";
@@ -22,6 +30,24 @@
   let shownArt = ART_PLACEHOLDER;
 
   let ctx = null, analyser = null, raf = null;
+  // Output sink (RADIO §9.2): the graph feeds #sink through a
+  // MediaStreamDestination ("element"); if the element cannot play, the
+  // graph connects straight to ctx.destination ("direct", desktop fallback).
+  const sinkEl = $("sink");
+  let sinkDest = null, sinkMode = "direct";
+  // Interruption recovery: Date.now() when the context stopped running
+  // (null while running) and how many times it recovered this session.
+  let interruptedAt = null, resumedCount = 0, resumeTimer = null;
+  // After an interruption at least this long the buffered future is behind
+  // the station: rejoin live instead of playing stale audio late.
+  const REJOIN_AFTER_S = 5;
+  const PLATFORM = (() => {
+    const ua = navigator.userAgent || "";
+    if (/iPhone|iPad|iPod/.test(ua)
+        || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)) return "ios";
+    if (/Android/.test(ua)) return "android";
+    return "other";
+  })();
   let items = [];            // {seq, media_id, type, duration_s, sfx[], buffer}
   let cursor = 0;            // index of the item currently on air
   let scheduleCursor = 0;    // index of the next item to schedule (in order)
@@ -213,13 +239,121 @@
     return it.buffer;
   }
 
+  /* ---------------- output sink + interruptions (RADIO §9.2) ---------------- */
+  /* Connect the analyser (every source ends there) to the page's output.
+     Called synchronously inside the PLAY gesture so sinkEl.play() is allowed.
+     The element path is what keeps phones playing in the background; if it
+     cannot play (old browser, policy), fall back to the direct connection. */
+  function attachOutput() {
+    sinkMode = "direct";
+    if (sinkEl && ctx.createMediaStreamDestination && "srcObject" in sinkEl) {
+      const c = ctx;
+      try {
+        sinkDest = ctx.createMediaStreamDestination();
+        analyser.connect(sinkDest);
+        sinkEl.srcObject = sinkDest.stream;
+        sinkMode = "element";
+        const p = sinkEl.play();
+        if (p && p.catch) p.catch(() => { if (c === ctx) fallbackDirect(); });
+        return;
+      } catch (e) { fallbackDirect(); return; }
+    }
+    analyser.connect(ctx.destination);
+  }
+  function fallbackDirect() {
+    if (!ctx || !analyser || sinkMode !== "element") return;
+    try { if (sinkDest) analyser.disconnect(sinkDest); } catch (e) {}
+    try { sinkEl.srcObject = null; } catch (e) {}
+    sinkDest = null; sinkMode = "direct";
+    try { analyser.connect(ctx.destination); } catch (e) {}
+  }
+  function detachOutput() {
+    try { if (sinkEl) { sinkEl.pause(); sinkEl.srcObject = null; } } catch (e) {}
+    sinkDest = null; sinkMode = "direct";
+  }
+
+  /* The context stopped running (iOS "interrupted", or "suspended": a call,
+     Siri, another app taking audio focus, the OS pausing the page). Ask for
+     it back now and keep asking while the page is visible; the audio clock
+     pauses with the context, so buffered sources resume where they left off
+     and a long interruption rejoins the live programme (resetProgram). */
+  function onCtxState() {
+    if (!ctx || !playing) return;
+    const s = ctx.state;
+    if (s === "running") {
+      if (interruptedAt !== null) {
+        const gap = (Date.now() - interruptedAt) / 1000;
+        interruptedAt = null; resumedCount++;
+        stopResumeTimer();
+        setStatus("");
+        if (gap >= REJOIN_AFTER_S) void resetProgram();
+      }
+      return;
+    }
+    if (s === "closed") return;
+    if (interruptedAt === null) {
+      interruptedAt = Date.now();
+      setState("buffering");
+      setStatus("audio " + s + " — waiting to resume");
+    }
+    tryResume();
+    if (!resumeTimer) resumeTimer = setInterval(tryResume, 2000);
+  }
+  function stopResumeTimer() {
+    if (resumeTimer) clearInterval(resumeTimer);
+    resumeTimer = null;
+  }
+  function tryResume() {
+    if (!ctx || !playing) { stopResumeTimer(); return; }
+    if (ctx.state === "running") { onCtxState(); return; }
+    if (ctx.state === "closed") { stopResumeTimer(); return; }
+    try { const p = ctx.resume(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+    try { if (sinkMode === "element" && sinkEl.paused) { const p = sinkEl.play(); if (p && p.catch) p.catch(() => {}); } } catch (e) {}
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) tryResume(); });
+  addEventListener("pageshow", tryResume);
+  addEventListener("focus", tryResume);
+
+  /* Lock-screen / notification controls and "now playing" (Media Session).
+     Pause from the lock screen is STOP (radio has no pause); play restarts. */
+  function initMediaSession() {
+    if (!("mediaSession" in navigator)) return;
+    const ms = navigator.mediaSession;
+    const bind = (action, fn) => { try { ms.setActionHandler(action, fn); } catch (e) {} };
+    bind("play", () => { if (!playing) void play(); });
+    bind("pause", () => { if (playing) stop(); });
+    bind("stop", () => { if (playing) stop(); });
+    for (const a of ["seekbackward", "seekforward", "seekto", "previoustrack", "nexttrack"]) bind(a, null);
+  }
+  let msKey = null;
+  function setMediaSession(it) {
+    if (!("mediaSession" in navigator)) return;
+    const named = !!(it && it.type === "song" && it.title && it.artist);
+    const key = named ? (it.seq + "|" + (it.art_url || "")) : "station";
+    if (key === msKey) return;
+    msKey = key;
+    try {
+      const art = named && it.art_url ? it.art_url : new URL(ART_PLACEHOLDER, location.href).href;
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: named ? it.title : "PILGRIM DOT FARM",
+        artist: named ? it.artist : "live radio",
+        album: "PILGRIM DOT FARM radio",
+        artwork: [{ src: art, type: "image/jpeg" }],
+      });
+    } catch (e) {}
+  }
+  function setPlaybackState(s) {
+    try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = s; } catch (e) {}
+    if (s !== "playing") { msKey = null; try { navigator.mediaSession.metadata = null; } catch (e) {} }
+  }
+
   /* ---------------- scheduling ---------------- */
   function scheduleOne(i, offset, token) {
     const it = items[i];
     const src = ctx.createBufferSource();
     src.buffer = it.buffer;
     const g = ctx.createGain();
-    src.connect(g); g.connect(analyser); analyser.connect(ctx.destination);
+    src.connect(g); g.connect(analyser);   // analyser -> output sink (attachOutput)
     src.start(nextWhen, offset);
     it._when = nextWhen;
     it._offset = offset;
@@ -330,6 +464,7 @@
     songLabel.textContent = named ? (it.title + " - " + it.artist) : "";
     setCoverArt(named ? it : null, named);
     setDownload(named ? it : null);
+    if (playing) setMediaSession(named ? it : null);
     // VOTING.md §4/§5: one hook for the rating row. The detail is the song that
     // is AUDIBLE now (audio clock), never the next one; null when nothing is.
     // rating.js ignores repeats of the same airing.
@@ -560,7 +695,11 @@
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ seq, media_id: it.media_id, position, underrun,
                              player_id: String(myId),
-                             started_at: ctx ? ctx.currentTime : 0, type: it.type })
+                             started_at: ctx ? ctx.currentTime : 0, type: it.type,
+                             // playback telemetry (RADIO §9.2): reported, never acted on
+                             platform: PLATFORM, ctx_state: ctx ? ctx.state : "closed",
+                             hidden: !!document.hidden, sink: sinkMode,
+                             resumed: resumedCount })
     }).catch(() => {});
   }
 
@@ -590,10 +729,19 @@
     setState("buffering"); btn.textContent = "■  STOP"; btn.classList.add("stop");
 
     try {
+      // iOS: Web Audio alone runs in the "ambient" session and obeys the
+      // ringer switch; ask for the playback session (Audio Session API,
+      // Safari 17+; a no-op elsewhere) before the context exists.
+      try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
       // Create and resume synchronously from the click, before any network await.
       ctx = new (window.AudioContext || window.webkitAudioContext)();
       const resumed = ctx.resume();
       analyser = ctx.createAnalyser(); analyser.fftSize = 256;
+      interruptedAt = null; resumedCount = 0;
+      attachOutput();                      // sink element play() inside the gesture
+      ctx.addEventListener("statechange", onCtxState);
+      setPlaybackState("playing");
+      setMediaSession(null);
       await resumed;
       if (!playing || token !== session) return;
       const p = await fetchProgram(null);
@@ -626,6 +774,9 @@
     programToken++;
     epoch = null; revision = null;
     if (raf) cancelAnimationFrame(raf); raf = null;
+    stopResumeTimer(); interruptedAt = null;
+    detachOutput();
+    setPlaybackState("none");
     if (ctx) { try { ctx.close(); } catch (e) {} ctx = null; }
     analyser = null;
     items = []; cursor = 0; scheduleCursor = 0;
@@ -639,5 +790,6 @@
   }
 
   btn.addEventListener("click", () => (playing ? stop() : play()));
+  initMediaSession();
   startHealth();
 })();

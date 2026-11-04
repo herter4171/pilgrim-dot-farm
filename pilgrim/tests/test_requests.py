@@ -657,3 +657,50 @@ def test_vote_migration_is_idempotent_on_old_schema(cfg, tmp_path):
     s2 = Store(db)  # reopening must not fail
     assert "claimed_at" in {r[1] for r in s2._conn.execute(
         "PRAGMA table_info(requests)")}
+
+
+# --------------------------------------------------------------------------- #
+# Prep Time cap (RADIO §11): the clock stops at the earlier of aired_at and
+# due_at, so a station frozen with nobody listening (IDLE.md D3) does not
+# inflate the metric with hours nobody waited on.
+# --------------------------------------------------------------------------- #
+
+def _set_due(s, rid, due):
+    with s._lock:
+        s._conn.execute("UPDATE requests SET due_at=? WHERE id=?", (due, rid))
+        s._conn.commit()
+
+
+def test_prep_time_is_capped_at_the_scheduled_air_time(cfg):
+    """Teed up at 09:56:40 to air 2 min 19 s later; nobody listening until
+    14:49:54; aired 14:52:13. Prep Time reads the 16 min it took, not 5 h."""
+    s = _store()
+    rid = s.add_request("halloween candy", cap=10)["id"]
+    s.mark_request_ready(rid, song_item_id=1)
+    s.mark_request_aired(rid)
+    _set_request_times(s, rid, prep="2026-11-04T09:42:49+00:00",
+                       aired="2026-11-04T14:52:13+00:00")
+    assert s.request_board(cap=10)["recent"][0]["wait_s"] == 18564   # uncapped
+    _set_due(s, rid, "2026-11-04T09:58:59+00:00")
+    assert s.request_board(cap=10)["recent"][0]["wait_s"] == 970     # 16 min 10 s
+
+
+def test_prep_time_uses_aired_when_it_aired_before_due(cfg):
+    """A thaw can drop stale rows ahead of the song (IDLE.md D4) or an
+    operator can skip to it: it airs earlier than its due time."""
+    s = _store()
+    rid = s.add_request("early", cap=10)["id"]
+    s.mark_request_ready(rid, song_item_id=1)
+    s.mark_request_aired(rid)
+    _set_request_times(s, rid, prep="2026-11-04T10:00:00+00:00",
+                       aired="2026-11-04T10:10:00+00:00")
+    _set_due(s, rid, "2026-11-04T10:12:00+00:00")
+    assert s.request_board(cap=10)["recent"][0]["wait_s"] == 600
+
+
+def test_mark_request_due_stamps_iso_wall_time(cfg):
+    s = _store()
+    rid = s.add_request("due", cap=10)["id"]
+    assert s.get_request(rid)["due_at"] is None
+    s.mark_request_due(rid, 1793786339.0)        # 2026-11-04T09:58:59Z
+    assert s.get_request(rid)["due_at"] == "2026-11-04T09:58:59+00:00"

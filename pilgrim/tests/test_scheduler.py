@@ -2,6 +2,8 @@
 seeded pool and assert the committed-program invariants hold."""
 from __future__ import annotations
 
+from datetime import datetime
+
 from conftest import make_item, seed_pool
 from pilgrim.config import RNG, SimClock
 from pilgrim.scheduler import Scheduler
@@ -1084,3 +1086,69 @@ def test_freeze_thaw_does_not_change_seeded_picks(cfg, tmp_env):
     b.commit_lookahead()
     assert [(r["item_id"], r["type"]) for r in a._items] == \
            [(r["item_id"], r["type"]) for r in b._items]
+
+
+def test_request_due_at_is_the_slot_wall_time_even_while_frozen(cfg, tmp_env):
+    """RADIO §11: a request teed up into a frozen window gets `due_at` = now +
+    its distance from the frozen playhead (when it WOULD air if woken now).
+    Aired hours later on the next PLAY, the board's Prep Time stops at due."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=20, n_liner=10, n_com=5, n_dj=5)
+    sched, clock = make_sched(cfg, store)
+    sched.commit_lookahead()
+    clock.advance(10)
+    req = store.add_request("a song about mittens", cap=None)
+    store.mark_request_writing(req["id"])
+    rsong = make_item(cfg, store, "song", 45.0)
+    rintro = store.add_item(type_="intro", media_path="/tmp/i.flac",
+                            duration_s=3.0, fresh=True,
+                            meta={"song_item_id": rsong,
+                                  "request_id": req["id"]})
+    store.mark_request_ready(req["id"], rsong, rintro)
+    sched.freeze()
+    clock.advance(600)                   # ten minutes of nobody listening
+    tee_wall = clock.wall()
+    sched.commit_lookahead()             # frozen: splice only
+    row = store.get_request(req["id"])
+    assert row["due_at"] is not None
+    due = datetime.fromisoformat(row["due_at"]).timestamp()
+    song_idx = next(i for i, r in enumerate(sched._items) if r["item_id"] == rsong)
+    offset = sched._cum[song_idx] - sched.position()
+    assert offset > 0
+    assert abs(due - (tee_wall + offset)) < 1.0
+    # nobody wakes it for five hours; then the song airs offset seconds later
+    clock.advance(5 * 3600)
+    sched.thaw()
+    clock.advance(offset + 1)
+    sched.commit_lookahead()             # _settle_aired marks it aired
+    row = store.get_request(req["id"])
+    assert row["status"] == "aired"
+    # mark_request_* stamp the real wall clock while due_at follows the
+    # SimClock, so pin prep/aired relative to due: 15 min of prep, then a
+    # five-hour wait for a listener. Prep Time stops at due.
+    from datetime import UTC
+    iso = lambda t: datetime.fromtimestamp(t, UTC).isoformat()  # noqa: E731
+    with store._lock:
+        store._conn.execute(
+            "UPDATE requests SET prep_started_at=?, aired_at=? WHERE id=?",
+            (iso(due - 900), iso(due + 5 * 3600), req["id"]))
+        store._conn.commit()
+    assert store.request_board(cap=10)["recent"][0]["wait_s"] == 900
+
+
+def test_request_committed_through_the_pick_path_gets_due_at(cfg, tmp_env):
+    """The other tee-up path: a ready request song picked by commit_lookahead
+    (not spliced) also stamps due_at at its slot's wall time."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=5, n_liner=10, n_com=5, n_dj=5)
+    sched, clock = make_sched(cfg, store)
+    req = store.add_request("first thing on air", cap=None)
+    rsong = make_item(cfg, store, "song", 45.0)
+    store.mark_request_ready(req["id"], rsong, None)
+    sched.commit_lookahead()
+    row = store.get_request(req["id"])
+    assert req["id"] in sched._pending_aired.values()
+    assert row["due_at"] is not None
+    due = datetime.fromisoformat(row["due_at"]).timestamp()
+    idx = next(i for i, r in enumerate(sched._items) if r["item_id"] == rsong)
+    assert abs(due - (clock.wall() + sched._cum[idx] - sched.position())) < 1.0

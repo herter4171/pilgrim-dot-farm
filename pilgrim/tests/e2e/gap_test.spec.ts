@@ -53,6 +53,21 @@ test("PLAY continues past three clips with sample-contiguous joins", async ({ pa
     expect(host, "overlay starts inside a host clip").toBeTruthy();
     expect(o.stop, "overlay is stopped at its host's end").toBeLessThanOrEqual(host.end + 1e-6);
   }
+  // RADIO §9.2 "Mobile continuity": the graph plays through the one persistent
+  // sink element (background / lock-screen playback on phones) and the Media
+  // Session carries the station as "now playing" while on air.
+  const sink = await page.evaluate(() => {
+    const a = document.getElementById("sink") as HTMLAudioElement | null;
+    const ms = (navigator as any).mediaSession;
+    return { present: !!a, streaming: !!(a && a.srcObject), paused: a ? a.paused : null,
+             title: ms && ms.metadata ? ms.metadata.title : null,
+             state: ms ? ms.playbackState : null };
+  });
+  expect(sink.present, "#sink element exists").toBe(true);
+  expect(sink.streaming, "sink is fed by the Web Audio graph").toBe(true);
+  expect(sink.paused, "sink element is playing").toBe(false);
+  expect(sink.state).toBe("playing");
+  expect(sink.title, "Media Session metadata is set").toBeTruthy();
   const report = await page.request.get("/api/test/report").then(r => r.json());
   expect(report.underrun - before.underrun).toBe(0);
   const playedSeqs = report.seqs.filter((seq: number) => seq > lastEarlierSeq);

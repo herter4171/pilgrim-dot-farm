@@ -68,6 +68,11 @@
           <button id="btn-play" class="big-btn">▶&nbsp; PLAY</button>
         </div>
       </div>
+      <!-- Output sink (RADIO §9.2): one persistent media element fed by the
+           Web Audio graph so phones treat the page as media playback (keeps
+           playing in the background / locked, lock-screen controls). Never a
+           per-item element; all decode + scheduling stays in Web Audio. -->
+      <audio id="sink" playsinline preload="none" aria-hidden="true" style="display:none"></audio>
       <canvas id="level" width="640" height="20"></canvas>
       <div id="song-label" class="song-label"></div>
       <div class="dl-row"><button id="dl-mp3" class="dl-mp3" type="button" hidden>DOWNLOAD MP3</button></div>
@@ -199,6 +204,6 @@
 <script src="pay.js?v=20261031d"></script>
 <script src="visitors.js?v=20261031a"></script>
 <script src="rating.js?v=20261103a"></script>
-<script src="player.js?v=20261103a"></script>
+<script src="player.js?v=20261104a"></script>
 </body>
 </html>

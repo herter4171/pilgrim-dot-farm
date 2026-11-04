@@ -562,3 +562,55 @@ def test_admin_voting_route_is_admin_only(tmp_env):
     r = c.get("/api/admin/voting", headers={"Authorization": "Bearer test-token"})
     # require_dj needs the configured token; without one this is 401/403
     assert r.status_code in (200, 401, 403)
+
+
+# --------------------------------------------------------------------------- #
+# Playback telemetry on heartbeats (RADIO §9.2/§11): reported per live player,
+# summarised on the admin health, never acted on.
+# --------------------------------------------------------------------------- #
+
+def test_heartbeat_telemetry_is_summarised_on_health(tmp_env):
+    app, c = _listener_app(tmp_env)
+    st = app.state.station
+    st.backend_status = _no_backends
+    base = {"seq": 1, "media_id": 1, "type": "song"}
+    c.post("/api/station/heartbeat", json={**base, "player_id": "phone", "platform": "ios",
+                                           "ctx_state": "running", "hidden": False,
+                                           "sink": "element", "resumed": 0})
+    c.post("/api/station/heartbeat", json={**base, "player_id": "droid", "platform": "android",
+                                           "ctx_state": "interrupted", "hidden": True,
+                                           "sink": "element", "resumed": 2})
+    c.post("/api/station/heartbeat", json={**base, "player_id": "legacy"})   # no telemetry
+    tel = c.get("/api/health").json()["listeners"]
+    assert tel["count"] == 3 and tel["reporting"] == 2
+    assert tel["by_platform"] == {"ios": 1, "android": 1}
+    assert tel["hidden"] == 1 and tel["not_running"] == 1
+    assert tel["sink_element"] == 2 and tel["resumed_total"] == 2
+    # a heartbeat without player_id (not a listener) carries nothing
+    c.post("/api/station/heartbeat", json={**base, "platform": "ios"})
+    assert c.get("/api/health").json()["listeners"]["reporting"] == 2
+
+
+def test_heartbeat_telemetry_expires_with_the_listener(tmp_env):
+    app, c = _listener_app(tmp_env)
+    st = app.state.station
+    st.backend_status = _no_backends
+    c.post("/api/station/heartbeat", json={"seq": 1, "media_id": 1, "type": "song",
+                                           "player_id": "phone", "platform": "ios"})
+    assert c.get("/api/health").json()["listeners"]["reporting"] == 1
+    st.clock.advance(st.cfg.visitors.listener_timeout_s + 1)
+    tel = c.get("/api/health").json()["listeners"]
+    assert tel == {"count": 0, "reporting": 0, "by_platform": {}, "hidden": 0,
+                   "not_running": 0, "sink_element": 0, "resumed_total": 0}
+
+
+def test_heartbeat_rejects_oversized_telemetry(tmp_env):
+    app, c = _listener_app(tmp_env)
+    r = c.post("/api/station/heartbeat", json={"seq": 1, "media_id": 1, "player_id": "p",
+                                               "platform": "x" * 40})
+    assert r.status_code == 422
+
+
+async def _no_backends() -> dict:
+    return {"litellm": False, "kokoro": False, "music": False,
+            "searxng": False, "sfx": False, "music_backends": {}}

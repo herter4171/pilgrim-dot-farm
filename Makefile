@@ -3,7 +3,7 @@ PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
 FFMPEG := $(HOME)/bin/ffmpeg
 
-.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status media-smoke mp3-migrate art-backfill art-smoke reel
+.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status media-smoke mp3-migrate art-backfill art-smoke reel due-backfill
 
 # --- setup ---------------------------------------------------------------
 venv:
@@ -104,3 +104,8 @@ reel:
 #   make mp3-migrate MIGRATE_ARGS="--apply --upload"
 mp3-migrate:
 	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tools.mp3_migrate $(MIGRATE_ARGS)
+
+# Recover requests.due_at (Prep Time cap, RADIO §11) from the station log for
+# rows that aired before the column existed. Dry run unless DUE_ARGS="--apply".
+due-backfill:
+	$(PY) -m pilgrim.tools.due_backfill $(DUE_ARGS)
