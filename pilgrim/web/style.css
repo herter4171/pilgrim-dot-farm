@@ -316,9 +316,12 @@ body {
   border-radius: 6px; cursor: pointer; color: var(--warn);
   display: inline-flex; align-items: center; justify-content: center;
 }
-.turkey svg { width: 28px; height: 28px; display: block; }
-.turkey svg g { fill: none; }
-.turkey.filled svg g { fill: currentColor; }
+.turkey svg { width: 28px; height: 28px; display: block; fill: none; }
+/* <use> clones the symbol into a shadow tree: document selectors cannot reach
+   its <g>, but `fill` is inherited through the <use> host. So the outlined
+   default and the filled selection are set on the <svg>, and the symbol's
+   group carries no fill attribute of its own. */
+.turkey.filled svg { fill: currentColor; }
 .turkey:hover:not(:disabled), .turkey:focus-visible {
   filter: brightness(1.2); outline: 2px solid var(--warn); outline-offset: -2px;
 }
