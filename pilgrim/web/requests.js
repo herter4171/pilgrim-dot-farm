@@ -9,6 +9,7 @@
   const $ = (id) => document.getElementById(id);
   const input = $("req-input"), send = $("req-send");
   const queueEl = $("req-queue"), errEl = $("req-err");
+  const queueWrap = queueEl ? queueEl.closest(".req-table-wrap") : null;
   let lastQueue = [];
 
   let hideTimer = null;
@@ -33,10 +34,19 @@
     const tr = document.createElement("tr");
     tr.className = "req-empty";
     const td = document.createElement("td");
-    td.colSpan = 3;
+    td.colSpan = 4;
     td.textContent = text;
     tr.appendChild(td);
     return tr;
+  }
+
+  /* VOTING.md Step 6: the scroll cue. A 24 px bottom gradient shows only while
+     there is more queue below the fold, so touch users know the box scrolls. */
+  function updateScrollCue() {
+    if (!queueWrap) return;
+    const more = queueWrap.scrollHeight - queueWrap.scrollTop
+      - queueWrap.clientHeight > 4;
+    queueWrap.classList.toggle("has-more", more);
   }
 
   function promptCell(r, num) {
@@ -85,9 +95,25 @@
           label = readySeen ? "ready to air" : "up next";
           readySeen = true;
         }
+        if (r.buried) label = "buried";   // VOTING.md V7: voted below the line
         tr.appendChild(promptCell(r, i + 1));
-        tr.appendChild(cell("req-title", r.song_title || "—"));
+        const titleTd = cell("req-title", r.song_title || "—");
+        // mobile: the status column is hidden and its text moves under the
+        // title, so the table is Request / Title+status / Vote at 520 px
+        const inline = document.createElement("span");
+        inline.className = "req-status-inline";
+        inline.textContent = label;
+        titleTd.appendChild(inline);
+        tr.appendChild(titleTd);
         tr.appendChild(cell("req-status", label));
+        // VOTING.md: the vote cell is built with createElement, never strings
+        if (window.PD_VOTES && typeof window.PD_VOTES.cell === "function") {
+          tr.appendChild(window.PD_VOTES.cell(r));
+        } else {
+          const td = document.createElement("td");
+          td.className = "req-vote";
+          tr.appendChild(td);
+        }
         queueEl.appendChild(tr);
       });
     }
@@ -109,6 +135,7 @@
     if (!recentEl.childElementCount) {
       recentEl.appendChild(emptyRow("— nothing played for you yet —"));
     }
+    updateScrollCue();
   }
 
   function waitLabel(seconds) {
@@ -181,6 +208,10 @@
 
   send.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  if (queueWrap) {
+    queueWrap.addEventListener("scroll", updateScrollCue);
+    window.addEventListener("resize", updateScrollCue);
+  }
   setInterval(refresh, 6000);
   refresh();
 })();

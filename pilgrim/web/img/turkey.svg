@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Source copy of the RATE THIS SONG turkey symbol (VOTING.md Step 5).
+       index.html inlines the same <symbol id="turkey"> once. Strokes use
+       currentColor; `.turkey.filled` fills the same paths. No external asset. -->
+  <symbol id="turkey" viewBox="0 0 24 24">
+    <g fill="none" stroke="currentColor" stroke-width="1.4"
+       stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 14 L4.5 5.5"/>
+      <path d="M12 14 L7 3.2"/>
+      <path d="M12 14 L12 2"/>
+      <path d="M12 14 L17 3.2"/>
+      <path d="M12 14 L19.5 5.5"/>
+      <ellipse cx="11.5" cy="15" rx="5" ry="4.4"/>
+      <circle cx="16.4" cy="10.4" r="2"/>
+      <path d="M16.4 12.3 q0.9 1.9 -0.3 2.4"/>
+      <path d="M18.2 9.9 l2.2 0.8 -2.2 0.9 z"/>
+      <path d="M9 19.4 v1.6 M14 19.4 v1.6"/>
+    </g>
+  </symbol>
+</svg>

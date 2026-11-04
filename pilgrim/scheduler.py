@@ -104,6 +104,10 @@ class Scheduler:
         self._cum: list[float] = []  # absolute start times (program seconds)
         self._total = 0.0
         self._offset = 0.0  # playhead anchor; shifts forward if the program starves
+        # IDLE.md: clock.now() when the playhead froze (None = running). While
+        # frozen, position()/coverage() are static and the committed window is
+        # left untouched (it is already fully rendered).
+        self._frozen_at: float | None = None
         # committed request songs not yet on air: seq -> request_id. A request
         # is 'aired' when the playhead reaches its song, not when committed.
         self._pending_aired: dict[int, int] = {}
@@ -138,8 +142,141 @@ class Scheduler:
         self._total = t
 
     def position(self) -> float:
-        """Live playhead in program-seconds (advances on the real clock)."""
-        return min(self.clock.now() - self._offset, self._total)
+        """Live playhead in program-seconds (advances on the real clock, unless
+        the station is idle: IDLE.md D3)."""
+        now = self._frozen_at if self._frozen_at is not None else self.clock.now()
+        return min(now - self._offset, self._total)
+
+    # ------------------------------------------------------------- idle (IDLE.md)
+    @property
+    def frozen(self) -> bool:
+        return self._frozen_at is not None
+
+    def freeze(self) -> None:
+        """Stop the playhead where it is (IDLE.md D3). Idempotent: the frozen
+        window stays exactly as committed, already rendered and playable."""
+        if self._frozen_at is not None:
+            return
+        self._frozen_at = self.clock.now()
+        log.info("program.frozen", extra={"position_s": round(self.position(), 1),
+                                          "coverage_s": round(self.coverage(), 1)})
+
+    def thaw(self) -> int:
+        """Resume the playhead and revalidate the committed future (IDLE.md D4).
+
+        Shifts `_offset` by the frozen span (so playback resumes exactly where
+        it stopped), drops future `time_check` rows and any future row whose
+        `expires_at` has passed for its new slot wall, bridges song-after-song
+        gaps the drops opened with a liner/station ID, bumps the revision when
+        anything changed, and tops the window up from rendered inventory only
+        (hard rule 1). Idempotent when not frozen: returns 0, no revision bump.
+        """
+        if self._frozen_at is None:
+            return 0
+        frozen_s = self.clock.now() - self._frozen_at
+        self._offset += frozen_s
+        self._frozen_at = None
+        # A freeze must not burn a pending request's hold budget (§5.2).
+        if self._hold_request_id is not None:
+            self._hold_since = self.clock.now()
+        dropped = bridged = 0
+        on_seq, _ = self.on_air()
+        start = 0
+        if on_seq is not None:
+            start = next((i for i, r in enumerate(self._items)
+                          if r["seq"] == on_seq), 0) + 1
+        drops: list[int] = []
+        for i in range(start, len(self._items)):
+            r = self._items[i]
+            if r["type"] == "time_check":
+                # The clock read is for its 5-minute bucket; a long freeze makes
+                # it wrong. (time_check items already carry expires_at = bucket
+                # + 300, so the check below would catch them too: belt and
+                # braces for an emergency item rendered without one.)
+                drops.append(r["seq"])
+                continue
+            it = self.store.get_item(r["item_id"])
+            exp = _parse_iso(it.get("expires_at")) if it else None
+            if exp is not None and exp < self._slot_wall(self._cum[i]):
+                drops.append(r["seq"])
+        if drops:
+            # Songs are evergreen and never dropped, so no committed request
+            # song can be in this list (_pending_aired keys are song seqs).
+            assert not [s for s in drops if s in self._pending_aired]
+            for s in drops:
+                self._sfx_by_seq.pop(s, None)
+            dropped = self.store.delete_program_rows(drops)
+            self._rebuild_program()
+        bridged = self._bridge_song_gaps(start)
+        if dropped or bridged:
+            self.advance_revision()
+            log.info("program.thaw_revalidated", extra={
+                "dropped": dropped, "bridged": bridged,
+                "frozen_s": round(frozen_s, 1), "revision": self.revision})
+        # Top the window up from already-rendered inventory so the waking
+        # request returns a full, playable programme (hard rule 1).
+        self.commit_lookahead()
+        return dropped
+
+    def _bridge_song_gaps(self, start: int) -> int:
+        """Insert a liner/station ID before any future song that directly
+        follows a song (IDLE.md D4, §5.2: words between songs).
+
+        Future rows are renumbered with fresh seqs above the high-water mark
+        (never reusing an occurrence id) and the revision is bumped by the
+        caller. With no voice inventory at all the songs stay adjacent (§5.2:
+        with no voice item at all, the song airs). Returns the number of
+        inserted rows."""
+        future = self._items[start:]
+        if not future:
+            return 0
+        inserts: dict[int, list[dict]] = {}
+        prev_type = self._items[start - 1]["type"] if start > 0 else None
+        for k, r in enumerate(future):
+            if r["type"] == "song" and prev_type == "song":
+                bridge = self._pick_callout_fallback()
+                if bridge:
+                    inserts[k] = bridge
+            # The row itself is appended after any bridge, so the next row's
+            # "previous" type is this row's type either way.
+            prev_type = r["type"]
+        if not inserts:
+            return 0
+        final: list[dict] = []
+        for k, r in enumerate(future):
+            for e in inserts.get(k, []):
+                final.append({"item_id": e["item_id"], "type": e["type"],
+                              "duration_s": e["duration_s"],
+                              "consume": bool(e.get("consume"))})
+            final.append({"item_id": r["item_id"], "type": r["type"],
+                          "duration_s": r["duration_s"],
+                          "old_seq": r["seq"]})
+        high = int(self.store.max_seq() or 0)
+        seqs = [high + 1 + i for i in range(len(final))]
+        remap = {row["old_seq"]: seq
+                 for row, seq in zip(final, seqs, strict=True) if "old_seq" in row}
+        if remap:
+            self._pending_aired = {remap.get(s, s): rid
+                                   for s, rid in self._pending_aired.items()}
+            self._sfx_by_seq = {remap.get(s, s): v
+                                for s, v in self._sfx_by_seq.items()}
+        for row, seq in zip(final, seqs, strict=True):
+            if "old_seq" in row:
+                self.store.update_program_seq(row["old_seq"], seq)
+            else:
+                self.store.append_program_at(
+                    item_id=row["item_id"], type_=row["type"],
+                    duration_s=row["duration_s"], seq=seq)
+                if row.get("consume"):
+                    self.store.mark_aired(row["item_id"])
+        self.store.set_program_seq_high(seqs[-1])
+        # Inserted words are part of the committed programme: keep the spacing
+        # clock consistent with the (now longer) committed end.
+        self._air_clock += sum(row["duration_s"]
+                               for row, seq in zip(final, seqs, strict=True)
+                               if "old_seq" not in row)
+        self._rebuild_program()
+        return sum(len(v) for v in inserts.values())
 
     def advance_revision(self) -> int:
         """Bump the programme revision (an edit changed already-published future
@@ -317,6 +454,14 @@ class Scheduler:
         (§5.2 request priority).
         """
         cfg = self.cfg.playout
+        if self._frozen_at is not None:
+            # IDLE.md D3/D8: while frozen the window is static (position does
+            # not move, so coverage and trim are static too) and filling it
+            # would consume one-shot inventory for airtime nobody hears. A
+            # ready listener request still takes the next slot the moment
+            # someone wakes the station.
+            self._splice_ready_requests()
+            return
         lookahead = cfg.committed_lookahead_s
         guard = 0
         # types that came up empty (e.g. every liner is inside its no-repeat
@@ -630,7 +775,18 @@ class Scheduler:
         since_h = float("inf") if last is None else max(0.0, (now_wall - last) / 3600.0)
         youth = max(rot.youth_floor, 0.5 ** (age_h / rot.half_life_h))
         wait = min(1.0, since_h / rot.wait_target_h)
-        return youth * (rot.wait_floor + (1 - rot.wait_floor) * wait)
+        weight = youth * (rot.wait_floor + (1 - rot.wait_floor) * wait)
+        # VOTING.md Step 8 (off by default): let ratings nudge the recycled
+        # draw. A 3-turkey song is neutral; a 1-turkey song keeps a quarter of
+        # its pull, a 5-turkey song gets half again. Store read only — pure of
+        # time/random — and it never breaks spacing (it orders songs that
+        # already pass it) or the starvation guard above.
+        ratings = self.cfg.ratings
+        if ratings.rotation_weight:
+            agg = self.store.song_rating(int(it["id"]))
+            if agg["count"] >= ratings.rotation_min_votes and agg["avg"] is not None:
+                weight *= min(1.5, max(0.25, agg["avg"] / 3.0))
+        return weight
 
     def _weighted_pick(self, candidates: list[dict], now_wall: float) -> dict:
         """Weighted random over eligible recycled songs (injected RNG, pure)."""
@@ -651,7 +807,8 @@ class Scheduler:
         if self.cfg.playout.request_hold_max_s <= 0:
             return False  # disabled: stock keeps airing; ready requests splice in
         committed = set(self._pending_aired.values())
-        pending = [r for r in self.store.pending_requests()
+        pending = [r for r in self.store.pending_requests(
+                       bury_threshold=self.cfg.voting.bury_threshold)
                    if r["id"] not in committed]
         if not pending:
             self._hold_request_id = None

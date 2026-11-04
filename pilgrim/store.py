@@ -10,12 +10,47 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-# Queue order everywhere (PAYMENT.md §3.2): paid first, FIFO within each class
-# (paid by payment time, free by creation time).
-QUEUE_ORDER = "ORDER BY priority DESC, COALESCE(paid_at, created_at) ASC, id ASC"
+
+# Queue order everywhere (RADIO §14; supersedes PAYMENT.md §3.2).
+#
+#   1. paid first (priority DESC) — paid priority is never voted on
+#   2. work already in flight (producing/ready) before free queued rows, so a
+#      job that started is never reordered
+#   3. free queued rows by vote score DESC (votes decide what is written next)
+#   4. then paid_at / claimed_at / created_at ASC, id ASC — the old FIFO, so
+#      with no votes nothing changes.
+#
+# The score is read from request_votes on every query (VOTING.md V9): always
+# accurate, no cached counters to keep in sync.
+def queue_order(alias: str = "") -> str:
+    a = f"{alias}." if alias else ""
+    score = ("(SELECT COALESCE(SUM(v.value), 0) FROM request_votes v "
+             f"WHERE v.request_id = {a}id)")
+    return (
+        f"ORDER BY {a}priority DESC, "
+        f"CASE WHEN {a}status = 'queued' THEN 1 ELSE 0 END ASC, "
+        f"CASE WHEN {a}status = 'queued' AND {a}priority = 0 "
+        f"THEN -{score} ELSE 0 END ASC, "
+        f"COALESCE({a}paid_at, {a}claimed_at, {a}created_at) ASC, "
+        f"{a}id ASC")
+
+
+QUEUE_ORDER = queue_order()
 # The same order for queries that alias requests as `r` (joined with items).
-QUEUE_ORDER_R = ("ORDER BY r.priority DESC, COALESCE(r.paid_at, r.created_at) ASC, "
-                 "r.id ASC")
+QUEUE_ORDER_R = queue_order("r")
+
+
+def _queued_where(bury_threshold: int | None) -> tuple[str, tuple[Any, ...]]:
+    """WHERE clause for the air-able queue: `queued` rows, minus buried free
+    ones when a threshold is given (VOTING.md V7)."""
+    where = "status='queued'"
+    params: tuple[Any, ...] = ()
+    if bury_threshold is not None:
+        where += (" AND NOT (priority = 0 AND "
+                  "(SELECT COALESCE(SUM(v.value), 0) FROM request_votes v "
+                  "WHERE v.request_id = requests.id) <= ?)")
+        params = (int(bury_threshold),)
+    return where, params
 
 
 
@@ -62,17 +97,23 @@ def _wait_s(prep_started_at: str | None, aired_at: str | None) -> int | None:
 
 
 def _project_queue_row(row: dict[str, Any], max_length: int,
-                       stages: Mapping[int, str] | None = None) -> dict[str, Any]:
+                       stages: Mapping[int, str] | None = None,
+                       score: int = 0, votable: bool = False,
+                       buried: bool = False) -> dict[str, Any]:
     paid = bool(row.get("priority"))
     stage = ""
     if row["status"] == "producing":
         # writing = lyrics/brief, generating = song model (RADIO §11)
         stage = (stages or {}).get(int(row["id"]), "writing")
-    return {"text": _project_text(row["text"], paid, max_length,
+    return {"id": int(row["id"]),
+            "text": _project_text(row["text"], paid, max_length,
                                   row.get("summary")),
             "status": row["status"], "paid": paid, "stage": stage,
             # the song exists from `ready` on (title shown in the board table)
-            "song_title": row.get("song_title") or ""}
+            "song_title": row.get("song_title") or "",
+            # VOTING.md: score is display-only once the row is in flight
+            "score": int(score), "votable": bool(votable),
+            "buried": bool(buried)}
 
 
 def _project_recent_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
@@ -180,6 +221,40 @@ class Store:
                     outcome     TEXT NOT NULL,
                     received_at TEXT NOT NULL
                 );
+                -- Request-queue votes (VOTING.md V2): one row per voter and
+                -- request, value -1|+1 (0 = retracted -> row deleted). The
+                -- canonical client IP is stored for the per-target abuse cap
+                -- (V3), like visitor_ips (RADIO §14).
+                CREATE TABLE IF NOT EXISTS request_votes (
+                    request_id INTEGER NOT NULL,
+                    voter_id   TEXT    NOT NULL,
+                    ip         TEXT,
+                    value      INTEGER NOT NULL,
+                    created_at TEXT    NOT NULL,
+                    updated_at TEXT    NOT NULL,
+                    PRIMARY KEY (request_id, voter_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_request_votes_ip
+                    ON request_votes(request_id, ip);
+                -- Song ratings (VOTING.md V2, V8): one row per AIRING, keyed by
+                -- (epoch, seq, voter) so the same song can be rated again the
+                -- next time it airs. `item_id` feeds the lifetime aggregate.
+                CREATE TABLE IF NOT EXISTS song_ratings (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id    INTEGER NOT NULL,
+                    epoch      TEXT    NOT NULL,
+                    seq        INTEGER NOT NULL,
+                    voter_id   TEXT    NOT NULL,
+                    ip         TEXT,
+                    stars      INTEGER NOT NULL CHECK (stars BETWEEN 1 AND 5),
+                    created_at TEXT    NOT NULL,
+                    updated_at TEXT    NOT NULL,
+                    UNIQUE (epoch, seq, voter_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_song_ratings_item
+                    ON song_ratings(item_id);
+                CREATE INDEX IF NOT EXISTS idx_song_ratings_ip
+                    ON song_ratings(epoch, seq, ip);
                 DROP TABLE IF EXISTS visitor_signatures;
                 """
             )
@@ -236,7 +311,10 @@ class Store:
                              ("summary", "TEXT"),
                              # PAYMENT.md Step 12b: staged checks + operator comp
                              ("stage", "TEXT"),
-                             ("comped", "INTEGER DEFAULT 0")):
+                             ("comped", "INTEGER DEFAULT 0"),
+                             # VOTING.md V6: first time the producer claims the
+                             # row, so in-flight order is the claim order
+                             ("claimed_at", "TEXT")):
                 if col not in req_cols:
                     self._conn.execute(f"ALTER TABLE requests ADD COLUMN {col} {ddl}")
             self._conn.execute(
@@ -670,6 +748,20 @@ class Store:
             self._conn.execute("DELETE FROM program WHERE seq<?", (seq,))
             self._conn.commit()
 
+    def delete_program_rows(self, seqs: list[int]) -> int:
+        """Delete committed future rows by seq (IDLE.md thaw revalidation).
+        Deleted seqs are never reused: new rows always take seqs above the
+        AUTOINCREMENT high-water mark (update_program_seq/set_program_seq_high).
+        Returns the number of rows removed."""
+        if not seqs:
+            return 0
+        with self._lock:
+            marks = ",".join("?" * len(seqs))
+            cur = self._conn.execute(
+                f"DELETE FROM program WHERE seq IN ({marks})", tuple(seqs))
+            self._conn.commit()
+            return int(cur.rowcount or 0)
+
     def program_since(self, since_seq: int) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
@@ -765,12 +857,17 @@ class Store:
                         "WHERE id=?", (i,))
                 self._conn.commit()
 
-    def queued_requests(self, cap: int | None = None) -> list[dict[str, Any]]:
-        """Live queue in queue order (paid first, FIFO within each class).
-        Rejected/evicted/airéd/... requests are not part of the air-able queue."""
+    def queued_requests(self, cap: int | None = None, *,
+                        bury_threshold: int | None = None) -> list[dict[str, Any]]:
+        """Live queue in queue order (paid first, in flight next, then free by
+        vote score, then FIFO). Rejected/evicted/aired/... requests are not part
+        of the air-able queue. `bury_threshold` skips free queued rows at/below
+        that score (VOTING.md V7); None disables burying."""
+        where, params = _queued_where(bury_threshold)
         with self._lock:
             rows = self._conn.execute(
-                f"SELECT * FROM requests WHERE status='queued' {QUEUE_ORDER}").fetchall()
+                f"SELECT * FROM requests WHERE {where} {QUEUE_ORDER}",
+                params).fetchall()
         out = [dict(r) for r in rows]
         return out[:cap] if cap else out
 
@@ -779,20 +876,32 @@ class Store:
         return self.next_request_to_produce()
 
     # --------------------------------------------------- request lifecycle (4.4)
-    def next_request_to_produce(self) -> dict[str, Any] | None:
-        """Next `queued` request in queue order (paid first, then FIFO)."""
+    def next_request_to_produce(self, *,
+                                bury_threshold: int | None = None
+                                ) -> dict[str, Any] | None:
+        """Next `queued` request in queue order (paid first, in flight next,
+        then free by vote score, then FIFO). Buried free rows are skipped."""
+        where, params = _queued_where(bury_threshold)
         with self._lock:
             r = self._conn.execute(
-                f"SELECT * FROM requests WHERE status='queued' {QUEUE_ORDER} LIMIT 1"
-            ).fetchone()
+                f"SELECT * FROM requests WHERE {where} {QUEUE_ORDER} LIMIT 1",
+                params).fetchone()
         return dict(r) if r else None
 
-    def mark_request_producing(self, request_id: int) -> None:
+    def mark_request_producing(self, request_id: int) -> str | None:
+        """Claim the row for production. `claimed_at` is set the first time
+        only (COALESCE): VOTING.md V6 orders in-flight work by claim time, so a
+        retry after an outage keeps its original place. Returns claimed_at."""
         with self._lock:
+            now = _now_iso()
             self._conn.execute(
-                "UPDATE requests SET status='producing', updated_at=? WHERE id=?",
-                (_now_iso(), request_id))
+                "UPDATE requests SET status='producing', updated_at=?, "
+                "claimed_at=COALESCE(claimed_at, ?) WHERE id=?",
+                (now, now, request_id))
             self._conn.commit()
+            r = self._conn.execute(
+                "SELECT claimed_at FROM requests WHERE id=?", (request_id,)).fetchone()
+        return r["claimed_at"] if r else None
 
     def mark_request_writing(self, request_id: int) -> None:
         """The request got its turn at the brief LLM and lyrics/brief writing
@@ -846,14 +955,24 @@ class Store:
                 "WHERE id=? AND status='producing'", (_now_iso(), request_id))
             self._conn.commit()
 
-    def pending_requests(self) -> list[dict[str, Any]]:
+    def pending_requests(self, *,
+                         bury_threshold: int | None = None) -> list[dict[str, Any]]:
         """Requests still awaiting air (queued, producing, or ready) in queue
         order. The scheduler holds the committed window short while one of these
-        is uncommitted so it can air as soon as its song + intro are ready."""
+        is uncommitted so it can air as soon as its song + intro are ready.
+        Buried free rows are excluded (VOTING.md V7): nothing is produced for
+        them, so the window must not be held for one either."""
+        where = "status IN ('queued','producing','ready')"
+        params: tuple[Any, ...] = ()
+        if bury_threshold is not None:
+            where += (" AND NOT (priority = 0 AND status = 'queued' AND "
+                      "(SELECT COALESCE(SUM(v.value), 0) FROM request_votes v "
+                      "WHERE v.request_id = requests.id) <= ?)")
+            params = (int(bury_threshold),)
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM requests WHERE status IN "
-                f"('queued','producing','ready') {QUEUE_ORDER}").fetchall()
+                f"SELECT * FROM requests WHERE {where} {QUEUE_ORDER}",
+                params).fetchall()
         return [dict(r) for r in rows]
 
     def ready_request_songs(self) -> list[dict[str, Any]]:
@@ -892,16 +1011,24 @@ class Store:
             self._conn.commit()
 
     def request_board(self, cap: int, max_length: int = 160,
-                      stages: Mapping[int, str] | None = None) -> dict[str, Any]:
+                      stages: Mapping[int, str] | None = None, *,
+                      voting_enabled: bool = True,
+                      bury_threshold: int | None = None) -> dict[str, Any]:
         """Board for the UI: live queue (queued+producing+ready, queue order,
         <= cap) plus the 5 most recent aired requests with song titles and how
-        long they waited. Rows are projected — never raw (PAYMENT.md §3.4)."""
+        long they waited. Rows are projected — never raw (PAYMENT.md §3.4).
+
+        Queue rows carry `id`, `score`, `votable` and `buried` (VOTING.md §1);
+        recent rows never do (no retrospective voting)."""
         with self._lock:
             queue = [dict(r) for r in self._conn.execute(
                 "SELECT r.*, i.title AS song_title FROM requests r "
                 "LEFT JOIN items i ON i.id = r.song_item_id "
                 "WHERE r.status IN ('queued','producing','ready') "
                 f"{QUEUE_ORDER_R} LIMIT ?", (cap,)).fetchall()]
+            scores = {int(r[0]): int(r[1]) for r in self._conn.execute(
+                "SELECT request_id, COALESCE(SUM(value), 0) FROM request_votes "
+                "GROUP BY request_id").fetchall()}
             recent = [dict(r) for r in self._conn.execute(
                 "SELECT r.id, r.text, r.summary, r.created_at, r.aired_at, "
                 "r.prep_started_at, r.priority, "
@@ -909,8 +1036,19 @@ class Store:
                 "LEFT JOIN items i ON i.id = r.song_item_id "
                 "WHERE r.status IN ('aired','serviced') "
                 "ORDER BY r.id DESC LIMIT 5").fetchall()]
+        out = []
+        for r in queue:
+            rid = int(r["id"])
+            paid = bool(r.get("priority"))
+            score = scores.get(rid, 0)
+            buried = (bury_threshold is not None and not paid
+                      and r["status"] == "queued" and score <= bury_threshold)
+            out.append(_project_queue_row(
+                r, max_length, stages, score=score,
+                votable=bool(voting_enabled and not paid),
+                buried=bool(buried)))
         return {
-            "queue": [_project_queue_row(r, max_length, stages) for r in queue],
+            "queue": out,
             "recent": [_project_recent_row(r, max_length) for r in recent],
         }
 
@@ -923,6 +1061,132 @@ class Store:
                 "aired_at=?, updated_at=? WHERE id=?",
                 (_now_iso(), _now_iso(), request_id))
             self._conn.commit()
+
+    # ------------------------------------------- community votes (VOTING.md)
+    def request_score(self, request_id: int) -> int:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT COALESCE(SUM(value), 0) FROM request_votes "
+                "WHERE request_id=?", (request_id,)).fetchone()
+        return int(r[0]) if r else 0
+
+    def cast_request_vote(self, request_id: int, voter_id: str,
+                          ip: str | None, value: int, *,
+                          max_voters_per_ip: int) -> dict[str, Any]:
+        """Upsert one vote (VOTING.md V2/V3/V4/V5). One locked transaction:
+        window + paid + IP-cap checks and the write are atomic, so the row
+        cannot move between check and insert.
+
+        Returns {ok: True, score, mine, open} or {ok: False, code} where code
+        is not_found | not_votable | voting_closed | too_many_voters."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, status, priority FROM requests WHERE id=?",
+                (request_id,)).fetchone()
+            if row is None:
+                return {"ok": False, "code": "not_found"}
+            if int(row["priority"]):
+                return {"ok": False, "code": "not_votable"}
+            if row["status"] not in ("queued", "producing", "ready"):
+                return {"ok": False, "code": "voting_closed"}
+            if ip:
+                n = self._conn.execute(
+                    "SELECT COUNT(DISTINCT voter_id) FROM request_votes "
+                    "WHERE request_id=? AND ip=? AND voter_id<>?",
+                    (request_id, ip, voter_id)).fetchone()[0]
+                if int(n) >= max_voters_per_ip:
+                    return {"ok": False, "code": "too_many_voters"}
+            now = _now_iso()
+            if value == 0:
+                self._conn.execute(
+                    "DELETE FROM request_votes WHERE request_id=? AND voter_id=?",
+                    (request_id, voter_id))
+            else:
+                self._conn.execute(
+                    "INSERT INTO request_votes (request_id, voter_id, ip, value, "
+                    "created_at, updated_at) VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(request_id, voter_id) DO UPDATE SET "
+                    "value=excluded.value, ip=excluded.ip, "
+                    "updated_at=excluded.updated_at",
+                    (request_id, voter_id, ip, value, now, now))
+            self._conn.commit()
+            score = int(self._conn.execute(
+                "SELECT COALESCE(SUM(value), 0) FROM request_votes "
+                "WHERE request_id=?", (request_id,)).fetchone()[0])
+        return {"ok": True, "score": score, "mine": value, "open": True}
+
+    def cast_song_rating(self, *, item_id: int, epoch: str, seq: int,
+                         voter_id: str, ip: str | None, stars: int,
+                         max_voters_per_ip: int) -> dict[str, Any]:
+        """Upsert one rating for an airing (VOTING.md V2/V3). The window is
+        checked by the caller (it is scheduler state, not DB state); this only
+        enforces uniqueness and the per-target IP cap."""
+        with self._lock:
+            if ip:
+                n = self._conn.execute(
+                    "SELECT COUNT(DISTINCT voter_id) FROM song_ratings "
+                    "WHERE epoch=? AND seq=? AND ip=? AND voter_id<>?",
+                    (epoch, seq, ip, voter_id)).fetchone()[0]
+                if int(n) >= max_voters_per_ip:
+                    return {"ok": False, "code": "too_many_voters"}
+            now = _now_iso()
+            self._conn.execute(
+                "INSERT INTO song_ratings (item_id, epoch, seq, voter_id, ip, "
+                "stars, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(epoch, seq, voter_id) DO UPDATE SET "
+                "stars=excluded.stars, ip=excluded.ip, "
+                "updated_at=excluded.updated_at",
+                (item_id, epoch, seq, voter_id, ip, stars, now, now))
+            self._conn.commit()
+            agg = self._conn.execute(
+                "SELECT COUNT(*), AVG(stars) FROM song_ratings WHERE item_id=?",
+                (item_id,)).fetchone()
+        count = int(agg[0] or 0)
+        avg = round(float(agg[1]), 2) if agg[1] is not None else None
+        return {"ok": True, "item_id": item_id, "count": count,
+                "avg": avg, "mine": stars}
+
+    def song_rating(self, item_id: int) -> dict[str, Any]:
+        """Lifetime aggregate over every airing of `item_id` (VOTING.md V10)."""
+        with self._lock:
+            agg = self._conn.execute(
+                "SELECT COUNT(*), AVG(stars) FROM song_ratings WHERE item_id=?",
+                (item_id,)).fetchone()
+        count = int(agg[0] or 0)
+        avg = round(float(agg[1]), 2) if agg[1] is not None else None
+        return {"count": count, "avg": avg}
+
+    def recent_votes(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Admin audit trail. Deliberately omits voter_id and ip (they are
+        pseudonymous identifiers; the DB keeps them for the abuse cap only)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT request_id, value, created_at, updated_at "
+                "FROM request_votes ORDER BY updated_at DESC LIMIT ?",
+                (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def recent_ratings(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT item_id, epoch, seq, stars, created_at, updated_at "
+                "FROM song_ratings ORDER BY updated_at DESC LIMIT ?",
+                (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def buried_requests(self, bury_threshold: int,
+                        limit: int = 100) -> list[dict[str, Any]]:
+        """Free queued rows at/below `bury_threshold` (admin audit)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, text, created_at, score FROM ("
+                "SELECT id, text, created_at, "
+                "(SELECT COALESCE(SUM(v.value), 0) FROM request_votes v "
+                "WHERE v.request_id = requests.id) AS score "
+                "FROM requests WHERE status='queued' AND priority=0) "
+                "WHERE score <= ? ORDER BY score ASC, id ASC LIMIT ?",
+                (int(bury_threshold), limit)).fetchall()
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------- paid priority (PAYMENT §3)
     def add_paid_request(self, text: str, summary: str | None = None) -> dict[str, Any]:

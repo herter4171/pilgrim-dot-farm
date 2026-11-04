@@ -102,6 +102,32 @@ else
     fail "7 POST /api/requests: status=$code [$ctype]"
 fi
 
+# 7b. Community voting routes are proxied, not edge-404ed (VOTING.md §2):
+#     a vote on an unknown id reaches the origin and returns its 404 JSON,
+#     no-store (a POST is never cached).
+code=$(curl -sS -D "$TMP/vh" -o "$TMP/vb" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -d '{"voter_id":"00000000000000000000000000000000","value":1}' \
+    "$EDGE/api/requests/999999/vote")
+cc=$(grep -i '^cache-control:' "$TMP/vh" | tr -d '\r')
+if [ "$code" = "404" ] && printf '%s' "$cc" | grep -qi "no-store"; then
+    pass "7b POST vote unknown id -> 404 no-store (proxied)"
+else
+    fail "7b vote: status=$code [$cc]"
+fi
+
+# 7c. Rating route proxied; a bad body is the origin's 422 (no row written).
+code=$(curl -sS -D "$TMP/rh2" -o "$TMP/rb2" -w '%{http_code}' \
+    -H 'Content-Type: application/json' \
+    -d '{"voter_id":"00000000000000000000000000000000","epoch":"x","seq":1,"stars":9}' \
+    "$EDGE/api/station/rating")
+cc=$(grep -i '^cache-control:' "$TMP/rh2" | tr -d '\r')
+if [ "$code" = "422" ] && printf '%s' "$cc" | grep -qi "no-store"; then
+    pass "7c POST rating bad body -> 422 no-store (proxied)"
+else
+    fail "7c rating: status=$code [$cc]"
+fi
+
 # 11. Optional tailnet isolation (SPLIT_PLAN Step 10.4). Set ORIGIN_TS_IP to
 #     the origin's tailnet IP (`tailscale ip -4 pilgrim-origin` on the edge).
 #     Proves a compromised edge can reach only the gateway's :443.
@@ -154,7 +180,7 @@ done
 
 printf '\n'
 if [ "$FAIL" -eq 0 ]; then
-    echo "cutover checks 1-7 passed"
+    echo "cutover checks 1-7c passed"
     exit 0
 fi
 echo "cutover checks FAILED"

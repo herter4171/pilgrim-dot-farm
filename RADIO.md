@@ -102,6 +102,21 @@ when already-published future playback changes). A Textual **DJ console** (see
 browser stays the only audio engine (§9.2). Public request-line behaviour is
 unchanged and separate from privileged DJ mutations (§11).
 
+**Idle and wake (IDLE.md).** The playhead runs on the origin clock, so with
+nobody listening it would burn through one-shot inventory and keep the
+producers working for an empty room. With `idle.enabled` (default), when no
+player has heartbeated for `idle.after_s` the scheduler **freezes**: the
+already-rendered committed window (≤ `committed_lookahead_s`) stays exactly
+as it is, production pauses (listener requests excepted, §6.1), and `on_air`
+stays true (the window is still playable, so PLAY is never disabled). The
+first `GET /api/station/program` (PLAY) or heartbeat **thaws** it
+synchronously: the playhead resumes where it stopped, stale time-bound future
+rows are dropped, song-after-song gaps are bridged with words, the revision
+bumps, and the same response returns a full playable window. `/api/health`,
+`/api/station/state`, `/api/requests`, `/api/visitors` and media never wake it
+(idle pages, bots and smoke checks poll those). `idle.enabled: false` restores
+the always-running behaviour exactly.
+
 ---
 
 ## 4. Content types
@@ -237,6 +252,13 @@ Constraints (applied before drawing):
   already pass it. Spacing and the wait factor read the persisted
   `last_aired_at` wall clock, not an in-memory air map, so a restart keeps the
   rotation instead of re-airing the oldest song first.
+  **Ratings (VOTING.md Step 8, off by default):** when
+  `ratings.rotation_weight` is true, a song with at least
+  `rotation_min_votes` ratings has its tier-2 weight multiplied by
+  `clamp(avg / 3, 0.25, 1.5)` — a 3-turkey song is neutral, a 5-turkey song
+  gets half again. It is a store read only (no time/random), never breaks
+  spacing and never overrides the starvation guard. The shipped config has it
+  off.
 - **Words between songs.** Every pair of songs has at least one voice item
   between them: a `liner` / station ID, `dj_talk`, a `field_report`, or the
   next song's own `intro`. Commercials and news alone don't count. While no
@@ -353,6 +375,24 @@ Constraints (applied before drawing):
   epoch/revision/current occurrence + availability, and applied as a
   **prepared cutover** (§5.5) built only from already-rendered inventory — never
   a production call under the scheduler lock.
+- **Frozen playhead (IDLE.md).** `Scheduler.freeze()` pins `position()` at its
+  current value (`_frozen_at`); `commit_lookahead()` while frozen only splices
+  ready listener requests and returns (no fill, no trim: the window is static,
+  and consuming one-shot inventory for airtime nobody hears is waste).
+  `thaw()` shifts `_offset` by the frozen span so playback resumes exactly
+  where it stopped, then revalidates the committed future for the new wall
+  time: every future `time_check` and every future row whose `expires_at` has
+  passed for its new slot wall is dropped (`time_check` items already expire
+  at their bucket's end; the explicit type check is a belt-and-braces for an
+  emergency read rendered without one). Dropped one-shots are spent, not
+  returned to the pool (§5.5). Where a drop leaves a song directly after a
+  song, `_pick_callout_fallback()` inserts a liner/station ID (fresh seqs
+  above the high-water mark, tail renumbered; §5.2). Anything dropped or
+  inserted bumps the revision once; then the window is topped up from
+  already-rendered inventory only. A request song can never be dropped
+  (songs are evergreen) and the **on-air row is never revalidated**: a stale
+  clock read that is already playing out finishes, because dropping it would
+  mean dead air.
 
 ### 5.4 Fallback chain
 
@@ -846,6 +886,22 @@ download never touches playback. The site header/browser title retain
 the station name.
 - **REQUEST LINE**: the request form + active queue, then a **RECENTLY PLAYED
   FOR YOU** list of the three most recent serviced/airéd requests.
+  The queue table is Request / Title / Status / **Votes** (VOTING.md): each
+  free row has ↑ score ↓ (40 px boxes with a 44 px hit area; pressed = filled
+  in the arrow's own colour, un-pressed = outlined; the score is display-only
+  once the row is in flight), paid rows show no buttons, and a buried row
+  reads `buried`. The queue scrolls in a 260 px box with a pinned header, a
+  thin visible scrollbar and a bottom gradient while there is more below
+  (`has-more`). On phones the Status column folds under the Title (three
+  visual columns) and nothing scrolls horizontally down to 320 px.
+- **RATE THIS SONG** (VOTING.md): a row above the cover art with five turkey
+  buttons (44 px targets, outlined → filled) and the on-air song's lifetime
+  aggregate (`avg · n`). It is open only while that song is audible: the
+  server decides (`POST /api/station/rating` 409s otherwise) and the client
+  hides it from the same audio-clock `pd:nowplaying` signal as the label
+  (§9.2). The row keeps its min-height when disabled, so the art, PLAY row
+  and meter never move. A stored vote is restored per airing; hover/focus
+  previews the level; arrow keys move between turkeys.
 - **MODEL CREDITS**: credits the five production/dev models plus Kokoro-82M,
   each model name linking to its Hugging Face model card in a new tab (see
   MODELS.md for the on-air attribution copy; DeepSeek is a development credit
@@ -872,6 +928,11 @@ the station name.
 
 - The `AudioContext` is created inside the PLAY click handler (satisfies
   autoplay policy).
+- **`pd:nowplaying` (VOTING.md).** `player.js` dispatches a `CustomEvent` on
+  `document` from the same audio-clock decision as the song label: detail =
+  `{epoch, seq, media_id, title, artist}` for the audible named song, else
+  `null` (also on STOP). `rating.js` listens to it and never touches audio; it
+  polls `/api/station/state` every 5 s only while its row is enabled.
 - Fetch the committed program; keep the **next 2 items fetched and decoded**
   ahead of the current one, and keep decoding further (up to 5 ahead) while
   that holds less than 60 s of scheduled audio, so a run of short talk and
@@ -971,9 +1032,11 @@ refill target.
 | GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, url, art_url, type, duration_s, sfx, title, artist}`. `art_url` is the song's cover on CloudFront (`public_base_url + "/" + art_s3_key`) once uploaded, else `""` — there is no origin art fallback (ALBUM_ART.md Step 7); non-song items always send `""`. `url` is where the audio lives: the CloudFront URL once the item is in S3, else `/api/media/<id>` (§8.4). `sfx` is a list (usually empty) of overlays to play over that item: `{media_id, url, cue, kind, offset_s, duration_s, gain, duck}`. `title`/`artist` come from the referenced inventory item on both initial and incremental responses, normalized to empty strings when absent (song label, COSMETIC_PATCHING §3). |
 | POST | `/api/station/heartbeat` | `{seq, media_id, position, type}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events |
 | GET | `/api/media/<id>` | Transitional fallback (§8.4): the item's file from the origin library (`audio/mpeg` for MP3, `audio/flac` for a not-yet-migrated FLAC). Browsers use it only for items without an `s3_key` |
-| GET | `/api/health` | Admin: backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report`, `promo` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate, and `art` = `{backend: ok\|down\|busy\|disabled, with_art, without_art}`. Public listener: `{on_air, art: {backend}, time}` only — no DB read, no FLUX probe (ALBUM_ART.md Step 5) |
+| GET | `/api/health` | Admin: backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report`, `promo` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate, `art` = `{backend: ok\|down\|busy\|disabled, with_art, without_art}`, and `idle` = `{idle, since, wakes}` (IDLE.md: the frozen playhead, when it began, and how many wakes this process has served). Public listener: `{on_air, art: {backend}, time}` only — no DB read, no FLUX probe, and **no `idle` field** (the browser's OFF AIR logic must not see idle; `on_air` stays true while frozen) (ALBUM_ART.md Step 5) |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
-| GET | `/api/requests` | Request board: `{queue: [{text, status, paid, stage, song_title}], recent: [{text, song_title, song_artist, paid, wait_s}], cap}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); recent = **last 5** aired. The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `wait_s` (Prep Time) is whole seconds from `prep_started_at` — the moment lyrics/brief writing began — to `aired_at`; time spent in line or waiting for the station to come back is not prep, and a row with no recorded writing start (aired before that column existed) sends `null`, which the page renders as an em dash (`—`) — measured-or-nothing, never queue idle dressed up as prep. `POST` answers `line_full: true` when the free line is at `free_queue_max` |
+| GET | `/api/requests` | Request board: `{queue: [{id, text, status, paid, stage, song_title, score, votable, buried}], recent: [{text, song_title, song_artist, paid, wait_s}], cap, voting_enabled}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); `score` is the vote sum, `votable` false for paid rows or when `voting.enabled` is false, `buried` true for a free queued row at/below `voting.bury_threshold` (VOTING.md §1); recent = **last 5** aired, never scored (no retrospective voting). The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `wait_s` (Prep Time) is whole seconds from `prep_started_at` — the moment lyrics/brief writing began — to `aired_at`; time spent in line or waiting for the station to come back is not prep, and a row with no recorded writing start (aired before that column existed) sends `null`, which the page renders as an em dash (`—`) — measured-or-nothing, never queue idle dressed up as prep. `POST` answers `line_full: true` when the free line is at `free_queue_max` |
+| POST | `/api/requests/{id}/vote` | VOTING.md: `{voter_id, value}` where `voter_id` is the browser's 32-hex id and `value` ∈ {−1, 0, +1} (0 retracts). Upsert per `(request_id, voter_id)`; only free rows in `queued/producing/ready` are votable. `200 {ok, score, mine, open}`; `404 not_found`; `409 {code: voting_closed\|not_votable, score}`; `422` bad body/id; `429` rate limit or `too_many_voters` (max distinct ids per IP per request); `404` when `voting.enabled` is false. `no-store` |
+| POST | `/api/station/rating` | VOTING.md: `{voter_id, epoch, seq, stars 1-5}` for the on-air song. The window is server-authoritative (epoch must match, `seq` must be the on-air song or the song that just ended within `ratings.grace_s`; a frozen station is closed). `200 {ok, item_id, count, avg, mine}`; `409 {code: rating_closed}`; `422`; `429`; `404` when `ratings.enabled` is false. `no-store` |
 | POST | `/api/paid-requests` | Paid priority request `{text}` (PAYMENT.md Step 12b): rate limit -> normalise -> operator-comp check (first line == `PAID_OVERRIDE_TOKEN`, stripped) -> prefilter. Prefilter reject: `{ok:false, rejected:true, reason}`. Otherwise the row is stored as `checking` and `{ok:true, token, stage:"moderation"}` returns at once; moderation, the copied-lyrics screen and the board summary run in the background. `503 {paid_closed:true}` when payments are inactive (comps still accepted) |
 | GET | `/api/paid-requests/{token}` | `{status, position, stage, comped, reason?}` (`no-store`): `stage` is `moderation\|copyright\|ready` while `status=checking`; `reason` only when `rejected`. Reconciles an `awaiting_payment` row with Stripe when payments are active |
 | POST | `/api/paid-requests/{token}/checkout` | Only for a non-comped row at `checking/ready`: claims it once (`-> awaiting_payment`) and creates the Checkout Session → `{ok, client_secret, publishable_key, expires_at}`; `client_secret` is returned once and never stored. `409` not ready / already claimed, `424` Stripe failure (row `abandoned`), `503` payments inactive |
@@ -981,7 +1044,8 @@ refill target.
 | POST | `/api/visitors` | Register the server-derived client IP; returns `{unique_visitors: <nonnegative int>}` with `Cache-Control: no-store`. One call per page load; media/heartbeat/health/request calls never hit it. Always 200: an unresolvable identity or disabled counter returns the current count without registering (RADIO §14) |
 | POST | `/api/admin/dj/play` | Operator: `{media_id}` — air this song next. Splices a ready, airable song into the slot after whatever is playing, with the §5.2 words-between-songs bridges, and bumps the revision so clients refetch (`{ok, seq, revision}`). Not the full command service (no `command_id`/epoch/revision handshake): a narrow operator convenience that creates no request and never waits on production. `403 dj_disabled` when `dj.enabled` is false, `409 cannot_place` for a non-song, a missing media file, or no legal slot |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
-| GET | `/api/station/state` | Cheap station state for DJ-aware clients: `{epoch, revision, current_seq, current_type, current_url, current_art_url, current_offset_s, server_time, prepared_cutover, listeners}` (TUI.md §4); `current_url` is the on-air item's audio URL (§8.4) and `current_art_url` its cover (same rule as `program`'s `art_url`) — with `current_offset_s` it says what is playing and how far in; `listeners` is the live listener count (§14) |
+| GET | `/api/station/state` | Cheap station state for DJ-aware clients: `{epoch, revision, current_seq, current_type, current_url, current_art_url, current_offset_s, server_time, prepared_cutover, listeners, idle, rating}` (TUI.md §4); `current_url` is the on-air item's audio URL (§8.4) and `current_art_url` its cover (same rule as `program`'s `art_url`) — with `current_offset_s` it says what is playing and how far in; `listeners` is the live listener count (§14); `idle` is the frozen playhead (IDLE.md) and `rating` = `{open, count, avg}` for the on-air song's current window + lifetime aggregate, or `null` when `ratings.enabled` is false (voter-independent, so the shared `max-age=1` cache stays correct) |
+| GET | `/api/admin/voting?limit=` | Audit only (VOTING.md §2, behind `require_dj`): `{votes, ratings, buried}` from the recent vote/rating rows and the currently buried free requests. Never exposes voter ids or IPs |
 | GET | `/api/station/program` | Extended: `?epoch=E&revision=R&after_seq=N`; response adds `epoch`, `revision`, `reset`, `server_time` (`reset: true` = stale cursor, replace the whole list) |
 | GET | `/api/admin/dj/state` | DJ console state: `{epoch, revision, server_time, on_air, current, upcoming, pending_commands, catalogue_revision, player_status}` — no backend probes |
 | GET | `/api/admin/dj/songs` | Sortable/searchable song catalogue: `q, sort=title|artist, direction, cursor, limit` → `{items, next_cursor, catalogue_revision}`; allowlisted sort expressions, bound SQL, stable tie-breaker |
@@ -1002,7 +1066,9 @@ phrase jobs are.
 The **public** listener (`station.host:station.port`; loopback `:5080` on the origin)
 serves only the edge-facing routes: `GET /api/station/program`,
 `GET /api/station/state`, `POST /api/station/heartbeat`,
-`GET /api/media/{id}`, `GET|POST /api/requests`, `POST /api/visitors`, the
+`GET /api/media/{id}`, `GET|POST /api/requests`,
+`POST /api/requests/{id}/vote`, `POST /api/station/rating`,
+`POST /api/visitors`, the
 paid routes (`POST /api/paid-requests`, `GET /api/paid-requests/{token}`,
 `POST /api/paid-requests/{token}/checkout`, `POST /api/stripe/webhook`), and
 `GET /api/health`. Its `/api/health` returns only
@@ -1019,6 +1085,15 @@ reachable through an edge; production binds the admin listener to loopback.
 The static client is mounted on the public listener only when
 `station.serve_web` is true (single-host runs); edges serve `pilgrim/web/`
 themselves.
+
+**Idle (IDLE.md).** With `idle.enabled`, the station freezes the playhead
+and pauses production when no player has heartbeated for `idle.after_s`
+(§3). Only `GET /api/station/program`, `POST /api/station/heartbeat` and the
+admin DJ mutation (`POST /api/admin/dj/play`) wake it; `GET /api/health`,
+`GET /api/station/state`, `GET /api/requests`, `POST /api/visitors` and
+`GET /api/media/{id}` never do (idle pages, bots and smoke checks poll
+those). Both nginx hops allowlist the two voting paths; the origin's own
+limiter (`voting/ratings.per_client_per_10min`) is the per-listener ceiling.
 
 **Caching (SPLIT_PLAN §2).** The origin states cache intent once, so edges and
 Cloudflare only have to honor it:
@@ -1204,6 +1279,26 @@ visitors:
   trusted_proxies: [127.0.0.1, "::1"]  # peers (IP or CIDR) whose X-Real-IP we trust (§14)
   listener_timeout_s: 15   # live listener drops after this long without a heartbeat
   max_listeners: 1000      # cap on tracked player IDs
+
+idle:                      # IDLE.md: freeze playout + pause production with no listeners
+  enabled: true
+  after_s: 120             # no heartbeat for this long -> idle (>= visitors.listener_timeout_s)
+  check_s: 5               # how often the station checks (wake is immediate, on request)
+  producer_poll_s: 30      # paused producer loops look again this often
+
+voting:                    # VOTING.md: request-queue votes
+  enabled: true
+  per_client_per_10min: 60   # vote POSTs per canonical client IP
+  max_voters_per_ip: 3       # distinct voter ids per IP per request
+  bury_threshold: -3         # free queued request at/below this score is not produced; null = off
+
+ratings:                   # VOTING.md: five-turkey song ratings
+  enabled: true
+  per_client_per_10min: 60
+  max_voters_per_ip: 3
+  grace_s: 5                 # a rating may land this long after the song ended
+  rotation_weight: false     # Step 8 (off): let ratings weight the recycled-song draw
+  rotation_min_votes: 5
 
 audio:
   lufs: -16
@@ -1418,7 +1513,7 @@ them. The flag is set by `python -m pilgrim.tools.audit_library` (OVERHAUL 2.2)
 or `store.retire_item(id, reason)` (reason merged into `meta_json`).
 
 The `requests` table carries lifecycle columns (`attempts`, `song_item_id`,
-`intro_item_id`, `updated_at`, `prep_started_at`) and statuses `queued -> producing -> ready ->
+`intro_item_id`, `updated_at`, `prep_started_at`, `claimed_at`) and statuses `queued -> producing -> ready ->
 aired`, plus `rejected`, `evicted`, `failed` (legacy `serviced` reads as
 `aired`; OVERHAUL 4.4). `prep_started_at` is stamped by `mark_request_writing`
 when the request gets its turn at the brief LLM and the lyrics/brief are
@@ -1449,12 +1544,36 @@ backlog. Every request song gets an intro that opens with a listener-request
 shout-out: two LLM-written tries, then a scripted "Request line! You asked, we
 made it! Here's <title>, by <artist>!" rendered directly.
 
+**Community votes (VOTING.md).** Two additive tables, created idempotently on
+open (an old `station.db` gains them and `requests.claimed_at` without a
+rewrite):
+
+- `request_votes(request_id, voter_id, ip, value, created_at, updated_at)` —
+  PRIMARY KEY `(request_id, voter_id)`, `value` ∈ {−1, +1}; a retraction (0)
+  deletes the row. `ip` is the canonical client IP, stored for the per-target
+  abuse cap only.
+- `song_ratings(id, item_id, epoch, seq, voter_id, ip, stars, created_at,
+  updated_at)` — `UNIQUE (epoch, seq, voter_id)`: one rating per **airing**,
+  `stars` 1–5 (`CHECK`), `item_id` feeds the lifetime aggregate.
+
+Aggregates are computed from these tables on every read (SUM/COUNT/AVG),
+never cached on `requests`/`items` (VOTING.md V9), so retractions and
+re-votes need no bookkeeping. **Queue order** (one `store.queue_order()`
+helper, used everywhere): `priority DESC`, then in-flight
+(`producing`/`ready`) before free `queued`, then free `queued` by vote score
+DESC, then `COALESCE(paid_at, claimed_at, created_at)` ASC, `id` ASC. This
+supersedes PAYMENT.md §3.2's pure FIFO; with no votes it is identical.
+`claimed_at` is stamped once by `mark_request_producing` (kept across
+retries), so in-flight order is claim order and a finished request's
+`_wait_turn` order agrees with the splice. `pending_requests` excludes buried
+free rows so the scheduler does not hold the committed window for a request
+nothing will produce.
+
 **Paid requests (PAYMENT.md).** Paid rows have `priority=1` and the payment
 columns (`public_token`, `paid_at`, `amount_cents`, `currency`,
 `checkout_session_id`, `payment_intent_id`, `livemode`, `reconciled_at`,
 `summary`). Step 12b adds `stage TEXT` and `comped INTEGER DEFAULT 0` and the
-pre-payment status `checking` (stages `moderation -> copyright -> ready`):
-`checking -> rejected` (moderation / copied lyrics / crashed check),
+pre-payment status `checking` (stages `moderation -> copyright -> ready`):`checking -> rejected` (moderation / copied lyrics / crashed check),
 `checking/ready -> awaiting_payment` (checkout claimed once), or, for an
 operator comp, `checking -> queued` with `comped=1`, `amount_cents=0` and no
 Stripe session. `checking` rows are never on the board and are `abandoned` on
@@ -1564,8 +1683,7 @@ Random selection is chosen for Phase 1 partly because it is easy to test.
   `liners.repeat_gap_items`/`repeat_gap_s`; recycled songs air with their named
   intro when one exists.
 
-**Scheduler unit tests (PRIORITIES §6):**
-- Restart regression: a recycled pool with no persisted history does not open
+**Scheduler unit tests (PRIORITIES §6):**- Restart regression: a recycled pool with no persisted history does not open
   with the lowest id; across seeds the first pick favors the newest third.
 - No lockup: 41 recycled songs over 6 h — every song airs at least once.
 - Fresh LIFO: the newer of two fresh songs airs first, and both air before any
@@ -1576,6 +1694,58 @@ Random selection is chosen for Phase 1 partly because it is easy to test.
   floor is not picked.
 
 **Seeded RNG:** identical seeds produce identical programs.
+
+**Idle (IDLE.md, `test_scheduler.py` / `test_producer.py` / `test_server.py`):**
+- `freeze()` holds `position()`/`coverage()`/`on_air()` for an hour; `thaw()`
+  resumes at the same offset into the same item (no jump) and is a no-op when
+  not frozen (no revision bump).
+- A 2 h freeze drops future `time_check` and expired `news` rows, keeps every
+  song/liner/commercial, bumps the revision once, and the dropped one-shots
+  are spent (not `fresh`). A drop that leaves song-after-song inserts a
+  liner/station ID; with no voice inventory the songs stay adjacent and
+  nothing crashes.
+- A ready request submitted during a freeze is spliced into the frozen window
+  and is the next song slot after thaw; freeze/thaw with nothing dropped
+  leaves the seeded picks identical.
+- `test_server.py`: no heartbeat for `after_s` freezes (`state.idle: true`,
+  admin `health.on_air: true`, `idle.wakes: 0`); `/api/health`,
+  `/api/station/state`, `/api/requests`, `/api/visitors` and `/api/media/{id}`
+  never wake; a program fetch or heartbeat wakes (`idle.wakes: 1`) with a
+  playable window at the frozen offset; `idle.enabled: false` never freezes;
+  a stale `time_check` is gone after a 2 h frozen wake; the public health has
+  no `idle` field.
+- Producers: `song_loop` picks a queued request but no stock while idle;
+  `run()`/`news_loop()`/`sfx_loop()` make no calls and wait
+  `producer_poll_s`; awake behaviour is unchanged (the default predicate is
+  never idle, so every existing test is unaffected).
+
+**Community voting (VOTING.md, `test_requests.py` / `test_voting.py` /
+`test_producer.py` / `test_server.py`):**
+- Vote upsert/retract, window (`aired`/`rejected`/`evicted`/`failed`/
+  `awaiting_payment` -> `voting_closed`), paid -> `not_votable`, unknown ->
+  `not_found`, the per-IP distinct-voter cap (per request, own vote not
+  counted), and the migration on an old-schema copy.
+- Queue order: votes reorder free `queued` rows; a claimed row stays ahead
+  even when a later free row is voted higher; paid stays first; no votes =
+  the old FIFO (the PAYMENT §3 ordering tests pass unchanged).
+- Bury: a free queued row at/below the threshold is skipped by
+  `queued_requests`/`next_request_to_produce`/`pending_requests` and by the
+  producer, stays on the board with `buried: true`, revives on an upvote, and
+  `null` disables it; paid rows are never votable/buried.
+- Ratings: upsert per `(epoch, seq, voter)`; the same voter can rate the same
+  item again on a new airing; the lifetime aggregate spans airings; stars 0/6
+  rejected by `CHECK`; the IP cap; `rating_window` cases (epoch mismatch,
+  on-air song, grace boundary, future/older seq, intro, non-song, frozen
+  station, splice renumbering).
+- Routes: 200/404/409/422/429 shapes, `no-store` on every mutation, board and
+  state cache headers unchanged, `voting_enabled`/`rating` toggles, admin
+  `/api/admin/voting` 404 on the public app and auth-gated on the admin app.
+- Playwright (`voting.spec.ts`): the rating row is disabled before PLAY,
+  enabled while a song is audible, posts/fills/shows the aggregate, restores
+  from storage on reload, closes after the song ends (409), and STOP
+  disables it; queue votes up/retract/down with the paid row showing no
+  buttons, an aired row leaving the queue, the scroll cue on/off, and no
+  horizontal scroll with 40 px targets at 360/320 px.
 
 **Client gap test** (Playwright, fakes with short items): play 10 min; the
 client records each item's scheduled start vs. the previous item's scheduled
@@ -1588,9 +1758,10 @@ end on the AudioContext clock. Assert contiguity within 1 sample and zero
 - `make split-smoke` runs the real `create_public_app` behind the gateway's
   production allowlist and the local edge. PASS/FAIL covers route hiding, cache
   headers, media MISS→HIT, spoofed client IPs, off air plus recovery at both
-  hops, and the POST-only gateway rate limit.
+  hops, the POST-only gateway rate limit, and (checks 16–17) that the vote and
+  rating paths are proxied (`404`/`422` from the origin) and `no-store`.
 - `make e2e-split` runs the Playwright gap test with the edge as `baseURL`.
-- `pilgrim/deploy/edge/cutover_check.sh` repeats checks 1–7 with curl on an
+- `pilgrim/deploy/edge/cutover_check.sh` repeats checks 1–7c with curl on an
   edge (no Python venv needed).
 
 **QC unit tests:** known-bad files (silent, clipped, truncated, too long) are

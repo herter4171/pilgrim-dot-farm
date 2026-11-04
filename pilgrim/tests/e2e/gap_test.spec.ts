@@ -230,7 +230,16 @@ test("DOWNLOAD MP3 shows only while a named song is audible and saves it", async
   await page.goto("/");
   const dl = page.locator("#dl-mp3");
   await expect(dl, "hidden before PLAY: you have to listen to get it").toBeHidden();
-  const btnBefore = await page.locator("#btn-play").boundingBox();
+  // Position relative to the radio pane: clicking can scroll the tall pane
+  // (#desktop is the scroll container), so a viewport/document y would read a
+  // different value without any layout move. Inside the pane, it cannot.
+  const playY = () => page.evaluate(() => {
+    const btn = document.getElementById("btn-play")!.getBoundingClientRect();
+    const pane = document.querySelector('[data-win="radio"]')!
+      .getBoundingClientRect();
+    return btn.y - pane.y;
+  });
+  const btnBefore = await playY();
 
   await page.click("#btn-play");
   await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 15_000 });
@@ -257,8 +266,8 @@ test("DOWNLOAD MP3 shows only while a named song is audible and saves it", async
   await expect(page.locator("#indicator"), "downloading never stops playback")
     .toHaveClass(/onair/);
 
-  const btnAfter = await page.locator("#btn-play").boundingBox();
-  expect(Math.abs(btnAfter!.y - btnBefore!.y), "PLAY never moves").toBeLessThanOrEqual(0.5);
+  const btnAfter = await playY();
+  expect(Math.abs(btnAfter - btnBefore), "PLAY never moves").toBeLessThanOrEqual(0.5);
 
   await page.click("#btn-play");  // STOP hides it again
   await expect(dl).toBeHidden();

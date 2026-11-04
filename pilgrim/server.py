@@ -32,6 +32,7 @@ from starlette.responses import Response
 from starlette.types import Scope
 
 from pilgrim import dj_contracts as dj
+from pilgrim import voting
 from pilgrim.album_art import ArtWorker
 from pilgrim.config import (
     PAID_OVERRIDE_ENV,
@@ -100,6 +101,12 @@ class Station:
         self.sfx = SfxPipeline(cfg, self.sfx_client, self.media_dir)
         self.clock = Clock()
         self._listeners: dict[str, float] = {}  # player_id -> last heartbeat (clock.now)
+        # IDLE.md (RADIO §3): the playhead freezes and production pauses when
+        # nobody has been listening for `idle.after_s`. Policy lives here; the
+        # mechanics are Scheduler.freeze()/thaw().
+        self._idle_since: float | None = None
+        self._last_listener_at: float = self.clock.now()
+        self.idle_wakes = 0
         self.selector = RandomSelector(self.rng, cfg)
         self.epoch = uuid.uuid4().hex[:12]  # changes on restart (TUI.md §5)
         self.scheduler = Scheduler(cfg, self.db, self.selector, self.clock, self.rng,
@@ -115,7 +122,8 @@ class Station:
         self.producer = Producer(
             cfg, self.db, self.llm, self.kokoro, self.voice, self.songs,
             self.clock, prompts=_load_prompts(cfg), media_dir=self.media_dir,
-            api_key=api_key, rng=self.rng, news_pipeline=self.news, sfx=self.sfx)
+            api_key=api_key, rng=self.rng, news_pipeline=self.news, sfx=self.sfx,
+            idle=self.is_idle)
         # Paid priority requests (PAYMENT.md). Off unless config + keys agree.
         # The keys come from the environment or the repo-root .env fallback
         # (config.stripe_env), so a plain `python -m pilgrim.server` restart
@@ -267,6 +275,11 @@ class Station:
             "song_realtime": round(self.songs.generation_rate, 2),
             "art": self.art_health(),
             "time": time.time(),
+            # IDLE.md D10: operator visibility. `on_air` stays true while frozen
+            # (coverage > 0), so PLAY is never disabled by idle.
+            "idle": {"idle": self.is_idle(),
+                     "since": self._idle_since,
+                     "wakes": self.idle_wakes},
         }
 
     # ------------------------------------------------------------------ program
@@ -326,7 +339,81 @@ class Station:
                 "current_type": ctype, "current_url": url,
                 "current_art_url": art,
                 "current_offset_s": round(offset, 3),
-                "prepared_cutover": None, "listeners": self.active_listeners()}
+                "prepared_cutover": None, "listeners": self.active_listeners(),
+                # IDLE.md D10: public clients can show the freeze (PLAY is never
+                # disabled by it: on_air stays true while coverage > 0).
+                "idle": self.is_idle(),
+                # VOTING.md: the on-air song's rating window + lifetime aggregate
+                # (`null` when ratings are disabled). Voter-independent, so the
+                # shared max-age=1 cache stays correct.
+                "rating": self._public_rating(seq)}
+
+    # ------------------------------------------------------------- idle (IDLE.md)
+    def is_idle(self) -> bool:
+        """True while the playhead is frozen (no listeners for idle.after_s)."""
+        return self.scheduler.frozen
+
+    def wake(self, reason: str) -> None:
+        """Thaw the frozen station. Synchronous by design (IDLE.md D2/rule 1):
+        it only touches already-rendered inventory, so the request that woke it
+        returns a playable programme in the same response. No-op when awake.
+
+        A thaw failure leaves the station frozen (still playable) rather than
+        half-thawed: the next program fetch or heartbeat retries."""
+        if not self.scheduler.frozen:
+            return
+        try:
+            frozen_s = (self.clock.now() - self._idle_since
+                        if self._idle_since is not None else 0.0)
+            dropped = self.scheduler.thaw()
+        except Exception as e:  # noqa: BLE001 - a wake must never break radio
+            log.exception("station.wake_failed: %s", e)
+            return
+        self._idle_since = None
+        self.idle_wakes += 1
+        self._last_listener_at = self.clock.now()
+        log.info("station.wake", extra={"reason": reason,
+                                        "idle_s": round(frozen_s),
+                                        "dropped": dropped})
+
+    def _idle_check(self) -> None:
+        """One idle decision (sync so tests can call it directly)."""
+        if not self.cfg.idle.enabled or self.scheduler.frozen:
+            return
+        if self.active_listeners() > 0:
+            self._last_listener_at = self.clock.now()
+            return
+        if self.clock.now() - self._last_listener_at < self.cfg.idle.after_s:
+            return
+        self.scheduler.freeze()
+        self._idle_since = self.clock.now()
+        log.info("station.idle", extra={"after_s": self.cfg.idle.after_s,
+                                        "coverage_s": round(self.scheduler.coverage(), 1)})
+
+    async def idle_loop(self) -> None:
+        """Freeze when nobody is listening (IDLE.md D1); wake is immediate, on
+        the program/heartbeat/admin request, never on a poll. server.py may use
+        asyncio.sleep; the scheduler may not (hard rule 3)."""
+        while True:
+            try:
+                self._idle_check()
+            except Exception as e:  # noqa: BLE001 - idle must never break radio
+                log.warning("idle check failed: %s", e)
+            await asyncio.sleep(self.cfg.idle.check_s)
+
+    def _public_rating(self, seq: int | None) -> dict | None:
+        """The on-air item's rating window + lifetime aggregate (VOTING.md V10).
+        Zeroes when the on-air row is not a song; null when ratings are off."""
+        if not self.cfg.ratings.enabled:
+            return None
+        st = self.scheduler
+        open_, item_id = voting.rating_window(
+            st, st.epoch, int(seq) if seq is not None else -1,
+            self.cfg.ratings.grace_s)
+        if open_ and item_id is not None:
+            agg = self.db.song_rating(item_id)
+            return {"open": True, "count": agg["count"], "avg": agg["avg"]}
+        return {"open": False, "count": 0, "avg": None}
 
     # ------------------------------------------------------------- listeners
     def _prune_listeners(self) -> None:
@@ -345,6 +432,10 @@ class Station:
         if (player_id in self._listeners
                 or len(self._listeners) < self.cfg.visitors.max_listeners):
             self._listeners[player_id] = self.clock.now()
+            self._last_listener_at = self.clock.now()
+            # IDLE.md D2: a heartbeat is a listener; wake before the handler
+            # reads anything so the response reflects the thawed programme.
+            self.wake("heartbeat")
 
     def active_listeners(self) -> int:
         self._prune_listeners()
@@ -489,6 +580,7 @@ class Station:
         self._tasks.append(asyncio.create_task(self.producer.news_loop()))
         self._tasks.append(asyncio.create_task(self.producer.song_loop()))
         self._tasks.append(asyncio.create_task(self.producer.sfx_loop()))
+        self._tasks.append(asyncio.create_task(self.idle_loop()))
         self._tasks.append(asyncio.create_task(_backfill_paid_summaries(self)))
         if self.publisher is not None:
             self._tasks.append(asyncio.create_task(self.publisher.run()))
@@ -758,6 +850,18 @@ def _add_public_routes(app: FastAPI, station: Station,
     cfg = station.cfg
     _rate_limited = _make_rate_limiter(station)
     _paid_rate_limited = _make_rate_limiter(station, cfg.payments.per_client_per_10min)
+    _vote_rate_limited = _make_rate_limiter(station, cfg.voting.per_client_per_10min)
+    _rating_rate_limited = _make_rate_limiter(station, cfg.ratings.per_client_per_10min)
+
+    def _board() -> dict:
+        """The public board, with the voting fields and bury policy applied
+        (VOTING.md §1/§2). Every handler that returns the board uses this so a
+        mixed-version deploy cannot show a row without its score."""
+        return station.db.request_board(
+            cfg.requests.queue_cap, cfg.requests.max_length,
+            stages=station.producer.request_stage,
+            voting_enabled=cfg.voting.enabled,
+            bury_threshold=cfg.voting.bury_threshold)
 
     @app.get("/api/health")
     async def health_endpoint():
@@ -768,6 +872,10 @@ def _add_public_routes(app: FastAPI, station: Station,
     async def program(after_seq: int | None = Query(default=None, ge=0),
                       epoch: str | None = Query(default=None, max_length=64),
                       revision: int | None = Query(default=None, ge=0)):
+        # IDLE.md D2: PLAY is a program fetch with no cursor. Wake first, then
+        # build the response, so the waking request already gets a playable
+        # programme (thaw only touches rendered inventory: hard rule 1).
+        station.wake("program")
         return JSONResponse(station.program_response(after_seq, epoch, revision),
                             headers={"Cache-Control": "public, max-age=1"})
 
@@ -832,9 +940,7 @@ def _add_public_routes(app: FastAPI, station: Station,
             # waiting one. Paid requests are never capped.
             log.info("request.line_full",
                      extra={"limit": cfg.requests.free_queue_max})
-            board = station.db.request_board(cfg.requests.queue_cap,
-                                             cfg.requests.max_length,
-                                             stages=station.producer.request_stage)
+            board = _board()
             return {"ok": False, "rejected": True, "line_full": True,
                     "reason": "The request line is full right now. Try again in "
                               "a little while, or jump the line with a priority "
@@ -853,9 +959,7 @@ def _add_public_routes(app: FastAPI, station: Station,
             log.info("request.moderated", extra={
                 "request_id": req["id"], "allowed": False, "reason": pref,
                 "prefilter": True, "duration_ms": 0})
-            board = station.db.request_board(cfg.requests.queue_cap,
-                                             cfg.requests.max_length,
-                                             stages=station.producer.request_stage)
+            board = _board()
             return {
                 "ok": False, "rejected": True, "request": req, "reason": pref,
                 "queue": board["queue"], "recent": board["recent"],
@@ -871,9 +975,7 @@ def _add_public_routes(app: FastAPI, station: Station,
             "request_id": req["id"], "allowed": allowed, "reason": reason,
             "prefilter": False,
             "duration_ms": round((time.monotonic() - t0) * 1000, 1)})
-        board = station.db.request_board(cfg.requests.queue_cap,
-                                         cfg.requests.max_length,
-                                         stages=station.producer.request_stage)
+        board = _board()
         return {
             "ok": allowed,
             "rejected": not allowed,
@@ -887,12 +989,41 @@ def _add_public_routes(app: FastAPI, station: Station,
 
     @app.get("/api/requests")
     async def list_requests():
-        board = station.db.request_board(cfg.requests.queue_cap,
-                                         cfg.requests.max_length,
-                                         stages=station.producer.request_stage)
+        board = _board()
         return JSONResponse({**board, "cap": cfg.requests.queue_cap,
-                             "paid_enabled": station.payments_active},
+                             "paid_enabled": station.payments_active,
+                             "voting_enabled": cfg.voting.enabled},
                             headers={"Cache-Control": "public, max-age=2"})
+
+    # ------------------------------------------- community voting (VOTING.md §2)
+    @app.post("/api/requests/{request_id}/vote")
+    async def vote_request(request_id: int, payload: voting.VoteIn,
+                           request: Request):
+        """+1/-1/0 (retract) on a free request. POST only: the gateway has no
+        limit_req zone for PUT/DELETE (VOTING.md §0.1)."""
+        if not cfg.voting.enabled:
+            raise HTTPException(404, "not found")
+        if _vote_rate_limited(request):
+            raise HTTPException(429, "Easy there — a few votes every ten minutes.")
+        status, body = voting.cast_vote(
+            station.db, cfg, request_id, payload.voter_id, payload.value,
+            station._client_ip(request))
+        return JSONResponse(status_code=status, content=body,
+                            headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/station/rating")
+    async def rate_song(payload: voting.RatingIn, request: Request):
+        """Five turkeys for the on-air song. The window is server-authoritative
+        (VOTING.md V8); the client only hides the control."""
+        if not cfg.ratings.enabled:
+            raise HTTPException(404, "not found")
+        if _rating_rate_limited(request):
+            raise HTTPException(429, "Easy there — a few ratings every ten minutes.")
+        status, body = voting.cast_rating(
+            station.db, cfg, station.scheduler, payload,
+            station._client_ip(request))
+        return JSONResponse(status_code=status, content=body,
+                            headers={"Cache-Control": "no-store"})
 
     # ------------------------------------------------- paid priority (PAYMENT §4)
     @app.post("/api/paid-requests")
@@ -1062,6 +1193,9 @@ def _add_admin_routes(app: FastAPI, station: Station) -> None:
         if not cfg.dj.enabled:
             raise HTTPException(403, detail={
                 "code": "dj_disabled", "detail": "DJ control is disabled"})
+        # IDLE.md D2: an operator mutation is a human presence; wake first so
+        # the splice lands in a running programme, not a frozen window.
+        station.wake("dj")
         seq = station.scheduler.place_song_next(int(payload.media_id))
         if seq is None:
             raise HTTPException(409, detail={
@@ -1069,6 +1203,16 @@ def _add_admin_routes(app: FastAPI, station: Station) -> None:
                 "detail": "not an airable song, or no legal slot this cycle"})
         return {"ok": True, "seq": seq,
                 "revision": station.scheduler.revision}
+
+    @app.get("/api/admin/voting", dependencies=[Depends(require_dj)])
+    async def admin_voting(limit: int = Query(default=100, ge=1, le=500)):
+        """Audit only (VOTING.md §2): recent votes and ratings, plus the
+        currently buried free rows. Never exposes voter ids or IPs."""
+        threshold = cfg.voting.bury_threshold
+        return {"votes": station.db.recent_votes(limit),
+                "ratings": station.db.recent_ratings(limit),
+                "buried": (station.db.buried_requests(threshold, limit)
+                           if threshold is not None else [])}
 
     @app.get("/api/admin/dj/state", response_model=dj.DjState,
              dependencies=[Depends(require_dj)])

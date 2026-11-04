@@ -1,7 +1,10 @@
 # AGENTS.md — Pilgrim Dot Farm Radio
 
-Active work plan: ALBUM_ART.md (cover art per song via the local FLUX 3
-server; start at Step 1). PAYMENT.md is paused (Steps 0–12b shipped).
+Active work plans: IDLE.md (freeze playout + pause production when nobody is
+listening; one agent, Steps 1–5) and VOTING.md (turkey song ratings +
+request-queue votes + mobile queue; agents A–E, Steps 1–8). IDLE.md and
+VOTING.md Agent A may run concurrently in separate worktrees. ALBUM_ART.md
+(Steps 1–11) and PAYMENT.md (Steps 0–12b) are shipped and stay as reference.
 SPLIT_PLAN.md is complete (Steps 1–10) and stays the reference for
 the edge/gateway/origin layout.
 
@@ -261,3 +264,8 @@ continue.
   Encrypt) chain needs 2. Too shallow = edge serves off-air (docs/backends.md §8).
 - **`items.media_path` is absolute.** Moving the checkout or library means
   rewriting the prefix in `station.db` (RUNBOOK §3–4), after a `.backup`.
+- **A probe of `/api/station/program` wakes a frozen station** (IDLE.md):
+  `GET /api/station/program` and a heartbeat are wake signals. For monitoring
+  use `/api/station/state` or `/api/health` (the admin one reports
+  `idle: {idle, since, wakes}`), which never wake it. `make split-smoke`'s
+  program probe does wake it; that is fine.

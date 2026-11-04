@@ -344,6 +344,30 @@ def run(edge_url: str, gateway_url: str, state: Path,
     if max_check >= 10:
         record("10 gateway rate limit: POST 429s from nginx, GET board unlimited", check_10)
 
+    if max_check >= 16:
+        def check_16():
+            # VOTING.md §2: the vote route is proxied end to end (the origin's
+            # 404, not the edge's) and never cached.
+            r = edge.post("/api/requests/999999/vote",
+                          json={"voter_id": "0" * 32, "value": 1})
+            return (r.status_code == 404
+                    and r.headers.get("cache-control") == "no-store"
+                    and r.headers.get("content-type", "").startswith(
+                        "application/json"),
+                    f"{r.status_code} {r.headers.get('cache-control')}")
+
+        def check_17():
+            # A bad rating body is the origin's 422 (no row written), no-store.
+            r = edge.post("/api/station/rating",
+                          json={"voter_id": "0" * 32, "epoch": "x",
+                                "seq": 1, "stars": 9})
+            return (r.status_code == 422
+                    and r.headers.get("cache-control") == "no-store",
+                    f"{r.status_code} {r.headers.get('cache-control')}")
+
+        record("16 vote unknown request -> 404 no-store (proxied)", check_16)
+        record("17 rating bad body -> 422 no-store (proxied)", check_17)
+
     if max_check >= 11:
         def check_11():
             r = edge.post("/api/stripe/webhook", content=b"{}",
@@ -397,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gateway", default="http://127.0.0.1:18090")
     ap.add_argument("--state-dir", type=Path,
                     default=Path("/tmp/pilgrim-split-local"))
-    ap.add_argument("--max-check", type=int, default=10, choices=range(1, 16),
+    ap.add_argument("--max-check", type=int, default=17, choices=range(1, 18),
                     metavar="1..15",
                     help="stop after this check (production cutover uses 7)")
     args = ap.parse_args(argv)

@@ -14,7 +14,7 @@ import itertools
 import json
 import logging
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -113,11 +113,13 @@ class SongJob:
         return bool(self.req and self.req.get("priority"))
 
     def queue_key(self) -> tuple:
-        """Position in queue order (store.QUEUE_ORDER: paid first, then by
-        paid_at / created_at, then id)."""
+        """Position in queue order (store.queue_order: paid first, in flight
+        by claim time, then free by vote score, then FIFO)."""
         r = self.req or {}
         return (-int(r.get("priority") or 0),
-                str(r.get("paid_at") or r.get("created_at") or ""), int(r.get("id") or 0))
+                str(r.get("paid_at") or r.get("claimed_at")
+                    or r.get("created_at") or ""),
+                int(r.get("id") or 0))
 
 # Copy brief for the emergency station IDs (RADIO §8.3): timeless on purpose,
 # since they may air any hour, any day.
@@ -132,7 +134,8 @@ class Producer:
                  voice: VoicePipeline, songs: SongPipeline, clock: Clock,
                  prompts: dict[str, str], media_dir: Path, api_key: str, rng: RNG,
                  db=None, news_pipeline: NewsPipeline | None = None,
-                 clock_time=None, sfx: SfxPipeline | None = None) -> None:
+                 clock_time=None, sfx: SfxPipeline | None = None,
+                 idle: Callable[[], bool] | None = None) -> None:
         self.cfg = cfg
         self.store = store
         self.llm = llm
@@ -156,6 +159,10 @@ class Producer:
         self._last_stock_song_at: float | None = None
         # one-shot log so a capped stock worker doesn't spam every 20 s
         self._stock_cap_logged = False
+        # IDLE.md: station policy predicate (no listeners -> idle). Default
+        # never idle so tests, seed and the sim behave exactly as before.
+        self.idle: Callable[[], bool] = idle or (lambda: False)
+        self._idle_stock_logged = False
         # song jobs in flight under song_loop (RADIO §6.1): task -> job
         self._jobs: dict[asyncio.Task, SongJob] = {}
         # song briefs one at a time (requests and stock): parallel briefs
@@ -878,6 +885,12 @@ class Producer:
     async def run(self) -> None:
         log.info("producer running")
         while True:
+            if self.idle():
+                # IDLE.md D6: nobody is listening, so voice refill pauses.
+                # Listener requests keep producing (song_loop) — a requester
+                # is on the page waiting; a paid one has paid.
+                await self._sleep(self.cfg.idle.producer_poll_s)
+                continue
             try:
                 # words between songs first (§5.2): station IDs, liners, DJ
                 # talk; SFX render in their own worker (sfx_loop)
@@ -890,19 +903,22 @@ class Producer:
                 await self.ensure_field_reports()
             except Exception as e:
                 log.warning("producer voice cycle error: %s", e)
-            await asyncio.sleep(6.0)
+            await self._sleep(6.0)
 
     async def sfx_loop(self) -> None:
         """SFX worker (SFX.md §7.3): attaches overlays to stored talk, then
         fills the evergreen stock pool. One render at a time; the backend is
         slow (docs/backends.md §7) and nothing waits on it."""
         while True:
+            if self.idle():
+                await self._sleep(self.cfg.idle.producer_poll_s)
+                continue
             try:
                 did = await self.sfx_step()
             except Exception as e:
                 log.warning("sfx loop error: %s", err_text(e))
                 did = False
-            await asyncio.sleep(1.0 if did else 5.0)
+            await self._sleep(1.0 if did else 5.0)
 
     async def sfx_step(self) -> bool:
         """One unit of SFX work. Returns True if it did any.
@@ -928,11 +944,14 @@ class Producer:
 
     async def news_loop(self) -> None:
         while True:
+            if self.idle():
+                await self._sleep(self.cfg.idle.producer_poll_s)
+                continue
             try:
                 await self.ensure_news()
             except Exception as e:
                 log.warning("news loop error: %s", e)
-            await asyncio.sleep(5.0)
+            await self._sleep(5.0)
 
     async def song_loop(self) -> None:
         """Song decider (RADIO §6.1/§6.2). Keeps up to `songs.capacity()` song
@@ -979,8 +998,10 @@ class Producer:
 
     def _spawn(self, job: SongJob) -> None:
         if job.req is not None:
-            # claim it now: the next _next_job() runs before the task does
-            self.store.mark_request_producing(job.req["id"])
+            # claim it now: the next _next_job() runs before the task does.
+            # claimed_at (VOTING.md V6) orders in-flight work by claim time;
+            # it is set once and kept across retries.
+            job.req["claimed_at"] = self.store.mark_request_producing(job.req["id"])
             self.request_stage[job.req["id"]] = "waiting"
         task = asyncio.create_task(self._run_job(job))
         self._jobs[task] = job
@@ -1037,7 +1058,8 @@ class Producer:
         free_busy = sum(1 for j in jobs if j.kind == "request" and not j.paid)
         free_ok = room and free_busy < self.cfg.songs.free_request_slots
         claimed = {j.req["id"] for j in jobs if j.req is not None}
-        for req in self.store.queued_requests():
+        for req in self.store.queued_requests(
+                bury_threshold=self.cfg.voting.bury_threshold):
             if req["id"] in claimed:
                 continue
             if req.get("priority") or free_ok:
@@ -1047,6 +1069,14 @@ class Producer:
         return None
 
     def _stock_due(self, in_flight: int) -> bool:
+        if self.idle():
+            # IDLE.md D6: stock songs serve airtime nobody hears. Queued
+            # requests are still picked above this check.
+            if not self._idle_stock_logged:
+                log.info("song.stock_paused_idle")
+                self._idle_stock_logged = True
+            return False
+        self._idle_stock_logged = False
         if self.stock_capped():
             if not self._stock_cap_logged:
                 log.info("song.stock_capped", extra={
@@ -1217,7 +1247,8 @@ class Producer:
         art_task = None
         attached = False
         try:
-            backlog = len(self.store.queued_requests())
+            backlog = len(self.store.queued_requests(
+                bury_threshold=self.cfg.voting.bury_threshold))
             # Paid requests are never shortened by the backlog rule (§0.5).
             short = backlog >= 3 and not paid
             # turns go in queue order (paid first, then oldest), whoever asked first

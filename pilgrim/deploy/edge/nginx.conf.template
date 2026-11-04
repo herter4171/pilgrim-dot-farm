@@ -157,6 +157,44 @@ http {
             error_page 504 = @request_timeout;
         }
 
+        # COMMUNITY VOTING (VOTING.md Step 2): exactly two POST-only paths.
+        # A vote/rating response is no-store at the origin; never cached here.
+        location ~ "^/api/requests/[0-9]+/vote$" {
+            proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host @@ORIGIN_HOST@@;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_ssl_server_name on;
+            proxy_ssl_name @@ORIGIN_HOST@@;
+            proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
+            proxy_ssl_verify_depth 3;
+            proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
+            proxy_read_timeout 30s;
+            proxy_cache off;
+            error_page 502 504 = @offair;
+        }
+
+        location = /api/station/rating {
+            proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_set_header Host @@ORIGIN_HOST@@;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $remote_addr;
+            proxy_ssl_server_name on;
+            proxy_ssl_name @@ORIGIN_HOST@@;
+            proxy_ssl_verify on;
+            # LE chains are leaf -> intermediate -> root; nginx defaults to depth 1.
+            proxy_ssl_verify_depth 3;
+            proxy_ssl_trusted_certificate @@CA_BUNDLE@@;
+            proxy_read_timeout 30s;
+            proxy_cache off;
+            error_page 502 504 = @offair;
+        }
+
         # PAID REQUE$T (PAYMENT.md Step 10.1, Step 12b): exactly four paths.
         location = /api/paid-requests {
             proxy_pass @@ORIGIN_SCHEME@@://pilgrim_origin;

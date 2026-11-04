@@ -891,3 +891,196 @@ def test_place_song_next_rejects_non_songs_and_missing_files(tmp_env, cfg):
     # seed_pool writes /tmp/... paths that do not exist: no file -> no splice
     song = store.list_items("song")[0]["id"]
     assert sched.place_song_next(song) is None
+
+
+# --------------------------------------------------------------------------- #
+# IDLE.md Step 2: freeze/thaw mechanics. The sim never freezes (no Station);
+# these drive the explicit calls.
+# --------------------------------------------------------------------------- #
+
+def make_sched(cfg, store, seed=1):
+    from pilgrim.config import RNG, SimClock
+    from pilgrim.scheduler import Scheduler
+    from pilgrim.selector import RandomSelector
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(seed), cfg), clock, RNG(seed))
+    return sched, clock
+
+
+def _append_committed(sched, item_id, type_, duration, **extra):
+    """Commit one row the way commit_lookahead does (consumes one-shots)."""
+    sched._append({"item_id": item_id, "type": type_, "duration_s": duration,
+                   "consume": True, **extra})
+    sched._rebuild_program()
+
+
+def test_freeze_holds_playhead_and_coverage(cfg, tmp_env):
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=20, n_liner=10, n_com=5, n_dj=5)
+    sched, clock = make_sched(cfg, store)
+    sched.commit_lookahead()
+    clock.advance(10)
+    sched.freeze()
+    pos, cov = sched.position(), sched.coverage()
+    on_air = sched.on_air()
+    assert sched.frozen is True
+    clock.advance(3600)  # an hour with nobody listening
+    assert sched.position() == pos
+    assert sched.coverage() == cov
+    assert sched.on_air() == on_air
+    assert sched.thaw() == 0          # nothing stale in a 1 h window
+    assert sched.frozen is False
+    assert sched.position() == pos    # resumes where it stopped, no jump
+    assert sched.on_air() == on_air
+
+
+def test_thaw_drops_stale_future_and_bumps_revision_once(cfg, tmp_env):
+    """A 2 h freeze makes the committed news and clock read wrong for their
+    new slot wall: both are dropped, evergreen rows keep, one revision bump."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=20, n_liner=10, n_com=5, n_dj=5)
+    sched, clock = make_sched(cfg, store)
+    sched.commit_lookahead()
+    clock.advance(10)
+    now = clock.wall()
+    from conftest import iso_from_epoch
+    news = make_item(cfg, store, "news", 20.0,
+                     expires_at=iso_from_epoch(now + 400))
+    tc = make_item(cfg, store, "time_check", 4.0,
+                   expires_at=iso_from_epoch(now + 500))
+    song = make_item(cfg, store, "song", 90.0)
+    _append_committed(sched, song, "song", 90.0)
+    _append_committed(sched, news, "news", 20.0,
+                      expires_at=iso_from_epoch(now + 400))
+    _append_committed(sched, tc, "time_check", 4.0,
+                      expires_at=iso_from_epoch(now + 500))
+    _append_committed(sched, song, "song", 90.0)
+    rev = sched.revision
+    kept = [r["item_id"] for r in sched._items if r["type"] != "news"
+            and r["type"] != "time_check"]
+    sched.freeze()
+    clock.advance(7200)
+    dropped = sched.thaw()
+    assert dropped == 2
+    assert sched.revision == rev + 1        # exactly one bump
+    types = [r["type"] for r in sched._items]
+    assert "news" not in types and "time_check" not in types
+    # Kept rows may be renumbered by the song-gap bridge, never dropped.
+    after = [r["item_id"] for r in sched._items]
+    assert all(item in after for item in kept)
+    # D5: dropped one-shots are spent, not returned to the pool
+    assert store.get_item(news)["fresh"] == 0
+    assert store.get_item(tc)["fresh"] == 0
+
+
+def test_thaw_bridges_song_gap_with_a_callout(cfg, tmp_env):
+    """Dropping a news row between two songs leaves song->song; thaw inserts a
+    liner/station ID (words between songs, §5.2)."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=20, n_liner=10, n_com=5, n_dj=5)
+    sched, clock = make_sched(cfg, store)
+    sched.commit_lookahead()
+    clock.advance(10)
+    from conftest import iso_from_epoch
+    song = make_item(cfg, store, "song", 60.0)
+    news = make_item(cfg, store, "news", 20.0,
+                     expires_at=iso_from_epoch(clock.wall() + 60))
+    _append_committed(sched, song, "song", 60.0)
+    _append_committed(sched, news, "news", 20.0,
+                      expires_at=iso_from_epoch(clock.wall() + 60))
+    _append_committed(sched, song, "song", 60.0)
+    sched.freeze()
+    clock.advance(7200)
+    assert sched.thaw() == 1
+    types = [r["type"] for r in sched._items]
+    assert not [i for i in range(1, len(types))
+                if types[i] == "song" and types[i - 1] == "song"]
+    assert "liner" in types or "station_id" in types
+    seqs = [r["seq"] for r in sched._items]
+    assert seqs == sorted(seqs) and len(seqs) == len(set(seqs))
+
+
+def test_thaw_with_no_voice_inventory_leaves_songs_adjacent(cfg, tmp_env):
+    """§5.2: with no voice item at all the song airs; thaw must not crash."""
+    _, store, _ = tmp_env
+    from conftest import iso_from_epoch
+    song = make_item(cfg, store, "song", 60.0)
+    news = make_item(cfg, store, "news", 20.0,
+                     expires_at=iso_from_epoch(1_800_000_100.0))
+    sched, clock = make_sched(cfg, store)
+    _append_committed(sched, song, "song", 60.0)
+    _append_committed(sched, news, "news", 20.0,
+                      expires_at=iso_from_epoch(1_800_000_100.0))
+    _append_committed(sched, song, "song", 60.0)
+    sched.freeze()
+    clock.advance(7200)
+    assert sched.thaw() == 1
+    # The two appended songs stay adjacent (no voice item to bridge them);
+    # commit_lookahead may append more evergreen rows at the tail.
+    assert [r["type"] for r in sched._items[:2]] == ["song", "song"]
+
+
+def test_ready_request_spliced_while_frozen(cfg, tmp_env):
+    """D8: a ready request still takes the next slot in the frozen window; it
+    is the next song after thaw."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=20, n_liner=10, n_com=5, n_dj=5)
+    sched, clock = make_sched(cfg, store)
+    sched.commit_lookahead()
+    clock.advance(10)
+    req = store.add_request("a song about mittens", cap=None)
+    rsong = make_item(cfg, store, "song", 45.0)
+    rintro = store.add_item(type_="intro", media_path="/tmp/i.flac",
+                            duration_s=3.0, fresh=True,
+                            meta={"song_item_id": rsong,
+                                  "request_id": req["id"]})
+    store.mark_request_ready(req["id"], rsong, rintro)
+    sched.freeze()
+    clock.advance(3600)
+    sched.commit_lookahead()          # frozen: splice only, no fill
+    assert req["id"] in sched._pending_aired.values()
+    sched.thaw()
+    on_seq, _ = sched.on_air()
+    on_idx = next(i for i, r in enumerate(sched._items) if r["seq"] == on_seq)
+    first_song = next(r for r in sched._items[on_idx + 1:] if r["type"] == "song")
+    assert first_song["item_id"] == rsong
+
+
+def test_thaw_when_not_frozen_is_a_noop(cfg, tmp_env):
+    _, store, _ = tmp_env
+    seed_pool(store, cfg)
+    sched, clock = make_sched(cfg, store)
+    sched.commit_lookahead()
+    rev = sched.revision
+    assert sched.thaw() == 0
+    assert sched.revision == rev
+
+
+def test_freeze_thaw_does_not_change_seeded_picks(cfg, tmp_env):
+    """Nothing dropped -> same program for the same seed."""
+    from pilgrim.config import RNG, SimClock
+    from pilgrim.scheduler import Scheduler
+    from pilgrim.selector import RandomSelector
+    from pilgrim.store import Store
+    _, store_a, tmp = tmp_env
+    seed_pool(store_a, cfg, n_song=30, n_liner=20, n_com=10, n_dj=10)
+    store_b = Store(tmp / "station_b.db")
+    seed_pool(store_b, cfg, n_song=30, n_liner=20, n_com=10, n_dj=10)
+    clock_a, clock_b = SimClock(), SimClock()
+    a = Scheduler(cfg, store_a, RandomSelector(RNG(7), cfg), clock_a, RNG(7))
+    b = Scheduler(cfg, store_b, RandomSelector(RNG(7), cfg), clock_b, RNG(7))
+    a.commit_lookahead()
+    b.commit_lookahead()
+    clock_a.advance(60)
+    clock_b.advance(60)
+    a.commit_lookahead()
+    b.commit_lookahead()
+    a.freeze()
+    clock_a.advance(3600)
+    assert a.thaw() == 0
+    clock_a.advance(60)
+    clock_b.advance(60)
+    a.commit_lookahead()
+    b.commit_lookahead()
+    assert [(r["item_id"], r["type"]) for r in a._items] == \
+           [(r["item_id"], r["type"]) for r in b._items]

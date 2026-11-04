@@ -330,6 +330,13 @@
     songLabel.textContent = named ? (it.title + " - " + it.artist) : "";
     setCoverArt(named ? it : null, named);
     setDownload(named ? it : null);
+    // VOTING.md §4/§5: one hook for the rating row. The detail is the song that
+    // is AUDIBLE now (audio clock), never the next one; null when nothing is.
+    // rating.js ignores repeats of the same airing.
+    document.dispatchEvent(new CustomEvent("pd:nowplaying", {
+      detail: named ? { epoch, seq: it.seq, media_id: it.media_id,
+                        title: it.title, artist: it.artist } : null,
+    }));
   }
 
   /* DOWNLOAD MP3 (RADIO §9.1): shown only while a named song is audible, so
@@ -625,6 +632,8 @@
     songLabel.textContent = "";
     setCoverArt(null, false);
     setDownload(null);
+    // VOTING.md: STOP closes the rating row immediately.
+    document.dispatchEvent(new CustomEvent("pd:nowplaying", { detail: null }));
     btn.textContent = "▶  PLAY"; btn.classList.remove("stop");
     setState("idle"); lctx.clearRect(0, 0, level.width, level.height);
   }

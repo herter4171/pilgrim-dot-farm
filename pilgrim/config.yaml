@@ -153,6 +153,36 @@ visitors:
   listener_timeout_s: 15   # live listener drops after this long without a heartbeat
   max_listeners: 1000      # cap on tracked player IDs (player_id is client-supplied)
 
+# Idle policy (IDLE.md): with no listener heartbeats for `after_s`, the playhead
+# freezes with the committed window already rendered and production pauses
+# (listener requests still produce). A program fetch or a heartbeat wakes it.
+# `enabled: false` restores the always-running behaviour exactly.
+idle:
+  enabled: true
+  after_s: 120             # no heartbeat for this long -> idle (>= visitors.listener_timeout_s)
+  check_s: 5               # how often the station checks (wake is immediate, on request)
+  producer_poll_s: 30      # paused producer loops look again this often
+
+# Community request-queue votes (VOTING.md). Votes decide which FREE request is
+# written next; paid requests stay ahead of every free one; work already in
+# flight is never reordered; a free queued request at/below `bury_threshold` is
+# not produced until it recovers (null disables burying).
+voting:
+  enabled: true
+  per_client_per_10min: 60   # vote POSTs per canonical client IP
+  max_voters_per_ip: 3       # distinct voter ids per IP per request
+  bury_threshold: -3         # free queued request at/below this score is skipped
+
+# Five-turkey song ratings (VOTING.md). One rating per (epoch, seq, voter) — an
+# airing, not the item — open only while that song is audible (+ grace_s).
+ratings:
+  enabled: true
+  per_client_per_10min: 60
+  max_voters_per_ip: 3
+  grace_s: 5                 # a rating may land this long after the song ended
+  rotation_weight: false     # Step 8 (off): let ratings weight the recycled-song draw
+  rotation_min_votes: 5
+
 audio:
   lufs: -16.0
   true_peak_db: -1.0

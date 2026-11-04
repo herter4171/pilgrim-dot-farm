@@ -812,3 +812,137 @@ def test_ensure_dj_renders_in_the_shift_hosts_voice(cfg, tmp_env):
     asyncio.run(prod.ensure_dj())
     assert voice.rendered_voices
     assert all(v == "af_bella" for v in voice.rendered_voices)
+
+
+# --------------------------------------------------------------------------- #
+# IDLE.md Step 3: producers pause when nobody is listening; listener requests
+# still produce. Default predicate is never idle (existing tests unchanged).
+# --------------------------------------------------------------------------- #
+
+class _SleepStop(Exception):
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+
+
+def _idle_producer(cfg, store, voice, songs=None, idle=True):
+    prod = (make_song_producer(cfg, store, voice, songs) if songs is not None
+            else make_producer(cfg, store, voice))
+    prod.idle = (lambda: idle)
+    return prod
+
+
+def test_song_next_job_picks_request_but_no_stock_when_idle(cfg, tmp_env):
+    _, store, _ = tmp_env
+    cfg.inventory.fresh_songs_ready = 5   # stock would be due if awake
+    req = store.add_request("play a song for Mittens", cap=None)
+    prod = _idle_producer(cfg, store, FakeVoice(), FakeSong(), idle=True)
+    job = prod._next_job()
+    assert job is not None and job.kind == "request"
+    assert job.req["id"] == req["id"]
+    # the only queued request is claimed by the job we just built
+    prod._jobs = {}
+    prod.store.mark_request_producing(req["id"])
+    assert prod._next_job() is None        # no stock while idle
+    prod.idle = lambda: False
+    assert prod._next_job() is not None    # awake: stock refills again
+    assert prod._next_job().kind == "stock"
+
+
+def test_stock_paused_logs_once(cfg, tmp_env):
+    _, store, _ = tmp_env
+    cfg.inventory.fresh_songs_ready = 5
+    prod = _idle_producer(cfg, store, FakeVoice(), FakeSong(), idle=True)
+    assert prod._stock_due(0) is False
+    assert prod._idle_stock_logged is True
+
+
+def test_run_idle_cycle_makes_nothing(cfg, tmp_env):
+    import asyncio
+    _, store, _ = tmp_env
+    voice = FakeVoice()
+    prod = _idle_producer(cfg, store, voice, idle=True)
+    prod._sleep = _raising_sleep
+    try:
+        asyncio.run(prod.run())
+    except _SleepStop as e:
+        assert e.seconds == cfg.idle.producer_poll_s
+    else:
+        raise AssertionError("run() did not reach its idle wait")
+    assert voice.calls == 0
+
+
+def test_run_awake_cycle_still_produces(cfg, tmp_env):
+    import asyncio
+    _, store, _ = tmp_env
+    voice = FakeVoice()
+    prod = _idle_producer(cfg, store, voice, idle=False)
+    prod._sleep = _raising_sleep
+    try:
+        asyncio.run(prod.run())
+    except _SleepStop as e:
+        assert e.seconds == 6.0
+    assert voice.calls > 0
+
+
+def test_news_loop_idle_waits(cfg, tmp_env):
+    import asyncio
+    _, store, _ = tmp_env
+    prod = _idle_producer(cfg, store, FakeVoice(), idle=True)
+    prod._sleep = _raising_sleep
+    try:
+        asyncio.run(prod.news_loop())
+    except _SleepStop as e:
+        assert e.seconds == cfg.idle.producer_poll_s
+
+
+async def _raising_sleep(seconds):
+    raise _SleepStop(seconds)
+
+
+# --------------------------------------------------------------------------- #
+# VOTING.md: bury (V7). A free queued row at/below the threshold is not
+# produced; paid rows always are; the producer passes the configured threshold.
+# --------------------------------------------------------------------------- #
+
+VOTER = "a" * 32
+
+
+def test_buried_request_is_not_produced(cfg, tmp_env):
+    _, store, _ = tmp_env
+    cfg.inventory.fresh_songs_ready = 5
+    req = store.add_request("downvoted noise", cap=None)
+    for i, ip in enumerate(("1.1.1.1", "2.2.2.2", "3.3.3.3")):
+        store.cast_request_vote(req["id"], f"{i}" * 32, ip, -1,
+                                max_voters_per_ip=3)
+    assert store.request_score(req["id"]) == -3
+    prod = _idle_producer(cfg, store, FakeVoice(), FakeSong(), idle=False)
+    assert prod._next_job().kind == "stock"   # buried: skipped, stock proceeds
+    # +1 revives it (V7)
+    store.cast_request_vote(req["id"], VOTER, "4.4.4.4", 1, max_voters_per_ip=3)
+    job = prod._next_job()
+    assert job.kind == "request" and job.req["id"] == req["id"]
+
+
+def test_paid_request_is_never_buried(cfg, tmp_env):
+    _, store, _ = tmp_env
+    cfg.inventory.fresh_songs_ready = 5
+    row = store.add_paid_request("paid and hated")
+    store.attach_checkout(row["id"], "cs_x")
+    store.mark_request_paid(row["id"], session_id="cs_x", payment_intent_id="pi_x",
+                            amount_cents=350, currency="usd", livemode=False)
+    for i, ip in enumerate(("1.1.1.1", "2.2.2.2", "3.3.3.3")):
+        store.cast_request_vote(row["id"], f"{i}" * 32, ip, -1,
+                                max_voters_per_ip=3)
+    assert store.request_score(row["id"]) == 0   # not votable at all
+    prod = _idle_producer(cfg, store, FakeVoice(), FakeSong(), idle=False)
+    job = prod._next_job()
+    assert job.kind == "request" and job.req["id"] == row["id"]
+
+
+def test_bury_threshold_none_disables(cfg, tmp_env):
+    _, store, _ = tmp_env
+    cfg.voting.bury_threshold = None
+    req = store.add_request("downvoted noise", cap=None)
+    store.cast_request_vote(req["id"], VOTER, "1.1.1.1", -1, max_voters_per_ip=3)
+    prod = _idle_producer(cfg, store, FakeVoice(), FakeSong(), idle=False)
+    assert prod._next_job().kind == "request"

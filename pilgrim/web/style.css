@@ -76,9 +76,10 @@ body {
   text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--violet); }
 .req-table td { padding: 5px 6px; vertical-align: top; overflow-wrap: anywhere;
   border-bottom: 1px solid rgba(166, 61, 255, 0.18); }
-.req-table .c-prompt { width: 54%; }
-.req-table .c-title { width: 28%; }
-.req-table .c-time { width: 18%; }
+.req-table .c-prompt { width: 43%; }
+.req-table .c-title { width: 20%; }
+.req-table .c-time { width: 14%; }
+.req-table .c-vote { width: 100px; }
 .req-num { color: var(--cyan); margin-right: 6px; }
 .req-text { color: var(--text); }
 .req-title { color: var(--cyan); font-size: 14px; }
@@ -86,6 +87,61 @@ body {
 .req-recent-item .req-text { color: var(--dim); }
 .req-empty td { font-size: 15px; color: var(--dim); border-bottom: none; }
 .req-paid-icon { height: 1.25em; width: auto; vertical-align: -0.12em; margin-right: 2px; }
+
+/* Request-queue votes (VOTING.md Step 6, RADIO §9.1). ↑ score ↓, score
+   centered. 40x40 boxes with a 44x44 hit area (the ::after inset), so the
+   column stays narrow enough for 320 px. Pressed = filled in the arrow's own
+   colour with the pane's dark text; un-pressed = outlined. */
+.req-vote { white-space: nowrap; padding-left: 2px; padding-right: 2px; }
+.vote { display: inline-flex; align-items: center; gap: 0; }
+.vote button {
+  position: relative; width: 40px; height: 40px; padding: 0;
+  background: transparent; border: 1px solid var(--dim); border-radius: 6px;
+  font: inherit; font-size: 18px; line-height: 1; cursor: pointer;
+  color: var(--dim);
+}
+.vote button::after { content: ""; position: absolute; inset: -2px; }
+.vote-up { color: var(--ok); border-color: var(--ok); }
+.vote-down { color: var(--magenta); border-color: var(--magenta); }
+.vote-up.pressed { background: var(--ok); color: #0a0118; }
+.vote-down.pressed { background: var(--magenta); color: #0a0118; }
+.vote button:hover:not(:disabled), .vote button:focus-visible {
+  filter: brightness(1.2); outline: 2px solid currentColor; outline-offset: 1px;
+}
+.vote button:disabled { opacity: .5; cursor: default; }
+.vote-score { min-width: 1.5ch; text-align: center; font-size: 15px;
+  color: var(--text); }
+.vote.err { animation: voteshake .25s linear 2; }
+@keyframes voteshake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+/* Scroll cue + visible scrollbar (VOTING.md Step 6): the box scrolls inside
+   260 px with a sticky header. The bottom gradient is pinned to the box (a
+   background, not a positioned child: an absolutely positioned ::after inside
+   a scroll container scrolls with the content). It costs zero height and
+   disappears at the bottom (requests.js toggles .has-more). */
+.req-table-wrap.req-scroll {
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--violet) transparent;
+}
+.req-table-wrap.req-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.req-table-wrap.req-scroll::-webkit-scrollbar-thumb {
+  background: var(--violet); border-radius: 3px;
+}
+.req-table-wrap.req-scroll::-webkit-scrollbar-track { background: transparent; }
+.req-table-wrap.req-scroll.has-more {
+  background: linear-gradient(to bottom,
+    transparent calc(100% - 24px), var(--panel) 100%);
+}
+/* Status under the title on phones (see the 520 px block); hidden above. */
+.req-status-inline { display: none; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 .cred-attr { font-size: 14px; color: var(--dim); }
 .cred-attr a { color: var(--dim); }
 
@@ -240,6 +296,37 @@ body {
 .dl-mp3:disabled { filter: grayscale(.6); cursor: progress; }
 .dl-mp3[hidden] { display: none; }
 
+/* RATE THIS SONG (VOTING.md Step 5, RADIO §9.1): five turkeys above the cover
+   art, open only while that song is audible. The art is only 300 px wide, so
+   the row wraps deliberately: label + aggregate on the first line, the five
+   44 px turkeys centred on the second. It is always present with a fixed
+   min-height, so the art, PLAY row and meter never move when it enables or
+   disables (the same rule as .dl-row). */
+.rate-row {
+  width: var(--art-w, min(100%, 300px)); min-height: 62px;
+  display: flex; flex-wrap: wrap; align-items: center;
+  justify-content: space-between; gap: 2px 8px;
+}
+.rate-label { flex: 1 1 auto; white-space: nowrap;
+  color: var(--dim); font-size: 12px; letter-spacing: 1px; }
+.turkeys { order: 3; flex: 0 0 100%; display: flex;
+  align-items: center; justify-content: center; }
+.turkey {
+  width: 44px; height: 44px; padding: 0; background: none; border: 0;
+  border-radius: 6px; cursor: pointer; color: var(--warn);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.turkey svg { width: 28px; height: 28px; display: block; }
+.turkey svg g { fill: none; }
+.turkey.filled svg g { fill: currentColor; }
+.turkey:hover:not(:disabled), .turkey:focus-visible {
+  filter: brightness(1.2); outline: 2px solid var(--warn); outline-offset: -2px;
+}
+.turkey:disabled { cursor: default; }
+.rate-row[aria-disabled="true"] { opacity: .45; }
+.rate-agg { order: 2; flex: 0 0 auto; color: var(--dim); font-size: 12px;
+  letter-spacing: 1px; min-width: 0; white-space: nowrap; }
+
 /* Model credits pane (COSMETIC_PATCHING §5). */
 .window.credits { width: min(94vw, 484px); }
 .win-body.credits { align-items: stretch; text-align: left; gap: 12px; }
@@ -302,6 +389,21 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   .play-row { gap: 10px; }
   .play-cell .indicator { font-size: 14px; letter-spacing: 1px; padding: 0 10px; gap: 6px; }
   .play-cell .big-btn { font-size: 18px; padding: 0 16px; }
+  /* Rating row: label 12 px + aggregate on one line, turkeys 40x40 below. */
+  .rate-row { gap: 2px 4px; }
+  .rate-label { font-size: 11px; letter-spacing: 1px; }
+  .turkey { width: 40px; height: 40px; }
+  .turkey svg { width: 26px; height: 26px; }
+  .rate-agg { font-size: 11px; }
+  /* Queue: three visual columns — Request / Title+status / Vote. */
+  .req-table td { padding: 6px 4px; }
+  .req-text { hyphens: auto; }
+  .req-table .c-prompt { width: 44%; }
+  .req-table .c-title { width: calc(56% - 100px); }
+  .req-table .c-vote { width: 100px; }
+  .req-table .c-time, .req-table td.req-status { display: none; }
+  .req-status-inline { display: block; color: var(--dim); font-size: 10px;
+    letter-spacing: 1px; }
 }
 
 @media (max-width: 340px) {

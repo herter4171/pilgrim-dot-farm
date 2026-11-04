@@ -405,6 +405,74 @@ class Requests(BaseModel):
     per_client_per_10min: int = 3  # rate limit on the request line (OVERHAUL 4.3)
 
 
+class Idle(BaseModel):
+    """Idle policy (IDLE.md, RADIO §3, §5.3, §6.1).
+
+    With no listener heartbeats for `after_s`, the playhead freezes with the
+    already-rendered committed window intact and the producers pause (listener
+    requests still produce). A program fetch or heartbeat thaws it. Policy lives
+    in `Station`; the mechanics are `Scheduler.freeze()` / `thaw()`."""
+    enabled: bool = True
+    # A reload or a short network blip must not freeze the station. Validated
+    # against `visitors.listener_timeout_s` (a healthy listener must not be
+    # declared absent before its map entry expires).
+    after_s: float = 120.0
+    check_s: float = 5.0            # how often the station checks (wake is immediate)
+    producer_poll_s: float = 30.0   # paused producer loops look again this often
+
+    @model_validator(mode="after")
+    def _validate(self) -> Idle:
+        if self.after_s < 0 or self.check_s <= 0 or self.producer_poll_s <= 0:
+            raise ValueError(
+                "idle.after_s >= 0, idle.check_s > 0, idle.producer_poll_s > 0")
+        return self
+
+
+class Voting(BaseModel):
+    """Community request-queue votes (VOTING.md, RADIO §11, §14).
+
+    Votes decide which *free* request is written next; paid requests stay ahead
+    of every free one, work already in flight is never reordered, and a free
+    queued request at/below `bury_threshold` is not produced until it recovers."""
+    enabled: bool = True
+    per_client_per_10min: int = 60   # vote POSTs per canonical client IP
+    max_voters_per_ip: int = 3       # distinct voter ids per IP per request
+    # Free queued request at/below this score is not produced; null = off.
+    bury_threshold: int | None = -3
+
+    @model_validator(mode="after")
+    def _validate(self) -> Voting:
+        if self.per_client_per_10min <= 0 or self.max_voters_per_ip <= 0:
+            raise ValueError(
+                "voting.per_client_per_10min and voting.max_voters_per_ip must be positive")
+        return self
+
+
+class Ratings(BaseModel):
+    """Five-turkey song ratings (VOTING.md, RADIO §9.1, §11, §14).
+
+    One rating per (epoch, seq, voter): an airing identity, not the item. The
+    window is server-authoritative (`voting.rating_window`), with `grace_s` for
+    a click that was in flight when the song ended."""
+    enabled: bool = True
+    per_client_per_10min: int = 60
+    max_voters_per_ip: int = 3
+    grace_s: float = 5.0             # a rating may land this long after the song ended
+    # VOTING.md Step 8 (ships off): let ratings weight the recycled-song draw.
+    rotation_weight: bool = False
+    rotation_min_votes: int = 5
+
+    @model_validator(mode="after")
+    def _validate(self) -> Ratings:
+        if self.per_client_per_10min <= 0 or self.max_voters_per_ip <= 0:
+            raise ValueError(
+                "ratings.per_client_per_10min and ratings.max_voters_per_ip "
+                "must be positive")
+        if self.grace_s < 0 or self.rotation_min_votes < 1:
+            raise ValueError("ratings.grace_s >= 0 and ratings.rotation_min_votes >= 1")
+        return self
+
+
 class CopyrightCheck(BaseModel):
     """Web screen for copied lyrics in paid prompts (PAYMENT.md Step 12b).
     Deterministic text matching against searxng snippets; no LLM decides."""
@@ -721,6 +789,9 @@ class Config(BaseModel):
     requests: Requests = Field(default_factory=Requests)
     payments: Payments = Field(default_factory=Payments)
     visitors: Visitors = Field(default_factory=Visitors)
+    idle: Idle = Field(default_factory=Idle)
+    voting: Voting = Field(default_factory=Voting)
+    ratings: Ratings = Field(default_factory=Ratings)
     audio: Audio = Field(default_factory=Audio)
     media: Media = Field(default_factory=Media)
     art: Art = Field(default_factory=Art)
@@ -745,6 +816,17 @@ class Config(BaseModel):
         for b in self.songs.gen_backends:
             if not b.url:
                 b.url = base + "/vllm"
+        return self
+
+    @model_validator(mode="after")
+    def _validate_idle(self) -> Config:
+        """A healthy listener must not be declared absent before its in-memory
+        entry expires (IDLE.md Step 1): otherwise a player still inside
+        `visitors.listener_timeout_s` could be idle while it is audible."""
+        if self.idle.after_s < self.visitors.listener_timeout_s:
+            raise ValueError(
+                f"idle.after_s ({self.idle.after_s}) must be >= "
+                f"visitors.listener_timeout_s ({self.visitors.listener_timeout_s})")
         return self
 
     @model_validator(mode="after")

@@ -502,6 +502,12 @@ The queue order is:
 ORDER BY priority DESC, COALESCE(paid_at, created_at) ASC, id ASC
 ```
 
+> **Superseded by VOTING.md / RADIO §14.** The order is now `priority DESC`,
+> then in-flight (`producing`/`ready`) by claim time, then free `queued` by
+> vote score DESC, then `COALESCE(paid_at, claimed_at, created_at)`, `id`.
+> With no votes it is identical to the order below, so the paid-priority
+> guarantees here still hold. `store.queue_order()` is the single helper.
+
 Paid requests are FIFO by **payment time**, not by when checkout opened.
 Free requests are FIFO by creation, as today. Apply this exact order in:
 

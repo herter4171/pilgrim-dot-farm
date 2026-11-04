@@ -4,9 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PILGRIM DOT FARM — radio</title>
-<link rel="stylesheet" href="style.css?v=20261102g">
+<link rel="stylesheet" href="style.css?v=20261103a">
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="turkey" viewBox="0 0 24 24">
+    <g fill="none" stroke="currentColor" stroke-width="1.4"
+       stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 14 L4.5 5.5"/>
+      <path d="M12 14 L7 3.2"/>
+      <path d="M12 14 L12 2"/>
+      <path d="M12 14 L17 3.2"/>
+      <path d="M12 14 L19.5 5.5"/>
+      <ellipse cx="11.5" cy="15" rx="5" ry="4.4"/>
+      <circle cx="16.4" cy="10.4" r="2"/>
+      <path d="M16.4 12.3 q0.9 1.9 -0.3 2.4"/>
+      <path d="M18.2 9.9 l2.2 0.8 -2.2 0.9 z"/>
+      <path d="M9 19.4 v1.6 M14 19.4 v1.6"/>
+    </g>
+  </symbol>
+</svg>
 <canvas id="rain"></canvas>
 <header id="titlebar">
   <img class="hat" src="img/pilgrim_hat.png" alt="" width="452" height="375">
@@ -20,6 +37,23 @@
       <span class="win-title">RADIO BROADCAST</span>
     </div>
     <div class="win-body radio">
+      <div class="rate-row" id="rate-row" role="radiogroup"
+           aria-label="Rate this song" aria-disabled="true">
+        <span class="rate-label">RATE THIS SONG</span>
+        <span class="turkeys">
+          <button type="button" class="turkey" role="radio" aria-checked="false"
+                  aria-label="1 turkey" data-stars="1"><svg aria-hidden="true"><use href="#turkey"/></svg></button>
+          <button type="button" class="turkey" role="radio" aria-checked="false"
+                  aria-label="2 turkeys" data-stars="2"><svg aria-hidden="true"><use href="#turkey"/></svg></button>
+          <button type="button" class="turkey" role="radio" aria-checked="false"
+                  aria-label="3 turkeys" data-stars="3"><svg aria-hidden="true"><use href="#turkey"/></svg></button>
+          <button type="button" class="turkey" role="radio" aria-checked="false"
+                  aria-label="4 turkeys" data-stars="4"><svg aria-hidden="true"><use href="#turkey"/></svg></button>
+          <button type="button" class="turkey" role="radio" aria-checked="false"
+                  aria-label="5 turkeys" data-stars="5"><svg aria-hidden="true"><use href="#turkey"/></svg></button>
+        </span>
+        <span class="rate-agg" id="rate-agg" aria-live="polite"></span>
+      </div>
       <div class="art-frame">
         <img id="cover-art" src="img/fall.jpg" alt="">
       </div>
@@ -80,7 +114,7 @@
       <div class="req-list-head">NOW QUEUED</div>
       <div class="req-table-wrap req-scroll">
         <table class="req-table">
-          <thead><tr><th class="c-prompt">Request</th><th class="c-title">Title</th><th class="c-time">Status</th></tr></thead>
+          <thead><tr><th class="c-prompt">Request</th><th class="c-title">Title</th><th class="c-time">Status</th><th class="c-vote"><span class="sr-only">Votes</span></th></tr></thead>
           <tbody id="req-queue"></tbody>
         </table>
       </div>
@@ -156,9 +190,12 @@
 </script>
 
 <script src="titlebar.js?v=20261102a"></script>
-<script src="requests.js?v=20261102a"></script>
+<script src="voter.js?v=20261103a"></script>
+<script src="requests.js?v=20261103a"></script>
+<script src="votes.js?v=20261103a"></script>
 <script src="pay.js?v=20261031d"></script>
 <script src="visitors.js?v=20261031a"></script>
-<script src="player.js?v=20261102a"></script>
+<script src="rating.js?v=20261103a"></script>
+<script src="player.js?v=20261103a"></script>
 </body>
 </html>

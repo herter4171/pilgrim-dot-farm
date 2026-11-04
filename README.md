@@ -81,6 +81,23 @@ For lint, install the dev tools with `.venv/bin/pip install -e '.[dev]'`.
 Browser tests also need the Playwright package from `pilgrim/tests/e2e/`
 and Chrome. Unit tests and simulation do not call real backends.
 
+## Idle, voting and ratings
+
+- **Idle:** with `idle.enabled` (the default), the station freezes the
+  playhead and pauses production when nobody has been listening for
+  `idle.after_s` (120 s). The already-rendered committed window stays
+  playable, so a PLAY or heartbeat wakes it instantly with no dead air.
+  Listener requests still produce while idle. Set `idle.enabled: false` in
+  `pilgrim/config.yaml` to run the station around the clock again.
+- **Voting:** listeners can vote free requests up/down (which one is written
+  next; paid requests stay ahead of every free one) and rate the on-air song
+  with five turkeys. Identity is a random id in the browser plus the server's
+  canonical client IP, with a cap of three ids per IP per target; no accounts,
+  no email. Only votes/ratings and that IP are stored. Disable with
+  `voting.enabled: false` / `ratings.enabled: false`; set
+  `voting.bury_threshold: null` to keep votes without burying downvoted
+  requests.
+
 ## How it fits together
 
 - Producers generate songs and speech ahead of time, check the audio, and add

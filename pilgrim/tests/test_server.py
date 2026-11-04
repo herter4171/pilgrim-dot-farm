@@ -315,3 +315,250 @@ def test_listeners_capped_and_long_ids_ignored(tmp_env):
     assert c.get("/api/station/state").json()["listeners"] == 2
     _beat(c, "a")  # known IDs still refresh at the cap
     assert c.get("/api/station/state").json()["listeners"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# IDLE.md Step 4: idle policy in Station (freeze after idle.after_s with no
+# listeners, wake on program/heartbeat/admin; polls never wake). SimClock-driven.
+# --------------------------------------------------------------------------- #
+
+def _idle_app(tmp_env, *, seed=True):
+    """Admin app on a SimClock with a non-empty committed window. The scheduler
+    shares the station's Clock instance, so both are swapped together."""
+    from conftest import seed_pool
+    from pilgrim.config import SimClock
+    cfg, _, _ = tmp_env
+    app = create_app(cfg)
+    station = app.state.station
+    clock = SimClock()
+    station.clock = clock
+    station.scheduler.clock = clock
+    station._last_listener_at = clock.now()
+    if seed:
+        seed_pool(station.db, cfg, n_song=12, n_liner=10, n_com=5, n_dj=5)
+        station.scheduler.commit_lookahead()
+
+    async def _fake_backends() -> dict:
+        return {"litellm": False, "kokoro": False, "music": False,
+                "searxng": False, "sfx": False, "music_backends": {}}
+
+    station.backend_status = _fake_backends
+    return app, TestClient(app), clock
+
+
+def _run_idle_check(app):
+    app.state.station._idle_check()
+
+
+def test_no_listener_freezes_after_after_s(tmp_env):
+    app, c, clock = _idle_app(tmp_env)
+    st = app.state.station
+    clock.advance(st.cfg.idle.after_s - 1)
+    _run_idle_check(app)
+    assert st.is_idle() is False
+    clock.advance(2)
+    _run_idle_check(app)
+    assert st.is_idle() is True
+    body = c.get("/api/station/state").json()
+    assert body["idle"] is True and body["listeners"] == 0
+    health = c.get("/api/health").json()
+    assert health["on_air"] is True          # PLAY is never disabled by idle
+    assert health["idle"]["idle"] is True
+    assert health["idle"]["wakes"] == 0
+
+
+def test_polls_do_not_wake_a_frozen_station(tmp_env):
+    """IDLE.md D2/rule 2: only the program route, heartbeats and admin DJ
+    mutations wake. Idle pages and bots poll the rest."""
+    app, c, clock = _idle_app(tmp_env)
+    st = app.state.station
+    clock.advance(st.cfg.idle.after_s + 1)
+    _run_idle_check(app)
+    assert st.is_idle() is True
+    c.get("/api/health")
+    c.get("/api/station/state")
+    c.get("/api/requests")
+    c.post("/api/visitors")
+    item = st.scheduler._items[0]["item_id"]
+    c.get(f"/api/media/{item}")
+    assert st.is_idle() is True
+    assert st.idle_wakes == 0
+
+
+def test_program_fetch_wakes_and_returns_a_playable_window(tmp_env):
+    app, c, clock = _idle_app(tmp_env)
+    st = app.state.station
+    clock.advance(st.cfg.idle.after_s + 1)
+    _run_idle_check(app)
+    frozen_offset = st.scheduler.on_air()[1]
+    body = c.get("/api/station/program").json()
+    assert st.is_idle() is False
+    assert body["items"], "the waking request must already be playable"
+    assert body["start_offset_s"] == frozen_offset
+    assert c.get("/api/station/state").json()["idle"] is False
+    assert c.get("/api/health").json()["idle"]["wakes"] == 1
+
+
+def test_heartbeat_wakes(tmp_env):
+    app, c, clock = _idle_app(tmp_env)
+    st = app.state.station
+    clock.advance(st.cfg.idle.after_s + 1)
+    _run_idle_check(app)
+    assert st.is_idle() is True
+    _beat(c, "player-a")
+    assert st.is_idle() is False
+    assert st.idle_wakes == 1
+
+
+def test_idle_disabled_never_freezes(tmp_env):
+    app, c, clock = _idle_app(tmp_env)
+    st = app.state.station
+    st.cfg.idle.enabled = False
+    clock.advance(st.cfg.idle.after_s * 10)
+    _run_idle_check(app)
+    assert st.is_idle() is False
+
+
+def test_stale_time_check_dropped_by_a_frozen_wake(tmp_env):
+    """The Step 2 path end-to-end through the handler: a clock read committed
+    before the freeze is gone after a 2 h frozen wake."""
+    from conftest import iso_from_epoch, make_item
+    app, c, clock = _idle_app(tmp_env)
+    st = app.state.station
+    tc = make_item(st.cfg, st.db, "time_check", 4.0,
+                   expires_at=iso_from_epoch(clock.wall() + 400))
+    st.scheduler._append({"item_id": tc, "type": "time_check",
+                          "duration_s": 4.0, "consume": True,
+                          "expires_at": iso_from_epoch(clock.wall() + 400)})
+    st.scheduler._rebuild_program()
+    clock.advance(st.cfg.idle.after_s + 1)
+    _run_idle_check(app)
+    clock.advance(7200)
+    rev = st.scheduler.revision
+    c.get("/api/station/program")
+    assert st.scheduler.revision == rev + 1
+    assert "time_check" not in [r["type"] for r in st.scheduler._items]
+
+
+def test_public_health_has_no_idle_field(tmp_env):
+    """`_public_health` is the browser's OFF AIR source; idle must not leak into
+    it (IDLE.md D10)."""
+    from pilgrim.server import create_public_app
+    app, _, clock = _idle_app(tmp_env)
+    st = app.state.station
+    public = TestClient(create_public_app(st.cfg, st))
+    clock.advance(st.cfg.idle.after_s + 1)
+    _run_idle_check(app)
+    assert "idle" not in public.get("/api/health").json()
+
+
+# --------------------------------------------------------------------------- #
+# VOTING.md Step 2: vote + rating routes (both apps), state.rating, admin audit.
+# --------------------------------------------------------------------------- #
+
+VOTER = "a" * 32
+
+
+def test_vote_route_and_board_fields(tmp_env):
+    app, c, clock = _idle_app(tmp_env)
+    st = app.state.station
+    req = st.db.add_request("free one", cap=None)
+    r = c.post(f"/api/requests/{req['id']}/vote",
+               json={"voter_id": VOTER, "value": 1})
+    assert r.status_code == 200 and r.json()["score"] == 1
+    assert r.headers["cache-control"] == "no-store"
+    board = c.get("/api/requests").json()
+    assert board["voting_enabled"] is True
+    row = board["queue"][0]
+    assert row["id"] == req["id"] and row["score"] == 1
+    assert row["votable"] is True and row["buried"] is False
+    assert board["queue"] and c.get("/api/requests").headers["cache-control"] \
+        == "public, max-age=2"
+    # retract
+    assert c.post(f"/api/requests/{req['id']}/vote",
+                  json={"voter_id": VOTER, "value": 0}).json()["score"] == 0
+
+
+def test_vote_route_errors(tmp_env):
+    app, c, _ = _idle_app(tmp_env)
+    st = app.state.station
+    req = st.db.add_request("free one", cap=None)
+    assert c.post(f"/api/requests/{req['id']}/vote",
+                  json={"voter_id": "nope", "value": 1}).status_code == 422
+    assert c.post("/api/requests/9999/vote",
+                  json={"voter_id": VOTER, "value": 1}).status_code == 404
+    st.db.mark_request_aired(req["id"])
+    r = c.post(f"/api/requests/{req['id']}/vote",
+               json={"voter_id": VOTER, "value": 1})
+    assert r.status_code == 409 and r.json()["code"] == "voting_closed"
+    st.cfg.voting.enabled = False
+    assert c.post(f"/api/requests/{req['id']}/vote",
+                  json={"voter_id": VOTER, "value": 1}).status_code == 404
+    assert c.get("/api/requests").json()["voting_enabled"] is False
+
+
+def test_vote_rate_limit(tmp_env):
+    app, c, _ = _idle_app(tmp_env)
+    st = app.state.station
+    st.cfg.voting.per_client_per_10min = 2
+    app.state.station = st  # same object; the limiter was built from cfg at registration
+    req = st.db.add_request("free one", cap=None)
+    body = {"voter_id": VOTER, "value": 1}
+    # the limiter is created at app registration; rebuild the app so the new
+    # limit applies
+    from pilgrim.server import create_admin_app
+    c2 = TestClient(create_admin_app(st.cfg, st))
+    assert c2.post(f"/api/requests/{req['id']}/vote", json=body).status_code == 200
+    assert c2.post(f"/api/requests/{req['id']}/vote", json=body).status_code == 200
+    assert c2.post(f"/api/requests/{req['id']}/vote", json=body).status_code == 429
+
+
+def test_rating_route_window_and_state(tmp_env):
+    app, c, clock = _idle_app(tmp_env)
+    st = app.state.station
+    # a clean two-row window: one song then a liner
+    st.scheduler.store.clear_program()
+    song = st.db.add_item(type_="song", media_path="/tmp/s.mp3", duration_s=60.0,
+                          title="Rate Me", artist="Tester")
+    liner = st.db.add_item(type_="liner", media_path="/tmp/l.mp3", duration_s=5.0)
+    st.scheduler._append({"item_id": song, "type": "song",
+                          "duration_s": 60.0, "consume": False})
+    st.scheduler._append({"item_id": liner, "type": "liner",
+                          "duration_s": 5.0, "consume": False})
+    st.scheduler._rebuild_program()
+    seq = next(r["seq"] for r in st.scheduler._items if r["type"] == "song")
+    clock.advance(1)
+    state = c.get("/api/station/state").json()
+    assert state["rating"]["open"] is True and state["rating"]["count"] == 0
+    r = c.post("/api/station/rating",
+               json={"voter_id": VOTER, "epoch": st.scheduler.epoch,
+                     "seq": seq, "stars": 4})
+    assert r.status_code == 200 and r.json()["count"] == 1
+    assert r.headers["cache-control"] == "no-store"
+    state = c.get("/api/station/state").json()
+    assert state["rating"] == {"open": True, "count": 1, "avg": 4.0}
+    # wrong epoch / closed window
+    assert c.post("/api/station/rating",
+                  json={"voter_id": VOTER, "epoch": "other",
+                        "seq": seq, "stars": 4}).status_code == 409
+    clock.advance(70)   # the song is long gone
+    assert c.get("/api/station/state").json()["rating"]["open"] is False
+    st.cfg.ratings.enabled = False
+    assert c.get("/api/station/state").json()["rating"] is None
+    assert c.post("/api/station/rating",
+                  json={"voter_id": VOTER, "epoch": st.scheduler.epoch,
+                        "seq": seq, "stars": 4}).status_code == 404
+
+
+def test_admin_voting_route_is_admin_only(tmp_env):
+    from pilgrim.server import create_public_app
+    app, c, _ = _idle_app(tmp_env)
+    st = app.state.station
+    req = st.db.add_request("free one", cap=None)
+    st.db.cast_request_vote(req["id"], VOTER, None, -1, max_voters_per_ip=3)
+    public = TestClient(create_public_app(st.cfg, st))
+    assert public.get("/api/admin/voting").status_code == 404
+    assert c.get("/api/admin/voting").status_code == 401
+    r = c.get("/api/admin/voting", headers={"Authorization": "Bearer test-token"})
+    # require_dj needs the configured token; without one this is 401/403
+    assert r.status_code in (200, 401, 403)

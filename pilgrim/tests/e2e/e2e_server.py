@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root
@@ -22,6 +23,7 @@ import soundfile as sf
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pilgrim import voting
 from pilgrim.audio.normalize import encode_mp3
 from pilgrim.config import RNG, Clock, Config, ensure_dirs, load_config
 from pilgrim.scheduler import Scheduler
@@ -88,10 +90,41 @@ def _load_cfg() -> tuple[Config, Path]:
     return base, tmp
 
 
+def _seed_requests(cfg: Config, store: Store) -> None:
+    """VOTING.md Step 7: a real queue board — 12 free requests plus one paid
+    priority row (paid rows are not votable, V5) — and 5 aired requests so the
+    AIRED REQUESTS table keeps its prep-time coverage (cosmetic.spec.ts)."""
+    # Aired first (low ids) so a later airing of a queue row still lands in
+    # the board's "5 most recent"; k=1 stays unmeasured (an em dash).
+    song_ids = [i["id"] for i in store.list_items("song")][:5]
+    base = 1_800_000_000.0
+    for k in range(1, 6):
+        r = store.add_request(f"played {k}", cap=None)
+        store.mark_request_ready(r["id"], song_ids[k - 1])
+        store.mark_request_aired(r["id"])
+        if k >= 2:
+            start = datetime.fromtimestamp(base + k * 60, tz=UTC).isoformat()
+            end = datetime.fromtimestamp(base + k * 60 + k * 900, tz=UTC).isoformat()
+            with store._lock:
+                store._conn.execute(
+                    "UPDATE requests SET prep_started_at=?, aired_at=? WHERE id=?",
+                    (start, end, r["id"]))
+                store._conn.commit()
+    for i in range(1, 13):
+        store.add_request(f"e2e free request {i}", cap=None)
+    paid = store.add_paid_request("e2e paid request")
+    store.attach_checkout(paid["id"], f"cs_e2e_{paid['id']}")
+    store.mark_request_paid(
+        paid["id"], session_id=f"cs_e2e_{paid['id']}",
+        payment_intent_id="pi_e2e", amount_cents=350, currency="usd",
+        livemode=False)
+
+
 def build_app() -> FastAPI:
     cfg, tmp = _load_cfg()
     store = Store(tmp / "station.db")
     _seed(cfg, store, tmp)
+    _seed_requests(cfg, store)
     clock = Clock()
     rng = RNG(1)
     sched = Scheduler(cfg, store, RandomSelector(rng, cfg), clock, rng)
@@ -145,11 +178,27 @@ def build_app() -> FastAPI:
     @app.get("/api/station/state")
     async def state():
         seq, offset = sched.on_air()
+        row = next((r for r in sched._items if r["seq"] == seq), None)
         return JSONResponse({"epoch": sched.epoch, "revision": sched.revision,
                 "server_time": time.time(), "current_seq": seq,
+                "current_type": row["type"] if row else None,
                 "current_offset_s": offset, "prepared_cutover": None,
-                "listeners": 0},
+                "listeners": 0, "idle": sched.frozen,
+                "rating": _rating_state()},
                 headers={"Cache-Control": "public, max-age=1"})
+
+    def _rating_state():
+        """e2e mirror of Station._public_rating (VOTING.md V10)."""
+        if not cfg.ratings.enabled:
+            return None
+        seq, _ = sched.on_air()
+        open_, item_id = voting.rating_window(
+            sched, sched.epoch, int(seq) if seq is not None else -1,
+            cfg.ratings.grace_s)
+        if open_ and item_id is not None:
+            agg = store.song_rating(item_id)
+            return {"open": True, "count": agg["count"], "avg": agg["avg"]}
+        return {"open": False, "count": 0, "avg": None}
 
     @app.post("/api/station/heartbeat")
     async def heartbeat(payload: dict):
@@ -205,23 +254,48 @@ def build_app() -> FastAPI:
         return JSONResponse({"unique_visitors": n},
                             headers={"Cache-Control": "no-store"})
 
-    _RECENT = [
-        {"text": f"played {i}", "song_title": f"Song {i}", "song_artist": "Artist",
-         "paid": i == 5, "wait_s": [150, 900, 11000, 200000, None][i - 1]}
-        for i in range(1, 6)
-    ]
-
     @app.get("/api/requests")
     async def list_requests():
-        return JSONResponse({"queue": [], "recent": _RECENT, "cap": 20,
-                             "paid_enabled": False},
+        board = store.request_board(
+            cfg.requests.queue_cap, cfg.requests.max_length,
+            voting_enabled=cfg.voting.enabled,
+            bury_threshold=cfg.voting.bury_threshold)
+        return JSONResponse({**board, "cap": cfg.requests.queue_cap,
+                             "paid_enabled": False,
+                             "voting_enabled": cfg.voting.enabled},
                             headers={"Cache-Control": "public, max-age=2"})
 
     @app.post("/api/requests")
     async def submit_request(payload: dict):
-        return JSONResponse({"ok": True, "rejected": False, "queue": [],
-                "recent": _RECENT, "cap": 20, "paid_enabled": False},
+        store.add_request(str(payload.get("text") or "e2e request"), cap=None)
+        board = store.request_board(
+            cfg.requests.queue_cap, cfg.requests.max_length,
+            voting_enabled=cfg.voting.enabled,
+            bury_threshold=cfg.voting.bury_threshold)
+        return JSONResponse({"ok": True, "rejected": False, **board,
+                "cap": cfg.requests.queue_cap, "paid_enabled": False,
+                "voting_enabled": cfg.voting.enabled},
                 headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/requests/{request_id}/vote")
+    async def vote(request_id: int, payload: voting.VoteIn):
+        status, body = voting.cast_vote(
+            store, cfg, request_id, payload.voter_id, payload.value, None)
+        return JSONResponse(status_code=status, content=body,
+                            headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/station/rating")
+    async def rate(payload: voting.RatingIn):
+        status, body = voting.cast_rating(store, cfg, sched, payload, None)
+        return JSONResponse(status_code=status, content=body,
+                            headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/test/air/{request_id}")
+    async def test_air(request_id: int):
+        """Test-only: mark a request aired so the spec can watch the row lose
+        its vote buttons on the next board poll (VOTING.md V4)."""
+        store.mark_request_aired(request_id)
+        return {"ok": True}
 
     @app.post("/api/test/splice")
     async def splice():

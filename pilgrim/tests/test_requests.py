@@ -249,10 +249,14 @@ def test_request_board_queue_and_recent(cfg):
     s.mark_request_aired(c["id"])
     board = s.request_board(cap=10)
     q = board["queue"]
-    # projected rows only: {text, status, paid} (PAYMENT.md §3.4)
+    # projected rows only (PAYMENT.md §3.4); VOTING.md §1 adds the voting
+    # fields: id, score, votable, buried.
     assert [x["text"] for x in q] == ["play mittens a song", "alien abductions"]
     assert q[0]["status"] == "producing" and q[1]["status"] == "ready"
-    assert set(q[0]) == {"text", "status", "paid", "stage", "song_title"}
+    assert set(q[0]) == {"id", "text", "status", "paid", "stage",
+                         "song_title", "score", "votable", "buried"}
+    assert q[0]["id"] == a["id"] and q[0]["score"] == 0
+    assert q[0]["votable"] is True and q[0]["buried"] is False
     assert q[0]["stage"] == "writing" and q[1]["stage"] == ""
     recent = board["recent"]
     assert any(r["song_title"] == "Night Shift" for r in recent)
@@ -461,3 +465,195 @@ def test_board_prefers_paid_summary(cfg):
                                payment_intent_id="pi", amount_cents=350,
                                currency="usd", livemode=False)
     assert s.request_board(20)["queue"][0]["text"] == "a tidy label"
+
+
+# --------------------------------------------------------------------------- #
+# VOTING.md §1: request votes, ratings, the new queue order, bury, migration.
+# --------------------------------------------------------------------------- #
+
+def _voter(i: int) -> str:
+    return f"{i:032x}"
+
+
+def test_vote_upsert_retract_and_score(cfg):
+    s = _store()
+    a = s.add_request("free A", cap=None)
+    assert s.cast_request_vote(a["id"], _voter(1), "1.2.3.4", 1,
+                               max_voters_per_ip=3)["score"] == 1
+    assert s.cast_request_vote(a["id"], _voter(1), "1.2.3.4", -1,
+                               max_voters_per_ip=3)["score"] == -1
+    with s._lock:
+        n = s._conn.execute("SELECT COUNT(*) FROM request_votes").fetchone()[0]
+    assert n == 1                       # upsert, not a second row
+    assert s.cast_request_vote(a["id"], _voter(1), "1.2.3.4", 0,
+                               max_voters_per_ip=3)["score"] == 0
+    assert s.request_score(a["id"]) == 0
+    assert s.cast_request_vote(a["id"], _voter(2), "5.6.7.8", -1,
+                               max_voters_per_ip=3)["score"] == -1
+
+
+def test_vote_window_and_paid(cfg):
+    s = _store()
+    a = s.add_request("free A", cap=None)
+    paid = _make_paid(s, "paid", "2026-10-31T10:00:00+00:00")
+    assert s.cast_request_vote(paid["id"], _voter(1), None, 1,
+                               max_voters_per_ip=3)["code"] == "not_votable"
+    s.mark_request_aired(a["id"])
+    assert s.cast_request_vote(a["id"], _voter(1), None, 1,
+                               max_voters_per_ip=3)["code"] == "voting_closed"
+    assert s.cast_request_vote(999, _voter(1), None, 1,
+                               max_voters_per_ip=3)["code"] == "not_found"
+
+
+def test_vote_ip_cap_is_per_request_and_excludes_own_vote(cfg):
+    s = _store()
+    a = s.add_request("free A", cap=None)
+    b = s.add_request("free B", cap=None)
+    for i in (1, 2, 3):
+        assert s.cast_request_vote(a["id"], _voter(i), "9.9.9.9", 1,
+                                   max_voters_per_ip=3)["ok"]
+    assert s.cast_request_vote(a["id"], _voter(4), "9.9.9.9", 1,
+                               max_voters_per_ip=3)["code"] == "too_many_voters"
+    # the same voter changing its vote is not a new voter
+    assert s.cast_request_vote(a["id"], _voter(1), "9.9.9.9", -1,
+                               max_voters_per_ip=3)["ok"]
+    # the cap is per request, not per IP
+    assert s.cast_request_vote(b["id"], _voter(4), "9.9.9.9", 1,
+                               max_voters_per_ip=3)["ok"]
+
+
+def test_queue_order_votes_then_in_flight_then_fifo(cfg):
+    """VOTING.md V6: paid first; in-flight by claim time; free queued by score
+    DESC, then FIFO. With no votes the order is today's."""
+    s = _store()
+    a = s.add_request("free A", cap=None)
+    b = s.add_request("free B", cap=None)
+    c = _make_paid(s, "paid C", "2026-10-31T10:00:00+00:00")
+    assert [r["text"] for r in s.queued_requests()] == ["paid C", "free A", "free B"]
+    # B upvoted twice -> written next (after paid)
+    s.cast_request_vote(b["id"], _voter(1), "1.1.1.1", 1, max_voters_per_ip=3)
+    s.cast_request_vote(b["id"], _voter(2), "2.2.2.2", 1, max_voters_per_ip=3)
+    assert [r["text"] for r in s.queued_requests()] == ["paid C", "free B", "free A"]
+    assert s.next_request_to_produce()["text"] == "paid C"
+    # B claimed -> in flight first; A voted +5 still waits behind it
+    s.mark_request_producing(b["id"])
+    for i in range(3, 8):
+        s.cast_request_vote(a["id"], _voter(i), f"{i}.{i}.{i}.{i}", 1,
+                            max_voters_per_ip=3)
+    assert [r["text"] for r in s.queued_requests()] == ["paid C", "free A"]
+    assert [r["text"] for r in s.pending_requests()] == ["paid C", "free B", "free A"]
+    # C is still queued (paid), so it is the next to produce; once claimed, A
+    # (the highest-scoring free row) is next even though B is ahead on the board.
+    assert s.next_request_to_produce()["text"] == "paid C"
+    s.mark_request_producing(c["id"])
+    assert s.next_request_to_produce()["text"] == "free A"
+
+
+def test_claimed_at_is_set_once_and_orders_in_flight(cfg):
+    s = _store()
+    a = s.add_request("free A", cap=None)
+    b = s.add_request("free B", cap=None)
+    ca = s.mark_request_producing(a["id"])
+    assert ca
+    cb = s.mark_request_producing(b["id"])
+    assert cb and cb >= ca
+    # a retry (requeue -> producing) keeps the original claim time
+    s.requeue_request(a["id"])
+    again = s.mark_request_producing(a["id"])
+    assert again == ca
+
+
+def test_bury_skips_free_queued_but_keeps_it_on_the_board(cfg):
+    s = _store()
+    a = s.add_request("buried noise", cap=None)
+    b = s.add_request("fine", cap=None)
+    for i in (1, 2, 3):
+        s.cast_request_vote(a["id"], _voter(i), f"{i}.{i}.{i}.{i}", -1,
+                            max_voters_per_ip=3)
+    assert s.request_score(a["id"]) == -3
+    assert [r["text"] for r in s.queued_requests(bury_threshold=-3)] == ["fine"]
+    assert s.next_request_to_produce(bury_threshold=-3)["id"] == b["id"]
+    assert [r["text"] for r in s.pending_requests(bury_threshold=-3)] == ["fine"]
+    board = s.request_board(20, bury_threshold=-3)
+    buried = next(r for r in board["queue"] if r["id"] == a["id"])
+    assert buried["buried"] is True and buried["score"] == -3
+    assert buried["votable"] is True
+    # a single upvote revives it
+    s.cast_request_vote(a["id"], _voter(1), "1.1.1.1", 1, max_voters_per_ip=3)
+    assert s.request_board(20, bury_threshold=-3)["queue"][0]["buried"] is False
+    assert s.next_request_to_produce(bury_threshold=-3) is not None
+    # None disables burying entirely
+    assert len(s.queued_requests(bury_threshold=None)) == 2
+
+
+def test_board_votable_false_when_voting_disabled(cfg):
+    s = _store()
+    s.add_request("free A", cap=None)
+    row = s.request_board(20, voting_enabled=False)["queue"][0]
+    assert row["votable"] is False
+
+
+def test_ratings_upsert_per_airing_and_lifetime_aggregate(cfg):
+    s = _store()
+    item = s.add_item(type_="song", media_path="/tmp/s.flac", duration_s=120)
+    r1 = s.cast_song_rating(item_id=item, epoch="e1", seq=5,
+                            voter_id=_voter(1), ip="1.1.1.1", stars=4,
+                            max_voters_per_ip=3)
+    assert r1 == {"ok": True, "item_id": item, "count": 1, "avg": 4.0, "mine": 4}
+    # same voter, same airing: replaces
+    r2 = s.cast_song_rating(item_id=item, epoch="e1", seq=5,
+                            voter_id=_voter(1), ip="1.1.1.1", stars=2,
+                            max_voters_per_ip=3)
+    assert r2["count"] == 1 and r2["avg"] == 2.0
+    # same song, next airing: a second rating counts
+    s.cast_song_rating(item_id=item, epoch="e1", seq=40,
+                       voter_id=_voter(1), ip="1.1.1.1", stars=5,
+                       max_voters_per_ip=3)
+    agg = s.song_rating(item)
+    assert agg["count"] == 2 and agg["avg"] == 3.5
+
+
+def test_rating_ip_cap_and_stars_check(cfg):
+    import sqlite3
+    s = _store()
+    item = s.add_item(type_="song", media_path="/tmp/s.flac", duration_s=120)
+    for i in (1, 2, 3):
+        assert s.cast_song_rating(item_id=item, epoch="e", seq=1,
+                                  voter_id=_voter(i), ip="9.9.9.9", stars=3,
+                                  max_voters_per_ip=3)["ok"]
+    assert s.cast_song_rating(item_id=item, epoch="e", seq=1,
+                              voter_id=_voter(4), ip="9.9.9.9", stars=3,
+                              max_voters_per_ip=3)["code"] == "too_many_voters"
+    import pytest
+    with pytest.raises(sqlite3.IntegrityError), s._lock:
+        s._conn.execute(
+            "INSERT INTO song_ratings (item_id, epoch, seq, voter_id, ip, "
+            "stars, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+            (item, "e", 1, _voter(9), None, 6, "x", "x"))
+
+
+def test_vote_migration_is_idempotent_on_old_schema(cfg, tmp_path):
+    """An old station.db gains claimed_at and both tables on open; reopening
+    is a no-op (VOTING.md §1)."""
+    import sqlite3
+
+    from pilgrim.store import Store
+    db = tmp_path / "old.db"
+    s0 = Store(db)          # current schema
+    s0._conn.close()
+    con = sqlite3.connect(db)   # strip the VOTING.md additions
+    con.executescript(
+        "DROP TABLE request_votes; DROP TABLE song_ratings;"
+        "ALTER TABLE requests DROP COLUMN claimed_at;")
+    con.commit()
+    con.close()
+    s1 = Store(db)
+    cols = {r[1] for r in s1._conn.execute("PRAGMA table_info(requests)")}
+    assert "claimed_at" in cols
+    tables = {r[0] for r in s1._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"request_votes", "song_ratings"} <= tables
+    s1._conn.close()
+    s2 = Store(db)  # reopening must not fail
+    assert "claimed_at" in {r[1] for r in s2._conn.execute(
+        "PRAGMA table_info(requests)")}
