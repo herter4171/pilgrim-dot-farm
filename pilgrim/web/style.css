@@ -76,10 +76,10 @@ body {
   text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--violet); }
 .req-table td { padding: 5px 6px; vertical-align: top; overflow-wrap: anywhere;
   border-bottom: 1px solid rgba(166, 61, 255, 0.18); }
-.req-table .c-prompt { width: 43%; }
+.req-table .c-prompt { width: 52%; }
 .req-table .c-title { width: 20%; }
 .req-table .c-time { width: 14%; }
-.req-table .c-vote { width: 100px; }
+.req-table .c-vote { width: 48px; }
 .req-num { color: var(--cyan); margin-right: 6px; }
 .req-text { color: var(--text); }
 .req-title { color: var(--cyan); font-size: 14px; }
@@ -88,12 +88,13 @@ body {
 .req-empty td { font-size: 15px; color: var(--dim); border-bottom: none; }
 .req-paid-icon { height: 1.25em; width: auto; vertical-align: -0.12em; margin-right: 2px; }
 
-/* Request-queue votes (VOTING.md Step 6, RADIO §9.1). ↑ score ↓, score
-   centered. 40x40 boxes with a 44x44 hit area (the ::after inset), so the
-   column stays narrow enough for 320 px. Pressed = filled in the arrow's own
-   colour with the pane's dark text; un-pressed = outlined. */
-.req-vote { white-space: nowrap; padding-left: 2px; padding-right: 2px; }
-.vote { display: inline-flex; align-items: center; gap: 0; }
+/* Request-queue votes (VOTING.md Step 6, RADIO §9.1). Up arrow above the
+   number, down arrow below it, so the column is one arrow wide (48 px) and the
+   prompt/title get the rest. 40x40 boxes with a 44x44 hit area (the ::after
+   inset). Pressed = filled in the arrow's own colour with the pane's dark
+   text; un-pressed = outlined. */
+.req-vote { white-space: nowrap; padding: 4px 2px; }
+.vote { display: flex; flex-direction: column; align-items: center; gap: 1px; }
 .vote button {
   position: relative; width: 40px; height: 40px; padding: 0;
   background: transparent; border: 1px solid var(--dim); border-radius: 6px;
@@ -109,8 +110,8 @@ body {
   filter: brightness(1.2); outline: 2px solid currentColor; outline-offset: 1px;
 }
 .vote button:disabled { opacity: .5; cursor: default; }
-.vote-score { min-width: 1.5ch; text-align: center; font-size: 15px;
-  color: var(--text); }
+.vote-score { min-width: 2ch; text-align: center; font-size: 15px;
+  line-height: 1; color: var(--text); }
 .vote.err { animation: voteshake .25s linear 2; }
 @keyframes voteshake {
   0%, 100% { transform: translateX(0); }
@@ -407,9 +408,9 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   /* Queue: three visual columns — Request / Title+status / Vote. */
   .req-table td { padding: 6px 4px; }
   .req-text { hyphens: auto; }
-  .req-table .c-prompt { width: 44%; }
-  .req-table .c-title { width: calc(56% - 100px); }
-  .req-table .c-vote { width: 100px; }
+  .req-table .c-prompt { width: 50%; }
+  .req-table .c-title { width: calc(50% - 48px); }
+  .req-table .c-vote { width: 48px; }
   .req-table .c-time, .req-table td.req-status { display: none; }
   .req-status-inline { display: block; color: var(--dim); font-size: 10px;
     letter-spacing: 1px; }
