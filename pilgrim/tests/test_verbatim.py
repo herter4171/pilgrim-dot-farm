@@ -136,7 +136,10 @@ def test_free_requests_cannot_enable_verbatim_preservation(cfg, text):
     llm = _Rec(generated)
     sp = _brief_pipeline(cfg, llm)
     out = asyncio.run(sp.brief([], request_text=text))
-    assert out["lyrics"] == generated["lyrics"]
+    # the words are the LLM's; only the leading chorus position is the
+    # station's (RADIO §6.2), so compare against the reordered form
+    assert out["lyrics"] == ("[chorus]\nOh the cheese got cuffed\n"
+                             "[verse]\nMoon over the hen coop")
     assert out["style_prompt"] == generated["style_prompt"]
     assert "caption_verbatim" not in out
     assert "lyrics_verbatim" not in out

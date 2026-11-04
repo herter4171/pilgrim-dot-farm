@@ -579,5 +579,70 @@ def test_rural_subjects_are_allowed_in_reggae(cfg, subject):
                            lyrics=lyrics))
     sp = _brief_pipeline(cfg, llm)
     out = asyncio.run(sp.brief([], request_text=f"reggae about a {subject}"))
+    assert out["lyrics"].startswith("[chorus]\nWe gather in the yard tonight")
+    assert f"invite a {subject}" in out["lyrics"]
+
+
+# --------------------------------------------------------------------------- #
+# chorus-first (free/stock songs pander to short attention spans, §6.2)
+# --------------------------------------------------------------------------- #
+def test_free_brief_lyrics_lead_with_chorus(cfg):
+    """A verse-first brief comes back opening on the hook."""
+    lyrics = ("[verse]\nMoon over the hen coop\n"
+              "[chorus]\nOh the cheese got cuffed\n"
+              "[verse]\nThe goats are up in arms")
+    llm = _Rec(valid_brief("jazz-swing-big-band", lyrics=lyrics))
+    sp = _brief_pipeline(cfg, llm)
+    out = asyncio.run(sp.brief([], request_text="jazz about cheese"))
+    assert out["lyrics"] == ("[chorus]\nOh the cheese got cuffed\n"
+                             "[verse]\nMoon over the hen coop\n"
+                             "[verse]\nThe goats are up in arms")
+
+
+def test_stock_brief_lyrics_lead_with_chorus(cfg):
+    """Stock songs get the same treatment as free requests."""
+    llm = _Rec(valid_brief("jazz-swing-big-band"))
+    sp = _brief_pipeline(cfg, llm)
+    out = asyncio.run(sp.brief([]))
+    assert out["lyrics"].startswith("[chorus]\nOh the cheese got cuffed")
+
+
+def test_paid_brief_lyrics_are_not_reordered(cfg):
+    """Paid songs are the payer's: their shape is never changed."""
+    lyrics = "[verse]\nMoon over the hen coop\n[chorus]\nOh the cheese got cuffed"
+    llm = _Rec(valid_brief("jazz-swing-big-band", lyrics=lyrics))
+    sp = _brief_pipeline(cfg, llm)
+    out = asyncio.run(sp.brief([], request_text="jazz for my mum", paid=True))
     assert out["lyrics"] == lyrics
+
+
+def test_leading_intro_is_dropped_so_the_song_opens_cold(cfg):
+    lyrics = ("[intro]\nA lone piano hums\n"
+              "[verse]\nMoon over the hen coop\n"
+              "[chorus]\nOh the cheese got cuffed")
+    llm = _Rec(valid_brief("jazz-swing-big-band", lyrics=lyrics))
+    sp = _brief_pipeline(cfg, llm)
+    out = asyncio.run(sp.brief([], request_text="jazz about cheese"))
+    assert out["lyrics"] == ("[chorus]\nOh the cheese got cuffed\n"
+                             "[verse]\nMoon over the hen coop")
+
+
+def test_lead_with_chorus_leaves_other_shapes_alone(cfg):
+    """No chorus block (or no tags) -> untouched; already-first -> untouched."""
+    from pilgrim.pipelines.songs import lead_with_chorus
+
+    verse_only = "[verse]\nMoon over the hen coop"
+    assert lead_with_chorus(verse_only) == verse_only
+    assert lead_with_chorus("") == ""
+    already = "[chorus]\nOh the cheese got cuffed\n[verse]\nMoon over the hen coop"
+    assert lead_with_chorus(already) == already
+
+
+def test_free_direction_asks_for_a_leading_chorus(cfg):
+    llm = _Rec()
+    sp = _brief_pipeline(cfg, llm)
+    asyncio.run(sp.brief([], request_text="a wedding song for Sam and Ari"))
+    assert "Open on the chorus" in llm.system
+    asyncio.run(sp.brief([], request_text="a wedding song", paid=True))
+    assert "Open on the chorus" not in llm.system
 

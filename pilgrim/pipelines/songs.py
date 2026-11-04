@@ -38,6 +38,54 @@ _ALLOWED_TAGS = {"intro", "verse", "pre-chorus", "chorus", "post-chorus",
 _TEMPO_WORDS = ("slow", "mid-tempo", "midtempo", "uptempo", "up-tempo",
                 "driving", "unhurried", "fast", "ballad tempo")
 
+# A section tag stands alone on its line (guide §2; text on the tag line is
+# dropped by the model).
+_TAG_LINE = re.compile(r"^\[([a-z][a-z -]*)\]$")
+
+
+def lead_with_chorus(lyrics: str) -> str:
+    """Move the first `[chorus]` block to the top of the lyrics (RADIO §6.2).
+
+    Stock songs and free requests pander to short attention spans: the hook
+    lands in the first seconds because listeners scroll past. Only the leading
+    position is prescribed — the rest of the song keeps whatever shape the
+    brief LLM wrote. A leading `[intro]` block is dropped, since an intro is
+    exactly what the chorus is replacing.
+
+    Deterministic and offline: no extra LLM call and no rejected brief. Returns
+    `lyrics` unchanged when it already opens on the chorus, is empty
+    (instrumental), or has no chorus block at all.
+    """
+    if not lyrics.strip():
+        return lyrics
+    blocks: list[tuple[str | None, list[str]]] = []
+    for line in lyrics.splitlines():
+        m = _TAG_LINE.fullmatch(line.strip())
+        if m:
+            blocks.append((m.group(1), []))
+        elif blocks:
+            blocks[-1][1].append(line.rstrip())
+        else:
+            blocks.append((None, [line.rstrip()]))
+    tags = [t for t, _ in blocks]
+    if "chorus" not in tags:
+        return lyrics
+    i = tags.index("chorus")
+    if i == 0:
+        return lyrics
+    rest = [b for j, b in enumerate(blocks) if j != i]
+    if rest and rest[0][0] == "intro":
+        rest = rest[1:]
+    out: list[str] = []
+    for tag, lines in [blocks[i], *rest]:
+        if tag:
+            out.append(f"[{tag}]")
+        body = list(lines)
+        while body and not body[-1].strip():
+            body.pop()
+        out.extend(body)
+    return "\n".join(out).strip("\n")
+
 # An exclusion ("no steel guitar", "never a fiddle") is a legitimate caption
 # instruction, so only a *positive* mention of a conflicting instrument counts.
 _NEGATION = re.compile(
@@ -493,6 +541,13 @@ class SongPipeline:
                     log.info("song.brief_verbatim", extra={
                         "caption": use_cap, "lyrics": use_lyr,
                         "prompt_chars": len(out["style_prompt"]) + len(out["lyrics"])})
+                if not paid:
+                    # Free/stock songs lead with the chorus (RADIO §6.2). Paid
+                    # songs are the payer's: their shape is never reordered.
+                    first = lead_with_chorus(out["lyrics"])
+                    if first != out["lyrics"]:
+                        log.info("song.chorus_first", extra={"moved": True})
+                        out["lyrics"] = first
                 return out
             except ValueError as e:
                 last_error = e

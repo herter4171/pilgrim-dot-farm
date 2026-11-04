@@ -13,6 +13,13 @@ animals with opinions, harvests, canning, broken tractors, barnyard absurdity.
 An amusing title alone does not give the lyrics the station's character.
 Full farm stories are welcome; there is no one-image limit.
 
+**Open on the chorus.** Listeners scroll past, so the hook must land in the
+first seconds: the lyrics begin with `[chorus]` and no `[intro]` block comes
+before it. Write that chorus as the song's strongest, most repeatable lines.
+The caption's Global Emotional Progression opens on the hook rather than
+building to it. Nothing else about the song's shape is prescribed — verse,
+bridge, solo, outro and their order are yours.
+
 Let PILGRIM DOT FARM slip naturally into a lyric or hook when it fits. Vary
 the references and jokes so the songs have their own stories. The exact
 station name is not required in every song. Never tack it onto a title as a

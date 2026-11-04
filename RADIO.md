@@ -554,6 +554,14 @@ Workers:
      and artist. A station-name title tag ("(PILGRIM DOT FARM)") is rejected
      for stock/free songs; a funny title alone is not the requested lyric
      treatment. The musical caption stays focused on the requested sound.
+   - **Free/stock songs lead with the chorus:** listeners scroll past, so
+     the hook has to land in the first seconds. `station_song.md` asks the
+     brief LLM to open the lyrics on `[chorus]` with no `[intro]` before it,
+     and code (`pipelines/songs.py` `lead_with_chorus`) moves the first
+     `[chorus]` block to the top and drops a leading `[intro]`, so the shape
+     is guaranteed without rejecting or re-briefing. Only the leading position
+     is prescribed; the rest of the song's structure is the LLM's. Paid songs
+     and verbatim lyric sheets are never reordered.
    - **Paid songs follow the customer's brief:** no unsolicited farm humor
      or station branding in lyrics, caption, title or artist. Preserve named
      titles and artists, including a requested parenthetical title. A requested
