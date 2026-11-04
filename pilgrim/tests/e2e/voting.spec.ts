@@ -136,15 +136,15 @@ test("queue votes: up, retract, down; the paid row has no buttons", async ({ pag
   expect(up.status()).toBe(200);
   expect((await up.json()).score).toBe(1);
   expect(up.headers()["cache-control"]).toBe("no-store");
-  await expect(row.locator(".vote-score")).toHaveText("1");
+  await expect(row.locator(".vote-score")).toHaveText("2");   // base 1 + upvote
   await expect(row.locator(".vote-up")).toHaveAttribute("aria-pressed", "true");
 
   await row.locator(".vote-up").click();   // second click retracts
-  await expect(row.locator(".vote-score")).toHaveText("0");
+  await expect(row.locator(".vote-score")).toHaveText("1");   // back to the base vote
   await expect(row.locator(".vote-up")).toHaveAttribute("aria-pressed", "false");
 
   await row.locator(".vote-down").click();
-  await expect(row.locator(".vote-score")).toHaveText("-1");
+  await expect(row.locator(".vote-score")).toHaveText("0");   // base 1 - 1
   await expect(row.locator(".vote-down")).toHaveAttribute("aria-pressed", "true");
 
   // the pressed state survives a reload (localStorage), and the board score too
@@ -153,7 +153,7 @@ test("queue votes: up, retract, down; the paid row has no buttons", async ({ pag
   await expect(again.locator(".vote-down")).toHaveAttribute("aria-pressed", "true");
   // The board is cached for 2 s at the edge and polled every 6 s: the score
   // catches up on the next poll (the pressed state comes from localStorage).
-  await expect(again.locator(".vote-score")).toHaveText("-1", { timeout: 12000 });
+  await expect(again.locator(".vote-score")).toHaveText("0", { timeout: 12000 });
 });
 
 test("an aired request leaves the queue and loses its buttons", async ({ page }) => {

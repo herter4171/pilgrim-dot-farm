@@ -96,17 +96,9 @@
           readySeen = true;
         }
         if (r.buried) label = "buried";   // VOTING.md V7: voted below the line
-        tr.appendChild(promptCell(r, i + 1));
-        const titleTd = cell("req-title", r.song_title || "—");
-        // mobile: the status column is hidden and its text moves under the
-        // title, so the table is Request / Title+status / Vote at 520 px
-        const inline = document.createElement("span");
-        inline.className = "req-status-inline";
-        inline.textContent = label;
-        titleTd.appendChild(inline);
-        tr.appendChild(titleTd);
-        tr.appendChild(cell("req-status", label));
-        // VOTING.md: the vote cell is built with createElement, never strings
+        // VOTING.md: the vote cell is built with createElement, never strings.
+        // Cosmetic patch: votes are the left-most column of the queue table,
+        // so the cell is appended before the request text.
         if (window.PD_VOTES && typeof window.PD_VOTES.cell === "function") {
           tr.appendChild(window.PD_VOTES.cell(r));
         } else {
@@ -114,6 +106,16 @@
           td.className = "req-vote";
           tr.appendChild(td);
         }
+        tr.appendChild(promptCell(r, i + 1));
+        const titleTd = cell("req-title", r.song_title || "—");
+        // mobile: the status column is hidden and its text moves under the
+        // title, so the table is Vote / Request / Title+status at 520 px
+        const inline = document.createElement("span");
+        inline.className = "req-status-inline";
+        inline.textContent = label;
+        titleTd.appendChild(inline);
+        tr.appendChild(titleTd);
+        tr.appendChild(cell("req-status", label));
         queueEl.appendChild(tr);
       });
     }

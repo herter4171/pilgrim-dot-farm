@@ -19,6 +19,11 @@
   }
   const STICKY_MS = 4000;
   const sticky = new Map();   // request id -> {score, until}
+  /* Cosmetic patch: the column starts at one vote, not zero, so a freshly
+     queued request reads "1" instead of "0". Display only — ordering and
+     burying keep using the raw server score (a uniform offset cannot change
+     either). */
+  const BASE_SCORE = 1;
 
   function scoreFor(row) {
     const s = sticky.get(row.id);
@@ -50,7 +55,7 @@
     const score = wrap.querySelector(".vote-score");
     const up = wrap.querySelector(".vote-up");
     const down = wrap.querySelector(".vote-down");
-    score.textContent = String(scoreFor(row));
+    score.textContent = String(BASE_SCORE + scoreFor(row));
     up.classList.toggle("pressed", mine === 1);
     down.classList.toggle("pressed", mine === -1);
     up.setAttribute("aria-pressed", mine === 1 ? "true" : "false");

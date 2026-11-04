@@ -29,14 +29,37 @@ test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", as
   for (const [, href] of links) expect(href).toMatch(/^https:\/\/huggingface\.co\//);
   expect(await page.textContent(".visitors")).toMatch(/^Unique visitors:/);
   await expect(page.locator("#listeners")).toHaveText("Listening now: 69.10");
-  // the hit-counter pane links to the site's Reddit thread, in a new tab
-  const hitLink = await page.$eval(".hit-link", a => [a.textContent, a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")]);
-  expect(hitLink).toEqual([
-    "Interested in the site? Say hi on Reddit",
-    "https://www.reddit.com/user/jwhh91/comments/1wvjsno/pilgrim_dot_farm/",
-    "_blank",
-    "noopener noreferrer",
+  // the hit-counter pane carries the social links as icons (cosmetic patch):
+  // Instagram / Reddit / GitHub, each an SVG glyph in a new tab
+  const socials = await page.$$eval(".social-row a", els => els.map(a => {
+    const img = a.querySelector("img") as HTMLImageElement | null;
+    return [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel"),
+            img ? img.getAttribute("src") : null, img ? img.getAttribute("alt") : null];
+  }));
+  expect(socials).toEqual([
+    ["https://www.instagram.com/pilgrim.farm/", "_blank", "noopener noreferrer",
+     "img/instagram.svg", "Instagram"],
+    ["https://www.reddit.com/r/pilgrimdotfarm", "_blank", "noopener noreferrer",
+     "img/reddit.svg", "Reddit"],
+    ["https://github.com/pilgrim-dot-farm/pilgrim-dot-farm", "_blank", "noopener noreferrer",
+     "img/github.svg", "GitHub"],
   ]);
+  // the old text links are gone
+  expect(await page.$$(".hit-link")).toHaveLength(0);
+  // every icon is an SVG that actually loads, rendered 40-48 px wide
+  for (const img of await page.locator(".social-row img").all()) {
+    await img.scrollIntoViewIfNeeded();
+    await expect.poll(
+      () => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0),
+      { timeout: 10_000 }).toBe(true);
+    const box = await img.boundingBox();
+    expect(box!.width).toBeGreaterThanOrEqual(40);
+    expect(box!.width).toBeLessThanOrEqual(48);
+    const src = await img.getAttribute("src");
+    const r = await page.request.get("/" + src);
+    expect(r.ok()).toBeTruthy();
+    expect(r.headers()["content-type"]).toContain("image/svg+xml");
+  }
   // the infra pane shows infra.png as content, linked to the full-size image
   const infra = await page.$eval('[data-win="infra"] .infra-link img.infra-img',
     img => [img.getAttribute('src'), img.getAttribute('alt')]);
@@ -103,6 +126,12 @@ test("aired requests table shows up to five with a prep time", async ({ page }) 
   expect(waits[4]).toBe("—");
   const airedTable = page.locator(".req-table").filter({ has: page.locator("#req-recent") });
   await expect(airedTable.getByRole("columnheader")).toHaveText(["Prompt", "Title", "Prep Time"]);
+  // the queue's vote column is left-most (cosmetic patch)
+  const queueTable = page.locator(".req-table").filter({ has: page.locator("#req-queue") });
+  await expect(queueTable.getByRole("columnheader"))
+    .toHaveText(["Votes", "Request", "Title", "Status"]);
+  expect(await page.$eval("#req-queue tr.req-item td:first-child",
+    td => td.classList.contains("req-vote"))).toBe(true);
   // the queue table's header row stays pinned while its box scrolls
   const pos = await page.$eval(".req-scroll thead th",
                                el => getComputedStyle(el).position);

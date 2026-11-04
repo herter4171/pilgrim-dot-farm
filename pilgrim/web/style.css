@@ -75,8 +75,8 @@ body {
 .req-err { font-size: 15px; min-height: 14px; letter-spacing: 0.5px; transition: opacity .6s; }
 .req-list-head { font-size: 14px; letter-spacing: 2px; color: var(--magenta);
   border-bottom: 1px solid var(--violet); padding-bottom: 4px; }
-/* Request board tables: Prompt | Title | Prep Time. The queue scrolls inside
-   its own box (up to 50 rows) with the header row pinned. */
+/* Request board tables: Votes | Prompt | Title | Prep Time. The queue scrolls
+   inside its own box (up to 50 rows) with the header row pinned. */
 .req-table-wrap { width: 100%; }
 .req-scroll { max-height: 260px; overflow-y: auto; }
 .req-table { width: 100%; border-collapse: separate; border-spacing: 0;
@@ -100,9 +100,9 @@ body {
 
 /* Request-queue votes (VOTING.md Step 6, RADIO §9.1). Up arrow above the
    number, down arrow below it, so the column is one arrow wide (48 px) and the
-   prompt/title get the rest. 40x40 boxes with a 44x44 hit area (the ::after
-   inset). Pressed = filled in the arrow's own colour with the pane's dark
-   text; un-pressed = outlined. */
+   prompt/title get the rest. It is the left-most column of the queue table.
+   40x40 boxes with a 44x44 hit area (the ::after inset). Pressed = filled in
+   the arrow's own colour with the pane's dark text; un-pressed = outlined. */
 .req-vote { white-space: nowrap; padding: 4px 2px; }
 .vote { display: flex; flex-direction: column; align-items: center; gap: 1px; }
 .vote button {
@@ -336,8 +336,9 @@ body {
 .turkeys { order: 3; flex: 0 0 100%; display: flex;
   align-items: center; justify-content: center; }
 /* Empty turkeys are a dim lavender outline; a star you illuminated is filled
-   bright gold. The colour difference is the "on" signal, so it must read at a
-   glance (operator feedback: empty stars were too easy to miss). */
+   bright cyan. The colour difference is the "on" signal, so it must read at a
+   glance (operator feedback: empty stars were too easy to miss). Cyan, not the
+   old gold: the site's accent for "selected" everywhere else. */
 .turkey {
   width: 48px; height: 48px; padding: 0; background: none; border: 0;
   border-radius: 6px; cursor: pointer; color: var(--dim);
@@ -348,12 +349,12 @@ body {
    its <g>, but `fill` is inherited through the <use> host. So the outlined
    default and the filled selection are set on the <svg>, and the symbol's
    group carries no fill attribute of its own. */
-.turkey.filled { color: var(--warn); }
+.turkey.filled { color: var(--cyan); }
 .turkey.filled svg { fill: currentColor;
-  filter: drop-shadow(0 0 4px rgba(255, 210, 74, .45)); }
+  filter: drop-shadow(0 0 4px rgba(36, 224, 255, .45)); }
 .turkey:hover:not(:disabled), .turkey:focus-visible {
-  color: var(--warn);
-  filter: brightness(1.2); outline: 2px solid var(--warn); outline-offset: -2px;
+  color: var(--cyan);
+  filter: brightness(1.2); outline: 2px solid var(--cyan); outline-offset: -2px;
 }
 .turkey:disabled { cursor: default; }
 .rate-row[aria-disabled="true"] { opacity: .45; }
@@ -381,6 +382,17 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
 .hit-link { font-size: 14px; letter-spacing: 1px; color: var(--dim);
   text-align: center; }
 .hit-link:hover { color: var(--cyan); }
+/* Social icons (cosmetic patch): glyph-only SVGs at 44 px, centred under the
+   two counters. The <a> is a 44x44 flex box so the tap target matches the
+   artwork; focus/hover brightens the glyph and draws the cyan ring. */
+.social-row { display: flex; align-items: center; justify-content: center;
+  gap: 18px; margin-top: 2px; }
+.social-row a { display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; border-radius: 8px; }
+.social-row img { width: 44px; height: 44px; display: block; }
+.social-row a:hover, .social-row a:focus-visible {
+  filter: brightness(1.2); outline: 2px solid var(--cyan); outline-offset: 2px;
+}
 
 /* Infra and data flow pane (COSMETIC_PATCHING §7). The image is a portrait
    diagram (1024x1536): it must be exactly as wide as the pane's interior
@@ -428,7 +440,7 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   .turkey { width: 44px; height: 44px; }
   .turkey svg { width: 30px; height: 30px; }
   .rate-agg { font-size: 13px; }
-  /* Queue: three visual columns — Request / Title+status / Vote. */
+  /* Queue: three visual columns — Vote / Request / Title+status. */
   .req-table td { padding: 6px 4px; }
   .req-text { hyphens: auto; }
   .req-table .c-prompt { width: 50%; }
