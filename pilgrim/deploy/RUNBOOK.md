@@ -334,3 +334,102 @@ scp /tmp/station.db.rollback ec2:radio/pilgrim/station.db
 
 - `library/`: nightly `rsync -a` to the NAS.
 - Restore-test the DB backup at least once before relying on it.
+
+## 11. Edge DNS: VPC DNS outage workaround (2026-11-04)
+
+On 2026-11-04 the VPC DNS resolver (`100.100.100.100`) began SERVFAILing
+everything from the edge — including local `.compute.internal` names, over
+both UDP and TCP. Local names never leave the VPC, so the AWS resolver for
+the VPC itself is broken (or VPC DNS support was disabled); nothing on the
+box can cause this. Also VPC-side: all public ICMP egress is dropped at the
+VPC gateway, and TCP/80 egress to 8.8.8.8 dies at the gateway while
+`1.1.1.1:80`, `8.8.8.8:443` and UDP/53 all work — the IGW is present and
+healthy. The edge's IAM role (`pg-s3-read`) has no EC2 read, so the NACL / SG
+egress / route table cannot be inspected from the box. The station itself
+was unaffected (443/53 egress is fine): `on_air` true, `pilgrim.farm` 200
+through Cloudflare → ALB → `:8080`, CloudFront reachable.
+
+### Changes made on the edge (pf) to restore DNS
+
+1. **`/etc/resolv.conf` rewritten by hand (temporary).** tailscaled normally
+   manages this file. Current content:
+
+   ```
+   nameserver 1.1.1.1
+   nameserver 8.8.8.8
+   nameserver 100.100.100.100
+   search tail063158.ts.net us-west-1.compute.internal
+   ```
+
+   The IPv6 VPC DNS (`fd7a:115c:a1e0::53`) was dropped: the instance has no
+   IPv6 route. **This is not durable**: a reboot — or tailscaled's next DNS
+   write — regenerates the file from DHCP + VPC DNS and re-breaks DNS while
+   the VPC DNS is still failing.
+2. **`/etc/hosts` pins for the AWS API endpoints** (aws CLI works without
+   DNS):
+
+   ```
+   3.101.233.116   ec2.us-west-1.amazonaws.com
+   176.32.118.146  sts.us-west-1.amazonaws.com
+   ```
+
+   IPs resolved via 1.1.1.1 on 2026-11-04. Remove them when VPC DNS is
+   fixed: a stale pin can point at a different host if the anycast record
+   moves.
+3. **tailscaled restarted** (tailnet came back cleanly; a restart does not
+   fix the DNS issue below) and **tailscale upgraded to 1.104.5 via `yum
+   update -y`** (google-chrome also upgraded). Note: on AL2023 tailscaled
+   cannot read the OS DNS config — it shells out to `/usr/sbin/resolvconf
+   -i`, which on this OS means something else ("option requires an
+   argument"). Consequence: tailscaled's local DNS proxy (`127.0.0.1:41641`)
+   has no upstream and does not answer; `tailscale status` permanently shows
+   *"failed to fetch the DNS configuration of your device"*. The tailnet data
+   path (edge → origin) is unaffected; only the 41641 proxy and the health
+   warning are affected. Survived the 1.104.5 upgrade — same error.
+
+### Verify (from the edge)
+
+```sh
+getent hosts checkip.amazonaws.com && curl -m 5 http://checkip.amazonaws.com
+# expect the instance's public IP (52.53.93.0 at the time of writing)
+dig @100.100.100.100 ip-172-31-25-15.us-west-1.compute.internal
+# NOERROR + A 172.31.25.15 means the VPC DNS has recovered
+curl -s http://127.0.0.1:8080/api/health   # station still on air
+```
+
+### Revert once the VPC DNS is fixed (AWS side)
+
+1. Confirm the local-name probe above returns NOERROR.
+2. Remove the two `/etc/hosts` pins
+   (`sudo sed -i '/us-west-1\.amazonaws\.com/d' /etc/hosts`).
+3. `sudo systemctl restart tailscaled` so it regenerates `/etc/resolv.conf`
+   (tailscale-managed content: VPC DNS + search domain). Re-run the verify
+   block.
+
+### Still open (operator — AWS console, account 821856822529, us-west-1)
+
+- AWS Health dashboard (account + us-west-1): any VPC / Route 53 DNS event?
+- VPC → *Modify DNS support*: confirm enabled.
+- Route table (`0.0.0.0/0` → IGW), the NACL, and the edge SG's **egress**
+  rules: look for ICMP / TCP-80 egress blocks and any change since
+  ~2026-11-03 20:22 UTC (CloudTrail). That is the window after the last
+  known-good DNS (stale yum metadata cache).
+- Durable local DNS fix: set a **tailnet DNS nameserver** (e.g. 1.1.1.1) in
+  the admin console. tailscaled would then get its upstream from the netmap
+  instead of the broken OS-config read, and its 41641 proxy would answer
+  public names too.
+
+### Legacy `pilgrim-nginx` container (host :80/:443) — keep running
+
+Nothing listener-side hits the instance's public IP directly
+(Cloudflare → ALB → `:8080` is the live path), but **do not stop this
+container**: it serves the ACME HTTP-01 webroot (`/var/www/letsencrypt` on
+`:80`) used to renew the pilgrim.farm Let's Encrypt certificate in
+`/etc/letsencrypt` (config: `authenticator = webroot`,
+`webroot_path = /var/www/letsencrypt`). The current cert (archive `cert2`,
+issued 2026-08-21, HTTP-01) **expires 2026-11-19**, and the box has **no
+certbot timer or cron** (no `certbot` unit in `systemctl list-timers --all`,
+no crontab at all) — the 2026-08-21 renewal was not scheduled by anything on
+this box. If this cert is the one on the ALB listener, expiry breaks the
+public TLS path. Before 2026-11-19: `sudo certbot renew` (container must
+keep serving `:80`), or install `certbot.timer`, or move to DNS-01 / ACM.
