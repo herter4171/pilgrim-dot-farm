@@ -20,7 +20,8 @@
   const btn = $("btn-play"), ind = $("indicator"), indLabel = $("ind-label");
   const level = $("level"); const lctx = level.getContext("2d");
   const offairEl = $("offair"), statusEl = $("status");
-  const songLabel = $("song-label");
+  const songTitle = $("song-title");
+  const songArtist = $("song-artist");
   const coverArt = $("cover-art");
   const dlBtn = $("dl-mp3");
   // Cover art (ALBUM_ART.md Step 8): the placeholder always fills the frame,
@@ -472,12 +473,15 @@
   }
 
   /* Song label under the meter — the audible item only, driven from the
-     audio-clock playhead (RADIO §9.1 / COSMETIC_PATCHING §3). Shown exactly
-     `title - artist` for a song with both fields; otherwise empty. Fetching,
-     decoding, or scheduling the NEXT song must never announce it early. */
+     audio-clock playhead (RADIO §9.1 / COSMETIC_PATCHING §3). Shows the title
+     on one line and the artist on the next for a song with both fields;
+     otherwise both lines are empty. Fetching, decoding, or scheduling the
+     NEXT song must never announce it early. */
+  function clearSongLabel() { songTitle.textContent = ""; songArtist.textContent = ""; }
   function setSongLabel(it) {
     const named = !!(it && it.type === "song" && it.title && it.artist);
-    songLabel.textContent = named ? (it.title + " - " + it.artist) : "";
+    if (named) { songTitle.textContent = it.title; songArtist.textContent = it.artist; }
+    else clearSongLabel();
     setCoverArt(named ? it : null, named);
     setDownload(named ? it : null);
     if (playing) setMediaSession(named ? it : null);
@@ -841,7 +845,7 @@
     if (ctx) { try { ctx.close(); } catch (e) {} ctx = null; }
     analyser = null;
     items = []; cursor = 0; scheduleCursor = 0;
-    songLabel.textContent = "";
+    clearSongLabel();
     setCoverArt(null, false);
     setDownload(null);
     // VOTING.md: STOP closes the rating row immediately.

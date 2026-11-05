@@ -214,9 +214,11 @@ test("cover art swaps with the song label and never moves PLAY", async ({ page }
     await page.waitForTimeout(1200);
     samples.push(await page.evaluate(() => {
       const img = document.getElementById("cover-art") as HTMLImageElement;
-      const label = document.getElementById("song-label")!;
+      // the label is two lines (title / artist); the alt keeps `title - artist`
+      const title = document.getElementById("song-title")!.textContent || "";
+      const artist = document.getElementById("song-artist")!.textContent || "";
       return { src: img.getAttribute("src") || "", alt: img.getAttribute("alt") || "",
-               label: label.textContent || "", w: img.naturalWidth };
+               label: title ? `${title} - ${artist}` : "", w: img.naturalWidth };
     }));
   }
 
@@ -272,9 +274,10 @@ test("DOWNLOAD MP3 shows only while a named song is audible and saves it", async
 
   await expect(page.locator("#song-label")).not.toHaveText("", { timeout: 20_000 });
   await expect(dl).toBeVisible();
-  const label = await page.locator("#song-label").textContent();
+  const title = await page.locator("#song-title").textContent();
+  const artist = await page.locator("#song-artist").textContent();
   const [download] = await Promise.all([page.waitForEvent("download"), dl.click()]);
-  expect(download.suggestedFilename()).toBe(`${label}.mp3`);
+  expect(download.suggestedFilename()).toBe(`${title} - ${artist}.mp3`);
   const path = await download.path();
   const { statSync } = await import("node:fs");
   expect(statSync(path!).size, "the MP3 has bytes").toBeGreaterThan(1000);

@@ -884,9 +884,9 @@ so it widens and narrows freely inside its half. Below the row, a horizontal
 live level meter driven by an
 `AnalyserNode` (proves audio flows; half height, 20 px), and a centered
 **song label**
-below the meter showing exactly `` ${title} - ${artist} `` for the audible
-song (_both_ fields nonempty); any other segment, a gap, or STOP shows an
-empty label. The label is driven off the audio-clock playhead and never
+below the meter showing the audible song's `title` on one line (4 pt larger)
+and its `artist` on the line below (_both_ fields nonempty); any other
+segment, a gap, or STOP shows an empty label. The label is driven off the audio-clock playhead and never
 announces a buffered next song early. Below the label, a **DOWNLOAD MP3**
 button shows under exactly the same rule (audible named song only; hidden
 before PLAY, after STOP and for any other segment: you have to listen to get

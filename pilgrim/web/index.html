@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PILGRIM DOT FARM — radio</title>
-<link rel="stylesheet" href="style.css?v=20261105b">
+<link rel="stylesheet" href="style.css?v=20261105c">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -74,7 +74,7 @@
            per-item element; all decode + scheduling stays in Web Audio. -->
       <audio id="sink" playsinline preload="none" aria-hidden="true" style="display:none"></audio>
       <canvas id="level" width="640" height="20"></canvas>
-      <div id="song-label" class="song-label"></div>
+      <div id="song-label" class="song-label"><span id="song-title" class="song-title"></span><span id="song-artist" class="song-artist"></span></div>
       <div class="dl-row"><button id="dl-mp3" class="dl-mp3" type="button" hidden>DOWNLOAD MP3</button></div>
       <div id="offair" class="offair hidden">⚠ OFF THE AIR — waiting for playable audio. Retrying…</div>
       <div id="status" class="status"></div>
@@ -209,6 +209,6 @@
 <script src="pay.js?v=20261031d"></script>
 <script src="visitors.js?v=20261105b"></script>
 <script src="rating.js?v=20261103a"></script>
-<script src="player.js?v=20261105a"></script>
+<script src="player.js?v=20261105b"></script>
 </body>
 </html>

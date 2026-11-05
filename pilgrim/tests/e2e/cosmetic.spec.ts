@@ -129,10 +129,16 @@ test("song label shows the audible track, not a buffered next one; STOP clears i
   await page.waitForFunction(
     () => (document.getElementById("song-label") || {}).textContent?.length > 0,
     null, { timeout: 20_000 });
+  // title on its own line, artist below it (RADIO §9.1)
+  expect(await page.textContent("#song-title")).toMatch(/^Song \d+$/);
+  expect(await page.textContent("#song-artist")).toBe("The Fakes");
   const label = await page.textContent("#song-label");
-  expect(label).toMatch(/^Song \d+ - The Fakes$/);
   // label is set via textContent (safe rendering) and never shows 'undefined'/'null'
-  expect(label).not.toMatch(/undefined|null/);
+  expect(label).not.toMatch(/undefined|null|-/);
+  const [titleFs, artistFs] = await page.evaluate(() => [
+    parseFloat(getComputedStyle(document.getElementById("song-title")!).fontSize),
+    parseFloat(getComputedStyle(document.getElementById("song-artist")!).fontSize)]);
+  expect(titleFs - artistFs).toBe(4);
   // STOP clears the label (also covers cross-tab STOP path)
   await page.click("#btn-play");
   await expect(page.locator("#indicator")).toHaveClass(/idle/);

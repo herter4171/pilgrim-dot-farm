@@ -306,7 +306,8 @@ body {
 }
 
 /* Song label under the meter (COSMETIC_PATCHING §3): centered, wraps for long
-   names. Empty (not 'undefined'/'null'/bare hyphen) when not a named song. */
+   names; title on its own line (4 pt larger) with the artist below. Both
+   lines empty (not 'undefined'/'null'/bare hyphen) when not a named song. */
 .song-label {
   min-height: 1.3em;
   font-size: 16px;
@@ -316,6 +317,8 @@ body {
   text-shadow: 0 0 8px rgba(58,255,163,.4);
   overflow-wrap: anywhere;
 }
+.song-label .song-title, .song-label .song-artist { display: block; }
+.song-label .song-title { font-size: 20px; }
 
 /* DOWNLOAD MP3 under the song label: only while a named song is audible
    (listen to get it). The row keeps its height when hidden so nothing below
