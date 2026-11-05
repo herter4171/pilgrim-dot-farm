@@ -77,7 +77,7 @@ body {
 .req-form button:hover { filter: brightness(1.15); }
 .req-form button:disabled { filter: grayscale(.7); cursor: not-allowed; }
 .req-err { font-size: 15px; min-height: 14px; letter-spacing: 0.5px; transition: opacity .6s; }
-.req-list-head { font-size: 14px; letter-spacing: 2px; color: var(--magenta);
+.req-list-head { font-size: 16px; letter-spacing: 2px; color: var(--magenta);
   border-bottom: 1px solid var(--violet); padding-bottom: 4px; }
 /* Request board tables: Votes | Prompt | Title | Prep Time. The queue scrolls
    inside its own box (up to 50 rows) with the header row pinned. */
@@ -94,6 +94,10 @@ body {
 .req-table .c-title { width: 20%; }
 .req-table .c-time { width: 14%; }
 .req-table .c-vote { width: 48px; }
+/* AIRED REQUESTS has no vote column: Prompt and Title are the same width, each
+   taking half of what is left after Prep Time's fixed 14% slice (43 + 43 + 14). */
+.req-table-aired .c-prompt, .req-table-aired .c-title { width: 43%; }
+.req-table-aired .c-time { width: 14%; }
 .req-num { color: var(--cyan); margin-right: 6px; }
 .req-text { color: var(--text); }
 .req-title { color: var(--cyan); font-size: 14px; }
@@ -461,6 +465,8 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   .req-table .c-prompt { width: 50%; }
   .req-table .c-title { width: calc(50% - 48px); }
   .req-table .c-vote { width: 48px; }
+  /* aired table has no vote column and hides Prep Time: a clean 50/50 split */
+  .req-table-aired .c-prompt, .req-table-aired .c-title { width: 50%; }
   .req-table .c-time, .req-table td.req-status { display: none; }
   .req-status-inline { display: block; color: var(--dim); font-size: 10px;
     letter-spacing: 1px; }

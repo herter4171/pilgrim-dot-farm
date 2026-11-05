@@ -151,6 +151,15 @@ test("aired requests table shows up to five with a prep time", async ({ page }) 
   expect(waits[4]).toBe("—");
   const airedTable = page.locator(".req-table").filter({ has: page.locator("#req-recent") });
   await expect(airedTable.getByRole("columnheader")).toHaveText(["Prompt", "Title", "Prep Time"]);
+  // Prompt and Title are the same width: each half of the space left over
+  // after Prep Time's fixed slice (cosmetic parity request)
+  const widths = await airedTable.evaluate((table) => {
+    const ths = Array.from(table.querySelectorAll("thead th"));
+    const px = (th) => th.getBoundingClientRect().width;
+    return { prompt: px(ths[0]), title: px(ths[1]), time: px(ths[2]), total: table.getBoundingClientRect().width };
+  });
+  expect(Math.abs(widths.prompt - widths.title)).toBeLessThanOrEqual(1);
+  expect(widths.prompt / widths.total).toBeCloseTo(0.43, 1);
   // the queue's vote column is left-most (cosmetic patch)
   const queueTable = page.locator(".req-table").filter({ has: page.locator("#req-queue") });
   await expect(queueTable.getByRole("columnheader"))
