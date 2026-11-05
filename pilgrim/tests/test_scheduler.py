@@ -1152,3 +1152,82 @@ def test_request_committed_through_the_pick_path_gets_due_at(cfg, tmp_env):
     due = datetime.fromisoformat(row["due_at"]).timestamp()
     idx = next(i for i, r in enumerate(sched._items) if r["item_id"] == rsong)
     assert abs(due - (clock.wall() + sched._cum[idx] - sched.position())) < 1.0
+
+
+def test_ready_request_waits_for_published_media_when_required(cfg, tmp_env):
+    """With a media publisher running (`require_published`, set by the server),
+    a ready request is not spliced until its song + intro MP3s are in S3, so
+    listeners stream them from CloudFront rather than the transitional origin
+    route seconds before airtime (RADIO §5.2, §8.4). The wait is bounded by
+    PUBLISH_WAIT_MAX_S so a failed upload never strands a request."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=20, n_liner=20, n_com=20, n_dj=6)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
+    sched.require_published = True
+    sched.commit_lookahead()
+    rev = sched.revision
+
+    def ready_request(tag):
+        req = store.add_request(f"play {tag}", cap=10)
+        song = store.add_item(type_="song", media_path=f"/tmp/req_{tag}.mp3",
+                              duration_s=120.0, fresh=True, evergreen=True)
+        intro = store.add_item(type_="intro", media_path=f"/tmp/intro_{tag}.mp3",
+                               duration_s=8.0, evergreen=False, fresh=True,
+                               meta={"song_item_id": song, "request_id": req["id"]})
+        store.mark_request_ready(req["id"], song, intro)
+        return req, song, intro
+
+    def committed_ids():
+        return [r["item_id"] for r in sched._items]
+
+    req, song, intro = ready_request("a")
+    clock.advance(2)
+    sched.commit_lookahead()
+    assert song not in committed_ids()          # waiting for S3, not spliced
+    assert sched.revision == rev
+    assert store.get_request(req["id"])["status"] == "ready"
+
+    store.set_published(song, "audio/song/a.mp3")
+    clock.advance(2)
+    sched.commit_lookahead()
+    assert song not in committed_ids()          # the intro is still unpublished
+
+    store.set_published(intro, "audio/intro/a.mp3")
+    clock.advance(2)
+    sched.commit_lookahead()
+    ids = committed_ids()
+    assert song in ids and ids[ids.index(song) - 1] == intro
+    assert sched.revision == rev + 1
+    assert req["id"] not in sched._publish_wait_since
+
+    # bounded: an upload that never lands airs from the origin route after the
+    # wait expires rather than stranding the request
+    req2, song2, _ = ready_request("b")
+    clock.advance(2)
+    sched.commit_lookahead()
+    assert song2 not in committed_ids()
+    clock.advance(Scheduler.PUBLISH_WAIT_MAX_S + 1)
+    sched.commit_lookahead()
+    assert song2 in committed_ids()
+    assert req2["id"] not in sched._publish_wait_since
+
+
+def test_ready_request_splices_immediately_without_a_publisher(cfg, tmp_env):
+    """Default (tests, simulation, e2e, a station without an uploader): an
+    unpublished request song is spliced as soon as it is ready (§5.2)."""
+    _, store, _ = tmp_env
+    seed_pool(store, cfg, n_song=20, n_liner=20, n_com=20, n_dj=6)
+    clock = SimClock()
+    sched = Scheduler(cfg, store, RandomSelector(RNG(7), cfg), clock, RNG(7))
+    sched.commit_lookahead()
+    req = store.add_request("play now", cap=10)
+    song = store.add_item(type_="song", media_path="/tmp/req_now.mp3",
+                          duration_s=120.0, fresh=True, evergreen=True)
+    intro = store.add_item(type_="intro", media_path="/tmp/intro_now.mp3",
+                           duration_s=8.0, evergreen=False, fresh=True,
+                           meta={"song_item_id": song, "request_id": req["id"]})
+    store.mark_request_ready(req["id"], song, intro)
+    clock.advance(2)
+    sched.commit_lookahead()
+    assert song in [r["item_id"] for r in sched._items]

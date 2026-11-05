@@ -61,6 +61,12 @@ class Scheduler:
     # invariant for an arbitrary instant (§5.3). Exposed so the e2e report can
     # assert against the real cadence instead of a hard-coded tolerance.
     REFILL_INTERVAL_S = 2.0
+    # Request splice gate (RADIO §5.2, §8.4): when the station publishes media,
+    # a ready request waits until its song + intro are in S3 so the browser
+    # fetches them from CloudFront like every other item, not from the
+    # transitional origin route seconds before airtime. Bounded: a failed
+    # upload must never strand a request (the origin fallback still exists).
+    PUBLISH_WAIT_MAX_S = 30.0
 
     def __init__(self, cfg: Config, store: Store, selector: Selector,
                  clock: Clock, rng: RNG, epoch: str | None = None,
@@ -111,6 +117,13 @@ class Scheduler:
         # committed request songs not yet on air: seq -> request_id. A request
         # is 'aired' when the playhead reaches its song, not when committed.
         self._pending_aired: dict[int, int] = {}
+        # Set by the server when a media publisher runs (RADIO §8.4): ready
+        # requests then wait (bounded) for their audio to be in S3 before the
+        # splice. Off by default so tests, the simulation and the e2e server
+        # (no uploader) splice immediately. request_id -> clock.now() first seen
+        # waiting.
+        self.require_published = False
+        self._publish_wait_since: dict[int, float] = {}
         # While a listener request is still waiting for its song slot, hold the
         # committed window at filler_horizon_s so no stock song queues ahead of
         # it (§5.2). Tracked per request id so a stuck request releases the hold
@@ -1128,8 +1141,40 @@ class Scheduler:
         for req in self.store.ready_request_songs():
             if req["id"] in committed:
                 continue
+            if self.require_published and self._awaiting_publish(req):
+                continue
+            self._publish_wait_since.pop(int(req["id"]), None)
             self.place_request_next(int(req["id"]))
             committed.add(req["id"])
+
+    def _awaiting_publish(self, req: dict) -> bool:
+        """True while a ready request's song or intro MP3 is not yet in S3 and
+        the wait is inside PUBLISH_WAIT_MAX_S (RADIO §5.2, §8.4). Emergency
+        items and non-MP3 media are never published, so they never wait."""
+        rid = int(req["id"])
+        unpublished: list[int] = []
+        for key in ("song_item_id", "intro_item_id"):
+            iid = req.get(key)
+            it = self.store.get_item(int(iid)) if iid else None
+            if (it and not it.get("s3_key") and not it.get("emergency")
+                    and str(it.get("media_path") or "").endswith(".mp3")):
+                unpublished.append(int(it["id"]))
+        if not unpublished:
+            self._publish_wait_since.pop(rid, None)
+            return False
+        now = self.clock.now()
+        since = self._publish_wait_since.get(rid)
+        if since is None:
+            self._publish_wait_since[rid] = now
+            log.info("request.awaiting_publish", extra={
+                "request_id": rid, "items": unpublished})
+            return True
+        if now - since >= self.PUBLISH_WAIT_MAX_S:
+            log.warning("request.publish_wait_expired", extra={
+                "request_id": rid, "items": unpublished,
+                "waited_s": round(now - since, 1)})
+            return False  # air it from the origin route rather than strand it
+        return True
 
     def _request_splice_index(self) -> int:
         """First future item (or the tail). The request lands immediately

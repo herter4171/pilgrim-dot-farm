@@ -75,6 +75,19 @@
   // less than LOOKAHEAD_S of scheduled audio (runs of short talk/liners),
   // keep decoding up to current + MAX_AHEAD so one slow fetch is not a gap.
   const MIN_AHEAD = 3, MAX_AHEAD = 6, LOOKAHEAD_S = 60;
+  // Dead-air watchdog (RADIO §9.2). Nothing scheduled at the playhead for this
+  // long after the last scheduled audio ended means the pending fetch/decode
+  // is lost: production saw a spliced request's song never come back from
+  // decode, and the page sat silent with "onair" lit until a reload. Rejoin
+  // live through the revision-reset path, record it as an underrun, and back
+  // off between attempts so a slow network is not refetched into a thrash.
+  const DEAD_AIR_S = 3;
+  const REJOIN_GAP_MIN_MS = 5000, REJOIN_GAP_MAX_MS = 30000;
+  let rejoinAt = 0, rejoinGap = REJOIN_GAP_MIN_MS;
+  let mediaProgressAt = 0;   // performance.now() of the last media byte received
+  // A revision reset whose snapshot fetch failed is retried on the next state
+  // poll; a program page that came back `reset: true` asks for the same.
+  let resetPending = false;
   class OffAirError extends Error {}
 
   /* Cross-tab single-listener guard: if this page is open in more than one
@@ -175,9 +188,11 @@
       timer = setTimeout(() => ac.abort(), MEDIA_STALL_MS);
     };
     arm();
+    mediaProgressAt = performance.now();
     try {
       const r = await fetch(url, { signal: ac.signal });
       if (!r.ok) await throwHttp(what, r);
+      mediaProgressAt = performance.now();
       if (!r.body || !r.body.getReader) return await r.arrayBuffer();
       const reader = r.body.getReader();
       const parts = [];
@@ -187,6 +202,7 @@
         const { done, value } = await reader.read();
         if (done) break;
         parts.push(value); n += value.byteLength;
+        mediaProgressAt = performance.now();
       }
       const out = new Uint8Array(n);
       let o = 0;
@@ -370,7 +386,7 @@
       it.buffer = null; it._gain = null; it._src = null;
       for (const ov of it.sfx || []) if (!ov._scheduled) ov.buffer = null;
       // a source cancelled by a revision reset must not advance the playhead
-      if (wasScheduled && playing && token === session) advancePlayhead();
+      if (wasScheduled && playing && token === session) { advancePlayhead(); checkDeadAir(); }
     });
     return src;
   }
@@ -549,11 +565,36 @@
     const it = items[cursor];
     if (it && it._scheduled && it._when <= ctx.currentTime && !it._started) {
       it._started = true;
+      rejoinGap = REJOIN_GAP_MIN_MS;   // audio flowed again: watchdog backoff resets
       sendHeartbeat(it.seq, it._offset + ctx.currentTime - it._when);
       setState("onair");
+    } else if (playing && !(it && it._scheduled)) {
+      // nothing scheduled at the playhead (a fetch/decode still pending): say
+      // so instead of leaving "onair" lit over silence
+      setState("buffering");
     }
     // label mirrors the on-air item; a gap / buffering / non-song shows ""
     setSongLabel(it && it._started ? it : null);
+  }
+
+  /* Dead-air watchdog. Runs from the heartbeat tick, the state poll and each
+     source's end, i.e. independently of fillWindow, which is the thing that
+     may be stuck in an await that never settles. */
+  function checkDeadAir() {
+    if (!playing || !ctx) return;
+    advancePlayhead();
+    const it = items[cursor];
+    if (it && it._scheduled && it._end > ctx.currentTime) return;  // audio is scheduled at the playhead
+    if (ctx.currentTime - nextWhen < DEAD_AIR_S) return;           // a join may still be in flight
+    const now = performance.now();
+    if (now - mediaProgressAt < DEAD_AIR_S * 1000) return;        // bytes are still arriving: let it finish
+    if (now - rejoinAt < rejoinGap) return;
+    rejoinAt = now;
+    rejoinGap = Math.min(rejoinGap * 2, REJOIN_GAP_MAX_MS);
+    const pending = items[scheduleCursor] || it;
+    if (pending) sendHeartbeat(pending.seq, 0, true);  // dead air is recorded, never hidden
+    setStatus("waiting for audio: rejoining live");
+    void resetProgram();
   }
 
   /* The audio clock advances the decode window as clips finish. Keep current
@@ -567,8 +608,15 @@
           const lastSeq = items.length ? items[items.length - 1].seq : null;
           const p = await fetchProgram(lastSeq, epoch, revision);
           if (!playing || token !== session || ptoken !== programToken) return;
-          for (const it of p.items || []) {
-            if (!items.some(x => x.seq === it.seq)) items.push(it);
+          if (p.reset) {
+            // our cursor is stale (epoch/revision moved under us): the page is
+            // a full snapshot, not a continuation. Let the reset path replace
+            // the future instead of appending renumbered rows behind it.
+            resetPending = true;
+          } else {
+            for (const it of p.items || []) {
+              if (!items.some(x => x.seq === it.seq)) items.push(it);
+            }
           }
         }
         while (scheduleCursor < Math.min(items.length, cursor + MIN_AHEAD)
@@ -625,18 +673,25 @@
   async function resetProgram() {
     if (!playing || !ctx) return;
     const token = session;
-    const ptoken = ++programToken;
-    cancelFuture();
+    const before = programToken;
     let p;
     try {
       p = await fetchProgram(null, epoch, revision);
     } catch (e) {
-      if (playing && token === session && ptoken === programToken) {
-        setStatus("program refresh failed: " + e.message);
+      // Nothing was cancelled yet: the buffered future keeps playing and the
+      // next state poll retries. Off air with a dry buffer is definitive.
+      if (!playing || token !== session) return;
+      if (e instanceof OffAirError && ctx.currentTime >= nextWhen - 0.05) {
+        stop(); showOffAir(); return;
       }
+      resetPending = true;
+      setStatus("program refresh failed: " + e.message);
       return;
     }
-    if (!playing || token !== session || ptoken !== programToken) return;
+    if (!playing || token !== session || before !== programToken) return;
+    const ptoken = ++programToken;
+    resetPending = false;
+    cancelFuture();
     epoch = p.epoch; revision = p.revision;
     const all = p.items || [];
     const cur = items[cursor];
@@ -667,20 +722,24 @@
 
   async function pollState() {
     if (!playing) return;
+    checkDeadAir();
     try {
       const r = await fetch("/api/station/state");
       if (!r.ok) return;
       const st = await r.json();
-      if (st.epoch !== epoch || st.revision !== revision) {
+      if (!playing) return;
+      if (st.epoch !== epoch || st.revision !== revision || resetPending) {
         epoch = st.epoch; revision = st.revision;
         await resetProgram();
         return;
       }
       // A cover can be published after the program snapshot was fetched (art
       // never gates playout). The state carries the on-air item's current
-      // art URL; swap it in without refetching or rescheduling audio.
+      // art URL; swap it in without refetching or rescheduling audio. Only
+      // for the item that is audible here: the server's playhead can be on
+      // an item this client has not started (never show the next cover early).
       const cur = items[cursor];
-      if (cur && st.current_seq === cur.seq && st.current_art_url
+      if (cur && cur._started && st.current_seq === cur.seq && st.current_art_url
           && st.current_art_url !== cur.art_url) {
         cur.art_url = st.current_art_url;
         setCoverArt(cur, cur.type === "song");
@@ -725,6 +784,7 @@
     playing = true;
     myStartAt = Date.now();
     dryFailSince = null;
+    rejoinAt = 0; rejoinGap = REJOIN_GAP_MIN_MS; resetPending = false;
     const token = ++session;
     setState("buffering"); btn.textContent = "■  STOP"; btn.classList.add("stop");
 
@@ -756,6 +816,7 @@
         advancePlayhead();
         const it = items[cursor];
         if (it?._started) sendHeartbeat(it.seq, it._offset + ctx.currentTime - it._when);
+        checkDeadAir();
       }, 5000);
       stateTimer = setInterval(pollState, 2000);
       void fillWindow(p.start_offset_s || 0, token);

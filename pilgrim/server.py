@@ -173,6 +173,10 @@ class Station:
         if cfg.media.publish:
             try:
                 self.publisher = MediaPublisher(cfg, self.db, S3ObjectStore(cfg))
+                # RADIO §5.2/§8.4: ready requests wait (bounded) for their
+                # audio to reach S3 before the splice, so listeners stream
+                # them from CloudFront like every other item.
+                self.scheduler.require_published = True
             except Exception as e:  # noqa: BLE001 - no creds/boto3: degrade to /api/media
                 log.warning("media.publisher_disabled", extra={"error": str(e)[:300]})
         if cfg.art.enabled:

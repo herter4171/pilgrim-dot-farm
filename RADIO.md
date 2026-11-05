@@ -335,7 +335,12 @@ Constraints (applied before drawing):
   request airs at the next boundary instead of behind the lookahead. The splice
   renumbers future occurrences with fresh seqs (never reusing an old seq) and
   bumps the programme revision; revision-aware clients cancel their obsolete
-  future sources and refetch the snapshot (TUI.md §5, §9.2). Optional hold:
+  future sources and refetch the snapshot (TUI.md §5, §9.2). When the station
+  publishes media (§8.4) the splice also waits, at most 30 s, until the
+  request's song and intro are in S3, so listeners stream them from
+  CloudFront like every other item instead of pulling a full-length song from
+  the transitional origin route seconds before airtime (2026-11-05; log:
+  `request.awaiting_publish`, `request.publish_wait_expired`). Optional hold:
   with `playout.request_hold_max_s` > 0, while a request is still
   queued/producing the committed window is held at `playout.filler_horizon_s`
   so no stock song queues ahead of it, bounded per request by that value. It
@@ -813,7 +818,8 @@ S3 is the source of truth for listener audio; the M5 no longer streams it
 - **Fallback:** an item not yet uploaded gets `url = /api/media/<id>` (the
   origin route, served through the edges as before). Publishing normally
   completes seconds after an item is rendered, well inside the ≥5 min
-  committed window, so this path is transitional.
+  committed window, so this path is transitional. Ready listener requests do
+  not depend on it: their splice waits (≤30 s) for the upload (§5.2).
 - Emergency items (§8.3) are never published: they are local by definition
   and keep the fallback URL.
 - **Cover art (ALBUM_ART.md).** The same publisher loop uploads each song's
@@ -988,9 +994,21 @@ the station name.
 - Send a heartbeat `{seq, position, player_id}` every 5 s and on each item
   start (`player_id` is the page's per-tab ID; it feeds the live listener
   count, §14).
-- **Client-side last resort:** the page ships 2–3 tiny embedded liners
-  (base64). If the next item isn't decoded when needed (network hiccup), play
-  one and log an `underrun` event to the server.
+- **Client-side last resort — dead-air watchdog (2026-11-05).** If the
+  audible item has ended and nothing is scheduled at the playhead for 3 s,
+  with no media bytes arriving for 3 s either, the pending fetch/decode is
+  treated as lost: the client posts an `underrun` heartbeat for the item it
+  was waiting on, shows *buffering*, and rejoins the live programme through
+  the revision-reset path (cutover to the snapshot's on-air item). Attempts
+  back off 5 s → 30 s; the backoff resets once audio flows. The check runs
+  from the heartbeat tick, the state poll and each source's end, independently
+  of the decode loop, so a `decodeAudioData` or fetch promise that never
+  settles cannot park the page (seen in production after a request splice).
+  A revision reset whose snapshot fetch fails leaves the buffered future
+  playing and is retried on the next state poll (a program page answered
+  `reset: true` triggers the same), and the indicator reads *buffering*
+  whenever nothing is scheduled at the playhead instead of staying lit over
+  silence. Embedded fallback liners are not shipped.
 - Release decoded buffers after playback (a 3-min 48 kHz stereo song decodes
   to ~70 MB of float32).
 - **SFX overlays** (`sfx` on a program item): decoded in the background,

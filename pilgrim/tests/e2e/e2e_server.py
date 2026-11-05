@@ -307,10 +307,12 @@ def build_app() -> FastAPI:
         lib = tmp / "library"
         song_f = lib / "req_song.mp3"
         intro_f = lib / "req_intro.mp3"
-        _make_audio(song_f, 2.0)
+        # 2.2 s: no stock clip has this length, so the request song's byte size
+        # is unique (the dead-air spec hangs the decode of exactly these bytes)
+        _make_audio(song_f, 2.2)
         _make_audio(intro_f, 0.8)
         req = store.add_request("e2e request", cap=10)
-        song = store.add_item(type_="song", media_path=str(song_f), duration_s=2.0,
+        song = store.add_item(type_="song", media_path=str(song_f), duration_s=2.2,
                               fresh=True, title="Request Song", artist="Listener")
         intro = store.add_item(type_="intro", media_path=str(intro_f), duration_s=0.8,
                                evergreen=False, fresh=True,

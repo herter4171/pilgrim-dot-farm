@@ -287,3 +287,50 @@ test("DOWNLOAD MP3 shows only while a named song is audible and saves it", async
   await page.click("#btn-play");  // STOP hides it again
   await expect(dl).toBeHidden();
 });
+
+test("dead air after a splice: a decode that never settles is abandoned and the client rejoins live", async ({ page }) => {
+  // Production (2026-11-05): after a request splice the browser fetched the
+  // request song, its decode never came back, and the page sat silent with
+  // "onair" lit until a reload. The dead-air watchdog (RADIO §9.2) must
+  // record an underrun and rejoin the live programme on its own.
+  const errors: string[] = [];
+  page.on("pageerror", e => errors.push(e.message));
+  await page.addInitScript(() => {
+    const orig = AudioContext.prototype.decodeAudioData;
+    (window as any).__hangBytes = -1;
+    AudioContext.prototype.decodeAudioData = function (data: ArrayBuffer, ok?: any, err?: any) {
+      if (data.byteLength === (window as any).__hangBytes) {
+        (window as any).__hangBytes = -1;           // one-shot: the retry decodes normally
+        (window as any).__hung = ((window as any).__hung || 0) + 1;
+        return new Promise<AudioBuffer>(() => {});  // never settles
+      }
+      return orig.call(this, data, ok, err);
+    } as any;
+  });
+  await page.goto("/");
+  await page.click("#btn-play");
+  await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 15_000 });
+  await page.waitForTimeout(3_000);
+  const before = await page.request.get("/api/test/report").then(r => r.json());
+
+  const splice = await page.request.post("/api/test/splice").then(r => r.json());
+  expect(splice.ok).toBe(true);
+  // the request song's bytes: its decode hangs forever, its intro plays
+  const songBytes = (await page.request.get(`/api/media/${splice.song_id}`).then(r => r.body())).length;
+  await page.evaluate((n) => { (window as any).__hangBytes = n; }, songBytes);
+  const startsBefore = await page.evaluate(() => (window as any).__audioStarts.length);
+
+  // the intro ends with nothing decoded behind it: the indicator says so ...
+  await expect(page.locator("#indicator")).toHaveClass(/buffering/, { timeout: 15_000 });
+  // ... and the watchdog rejoins live instead of waiting forever
+  await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 20_000 });
+  await page.waitForTimeout(6_000);
+  await expect(page.locator("#indicator")).toHaveClass(/onair/);
+  await expect(page.locator("#btn-play")).toContainText("STOP");
+  const startsAfter = await page.evaluate(() => (window as any).__audioStarts.length);
+  expect(startsAfter, "audio was scheduled again after the rejoin").toBeGreaterThan(startsBefore + 2);
+  const report = await page.request.get("/api/test/report").then(r => r.json());
+  expect(await page.evaluate(() => (window as any).__hung), "the request song's decode was the one that hung").toBe(1);
+  expect(report.underrun - before.underrun, "dead air was recorded as an underrun").toBeGreaterThanOrEqual(1);
+  expect(errors).toEqual([]);
+});
