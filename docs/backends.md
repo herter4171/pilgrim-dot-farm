@@ -11,7 +11,8 @@ trust these observed responses. Re-probe if a backend changes.
 |---------|--------------------------|----------|
 | LiteLLM (LLMs) | `https://litellm.twr.church/v1` | `/health/liveliness` 200; `/v1/models` 401 without token, 200 with: `qwen38`, `Ornith-1.5-9B`, `MiniMax-Music-3`, `qwen38-mlx`, `deepseek-v4-flash`, … |
 | Song pool via LiteLLM | `https://litellm.twr.church/vllm` | derived from `hosts.litellm` (§2b) |
-| searxng (LiteLLM MCP) | `https://litellm.twr.church/mcp` | §5 |
+| LiteLLM MCP (time tool only) | `https://litellm.twr.church/mcp` | §5 |
+| Brave Search API | `https://api.search.brave.com` | §11; key `BRAVE_SEARCH_KEY` as `X-Subscription-Token` |
 | mlx-serve (MiniMax Music 3) | `http://127.0.0.1:11234` (also `:8420`) | `/health` 200; one of three pool members (§2b) |
 | Kokoro TTS | `http://192.168.68.89:8001` | `/health` 200, `/voices` 55 ids |
 | SFX (MOSS) | `http://192.168.68.88:8000` | `/health` → `{"status":"ok","model":"moss-soundeffect-v2.0","device":"cuda","dtype":"torch.bfloat16","sample_rate":48000,"max_seconds":30,"error":null}` |
@@ -281,11 +282,13 @@ concatenates (same 24 kHz) before writing the WAV.
 
 ---
 
-## 5. SearXNG — via LiteLLM MCP (`https://litellm.twr.church/mcp`; was `localhost:4000/mcp`)
+## 5. LiteLLM MCP — the DJ's time tool (`https://litellm.twr.church/mcp`; was `localhost:4000/mcp`)
 
-searxng is **not** a direct HTTP service reachable at `:8888`. It is exposed
-as the `web_search-searxng_web_search` tool on the LiteLLM MCP server
-(Streamable-HTTP transport). Probed (2026-09-27):
+Since BRAVE.md (2026-11-04) the station uses the LiteLLM MCP server for **one
+tool: `time-get_current_time`**. Web search moved to the Brave Search API
+(§11); the searxng tool on this server is no longer called. Config key:
+`hosts.mcp` (was `hosts.searxng`). Streamable-HTTP transport, probed
+2026-09-27:
 
 ```
 POST /mcp
@@ -303,35 +306,21 @@ POST /mcp
   `result.content[0].text` is a JSON string:
   `{"timezone": "America/Detroit", "datetime": "2026-09-29T19:22:02-04:00",
     "day_of_week": "Tuesday", "is_dst": true}` — parse the `datetime` field.
-- `tools/call` `web_search-searxng_web_search` with `{query, limit, result_detail:
-  "compact"}` → `result.content[].text` = ranked `Title\nDescription\nURL` blocks.
-- Live search for "top news headlines today" returned real Google News results.
 
-### Engines and the copied-lyrics screen (probed 2026-10-31)
+Client: `pilgrim/pipelines/mcp.py` (`MCPSession`: initialize, `list_tools`,
+`call_tool`); `current_local_time` in `pilgrim/pipelines/clocktime.py` falls
+back to `zoneinfo` on any failure.
 
-The tool takes `engines` (comma-separated) and `num_results`. Quoted-phrase
-query `"backstroke lover always hidin' neath the covers" lyrics`, per engine:
+### Why searxng was retired (history, probed 2026-10-31)
 
-| engine | result |
-|---|---|
-| google, duckduckgo, brave, qwant, yahoo | tool error "Search Degraded … engines failed" (suspended: too many requests / CAPTCHA / access denied) |
-| bing | answers, but searches only the **first word** ("Backstroke" → swimming pages), quoted or not |
-| mojeek | clean "No results found" (small index) |
-| **startpage** | correct: Musixmatch / Spotify / YouTube lyric pages naming the song |
-
-Startpage also found two other famous songs from one line each, and still found
-the song when one word was changed. A quoted original line gave a clean
-`🔍 No results found for …` (not an error). Unquoted, the same original line
-returned unrelated pages, so the screen always quotes and decides by its own
-word overlap. Three outcomes must stay distinct: results, clean "No results
-found" (text, `isError` false), and degraded (`isError: true` / HTTP / no
-token). `searxng_lookup` (tri-state) is used for the screen; `searxng_search`
-flattens all three to a list and stays for news.
-
-Client: `pilgrim/pipelines/mcp.py` (`MCPSession.searxng_search`, `MCPSession.list_tools`,
-`current_local_time` in `pilgrim/pipelines/clocktime.py` for the DJ's real time).
-The news pipeline (RADIO.md §6.4) calls it with the bearer token; any failure
-degrades to a model-written bulletin.
+The `web_search-searxng_web_search` tool on this server took `engines` and
+`num_results`. For the quoted lyric query
+`"backstroke lover always hidin' neath the covers" lyrics`: google,
+duckduckgo, brave, qwant and yahoo answered "Search Degraded … engines failed"
+(suspended: too many requests / CAPTCHA); bing searched only the **first
+word**; mojeek had no results; only startpage returned lyric pages. The news
+bulletin ran on "(no search results available)" most of the time. That
+behaviour, not LiteLLM, is why search moved to Brave.
 
 ---
 
@@ -671,6 +660,78 @@ title and artist) rendered **exactly correct** text on a real library song:
 title `Biscuits and Gravy (Two-Step Flow)`, artist `The Dirty Gravy Boys`,
 square, no disc, no border. Props that carry writing (box labels, screens)
 produce pseudo-text, so scenes must not contain them.
+
+---
+
+## 11. Web search — Brave Search API (`https://api.search.brave.com`), probed 2026-11-04
+
+Direct REST, no MCP (BRAVE.md §0). Auth header `X-Subscription-Token:
+$BRAVE_SEARCH_KEY`, `Accept: application/json`. Client:
+`pilgrim/pipelines/brave.py` (`BraveSearch.news`, `BraveSearch.web`, tri-state
+`SearchOutcome`). Consumers: the news bulletin (RADIO §6.4) and the
+copied-lyrics screen (PAYMENT.md Step 12b).
+
+### Plan / limits (response headers)
+
+```
+x-ratelimit-limit: 50, 0
+x-ratelimit-policy: 50;w=1, 0;w=2592000
+x-ratelimit-remaining: 49, 0
+```
+
+50 requests per second; no monthly cap reported. `extra_snippets` is present
+in results, which the Brave docs list as a paid-plan feature. The station
+still bounds itself: `search.retries` (429/5xx/transport only; 401/403/4xx
+are not retried), `search.timeout_s` per call, and no health probe
+(`/api/health` reports the last real outcome instead).
+
+### News — `GET /res/v1/news/search?q=top+news+headlines+today&count=3&freshness=pd`
+
+200, `{type: "news", query: {original, spellcheck_off, show_strict_warning},
+results: [...]}`. One result (trimmed):
+
+```json
+{
+  "type": "news_result",
+  "title": "Democratic socialist Janeese Lewis George wins mayor election in Washington, D.C.",
+  "url": "https://www.nbcnews.com/politics/2026-election/...",
+  "description": "Democratic socialist Janeese Lewis George has been elected mayor ... NBC News projects ...",
+  "age": "1 day ago",
+  "page_age": "2026-11-04T02:49:19",
+  "meta_url": {"scheme": "https", "netloc": "nbcnews.com", "hostname": "www.nbcnews.com", "favicon": "...", "path": "› politics › ..."},
+  "thumbnail": {"src": "..."},
+  "extra_snippets": ["Lewis George easily won her general election, NBC News projects, ..."]
+}
+```
+
+The station keeps `title`, `description`, `url`, `meta_url.hostname` (as
+`source`, `www.` stripped) and `age`, and hands the anchor lines of the form
+`- [nbcnews.com, 1 day ago] Title. Description`. `freshness`: `pd` (24 h),
+`pw`, `pm`, `py`, or `YYYY-MM-DDtoYYYY-MM-DD`. `count` 1–50.
+
+### Web — `GET /res/v1/web/search?q=<quoted phrase> lyrics&count=5&result_filter=web&text_decorations=false`
+
+200, `{type: "search", query: {original, altered, is_navigational, ...},
+mixed: {...}, web: {type, family_friendly, results: [{title, url,
+description, profile, ...}]}}`.
+
+- **Nothing matched → the `web` key is absent entirely** (still 200). That is
+  the copyright screen's clean `empty`; only HTTP/transport/429/no-key is
+  `degraded`.
+- `title` and `description` carry **HTML entities** (`&#x27;`, `&quot;`);
+  `brave.py` unescapes them before any word comparison.
+- `text_decorations=false` removes the `<strong>` highlight markers.
+
+Lyric probes (the same lines the §5 engine table used):
+
+| query | result |
+|---|---|
+| `"backstroke lover always hidin' neath the covers" lyrics` | Genius, songlyrics.com, shmoop, Musixmatch, letras.com — all "Aerosmith – Walk This Way", snippets continue the lyric |
+| `"is this the real life is this just fantasy" lyrics` | Genius, AZLyrics, letras, Musixmatch — "Queen – Bohemian Rhapsody" |
+| `"the lantern in the orchard hums a tune my brother wrote" lyrics` (original) | no `web` key → empty |
+
+Error shape (observed in the Brave docs, not triggered live): non-200 with
+`{"type": "ErrorResponse", "error": {"id", "status", "code", "detail", "meta"}}`.
 
 ---
 

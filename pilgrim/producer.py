@@ -147,7 +147,7 @@ class Producer:
         self.media_dir = media_dir
         self.rng = rng
         self.api_key = api_key
-        self.news = news_pipeline or NewsPipeline(cfg, llm, api_key=api_key, prompts=prompts)
+        self.news = news_pipeline or NewsPipeline(cfg, llm, prompts=prompts)
         # real local time for DJ talk; injectable in tests (OVERHAUL 5.3)
         self._clock_time = clock_time or current_local_time
         self._news_ok: dict | None = None

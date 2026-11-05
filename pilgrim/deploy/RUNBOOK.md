@@ -49,7 +49,8 @@ Edit `pilgrim/config.yaml`. Each value and how to verify it:
 | `songs.gen_backends` | `[{name: litellm, slots: 3, auth: litellm}]` (URL derived from `hosts.litellm` + `/vllm`; direct mode lists each box) | `make smoke` prints `music:<name> OK`; `make smoke SMOKE_ARGS=--gen` renders 10 s per slot (only when asked) |
 | `hosts.kokoro` | Kokoro host's LAN address, e.g. `http://192.168.68.89:8001` | `curl -s <kokoro>/health` and `curl -s <kokoro>/voices` |
 | `hosts.litellm` | `https://litellm.twr.church/v1` | `curl -s -H "Authorization: Bearer $LITELLM_TOKEN" <litellm>/models` |
-| `hosts.searxng` | LiteLLM MCP endpoint, `https://litellm.twr.church/mcp` | MCP `initialize` + `tools/list` per `docs/backends.md` §5 |
+| `hosts.mcp` | LiteLLM MCP endpoint, `https://litellm.twr.church/mcp` (DJ time tool) | MCP `initialize` + `tools/list` per `docs/backends.md` §5 |
+| `hosts.brave` | `https://api.search.brave.com`, with `BRAVE_SEARCH_KEY` in `.env` | `make smoke` prints `brave … OK (ok)` (one 1-result news query) |
 | `hosts.sfx` | `http://192.168.68.88:8000` | `curl -s http://192.168.68.88:8000/health` |
 | `station.host` | **`127.0.0.1`** — never `0.0.0.0` on the M5 | `lsof -nP -iTCP:5080 -sTCP:LISTEN` shows loopback only |
 | `station.port` | `5080` (5000 is macOS AirPlay Receiver) | same |

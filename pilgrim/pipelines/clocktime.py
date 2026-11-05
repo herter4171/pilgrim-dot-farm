@@ -40,14 +40,14 @@ async def current_local_time(
     """Local time via the MCP time tool; falls back to zoneinfo on any failure."""
     factory = session_factory or MCPSession
     try:
-        session = factory(cfg.hosts.searxng, api_key)
+        session = factory(cfg.hosts.mcp, api_key)
         try:
             await session.initialize()
-            tool = _TOOL_CACHE.get(cfg.hosts.searxng)
+            tool = _TOOL_CACHE.get(cfg.hosts.mcp)
             if tool is None:
                 names = [t["name"] for t in await session.list_tools()]
                 tool = _resolve_time_tool(names)
-                _TOOL_CACHE[cfg.hosts.searxng] = tool
+                _TOOL_CACHE[cfg.hosts.mcp] = tool
             result = await session.call_tool(tool, {"timezone": cfg.station.timezone})
         finally:
             await session.close()

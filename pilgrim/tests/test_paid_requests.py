@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pilgrim.config import Config
 from pilgrim.payments import PaymentService
-from pilgrim.pipelines.mcp import SearchOutcome
+from pilgrim.pipelines.brave import SearchOutcome
 from pilgrim.server import create_app, create_public_app
 from pilgrim.tests.fakes.fake_stripe import FakeStripe, sign_event
 

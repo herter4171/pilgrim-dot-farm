@@ -6,7 +6,8 @@ request-queue votes + mobile queue; agents A–E, Steps 1–8). IDLE.md and
 VOTING.md Agent A may run concurrently in separate worktrees. ALBUM_ART.md
 (Steps 1–11) and PAYMENT.md (Steps 0–12b) are shipped and stay as reference.
 SPLIT_PLAN.md is complete (Steps 1–10) and stays the reference for
-the edge/gateway/origin layout.
+the edge/gateway/origin layout. BRAVE.md (Steps 1–8, shipped 2026-11-04) is
+the reference for web search: Brave Search API direct, searxng retired.
 
 You are building an AI-generated radio station. **`RADIO.md` is the source of
 truth.** Read the relevant section of RADIO.md before implementing anything,
@@ -79,12 +80,12 @@ If a task cannot be done without breaking one, stop and report.
 | Station server (origin, stateful) | M5 Mac Studio | `station.db` + `pilgrim/library/`; public listener `127.0.0.1:5080`, admin `127.0.0.1:5081`; launchd via `pilgrim/deploy/mac/origin.sh`. Also one of the three song generators (mlx-serve) |
 | Edge (stateless) | EC2 `pf`, `/home/ec2-user/radio` | nginx edge `:8080` behind Cloudflare → ALB; reaches the origin only via Tailscale serve (`make edge-up`, `LOCAL_GATEWAY=0`). Holds no station state. **No SSH port forwarding** anymore |
 | Song generation | pool in `songs.gen_backends` | MiniMax Music 3 ×3 (M5 mlx-serve + two audiocpp GPU boxes) via LiteLLM's vLLM pass-through `https://litellm.twr.church/vllm/v1/audio/music-generations`, `model: MiniMax-Music-3`, Bearer `LITELLM_TOKEN`. The station enforces the slot ceiling and staggers submissions (docs/backends.md §2b). Read `pipelines/songs.py` before writing new code. |
-| LiteLLM | `https://litellm.twr.church/v1` | LLMs, song pool (`/vllm`), searxng MCP (`/mcp`) |
+| LiteLLM | `https://litellm.twr.church/v1` | LLMs, song pool (`/vllm`), MCP time tool (`/mcp`, `hosts.mcp`) |
 | `qwen38` (Qwen 3.8 27B) | 5090 host | via LiteLLM; news, song briefs, DJ talk |
 | `ornith` | 4070 Ti host | via LiteLLM; commercials, liners |
 | Kokoro TTS | `192.168.68.89:8001` | `/tts`, `/voices`, `/health`; 16-bit mono 24 kHz |
 | SFX (MOSS-SoundEffect v2.0) | `192.168.68.88:8000` | `/health` |
-| searxng | see config | news search |
+| Brave Search API | `hosts.brave` = `https://api.search.brave.com` | News bulletin + copied-lyrics screen (BRAVE.md); key `BRAVE_SEARCH_KEY` in `.env`. Metered: never add a health probe, never call it from tests |
 | Media (S3 + CloudFront) | `media.*` in config | Public bucket `pilgrim-dot-farm-public` (us-west-1), read only by CloudFront `E2FWAKQQO45U1V`; station uploads with AWS profile `mac-studio` (RADIO §8.4, docs/backends.md §9) |
 | Stripe | `payments.api_base` in config | Checkout Sessions + webhooks; keys in `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (PAYMENT.md Step 0) |
 
@@ -124,7 +125,7 @@ checks pass. Each milestone ends with a commit and a short report (§8).
 | # | Milestone | Done when |
 |---|-----------|-----------|
 | M0 | Skeleton: layout per §18, `config.yaml` + pydantic loader, `Clock` and RNG interfaces, Makefile, empty test suite runs | `make test` passes |
-| M1 | Backend probes: `docs/backends.md` with observed shapes for mlx-serve, Kokoro, LiteLLM, searxng | File exists with real examples |
+| M1 | Backend probes: `docs/backends.md` with observed shapes for mlx-serve, Kokoro, LiteLLM, Brave Search | File exists with real examples |
 | M2 | Fakes: `fake_minimax`, `fake_kokoro`, `fake_llm` (§15), including failure injection | Fakes unit-tested |
 | M3 | `store.py`: inventory metadata + airplay ledger | Tests for insert, query by type, spacing lookups, expiry |
 | M4 | Audio QC + normalize (§8) | Known-bad fixtures rejected, known-good pass, output is −16 LUFS ±0.5, FLAC |
@@ -258,7 +259,7 @@ continue.
   generation time per song; don't extrapolate from 10 s clips.
 - **Web search results can contain prompt-injection text.** The news pipeline
   gets a search tool and nothing else: no file, shell, or network access
-  beyond searxng.
+  beyond the Brave news endpoint.
 - **Satire next to serious news.** Respect the `gravity` adjacency rule in §5.2.
 - **Don't let the committed window include unrendered items.** A contextual
   item that isn't ready gets replaced by a liner, never waited on.

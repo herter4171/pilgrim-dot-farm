@@ -45,7 +45,8 @@ without touching the rest of the system.
 | 4070 Ti | `ornith`: commercials, liners (high volume, low stakes, inventory work) | `<ORNITH_HOST>` via LiteLLM |
 | Kokoro-82M | TTS, 16-bit mono 24 kHz | `192.168.68.89:8001` |
 | FLUX 3 Image Klein | Cover art per song (ALBUM_ART.md): 1024×1024 PNG, ~40 s/image, single-flight, blocks while rendering | `127.0.0.1:8084` (`hosts.flux`, docs/backends.md §10) |
-| searxng | Web search for news (MCP or JSON API) | `<SEARXNG_HOST>` |
+| Brave Search API | Web search: news bulletin + copied-lyrics screen (BRAVE.md) | `https://api.search.brave.com` (`hosts.brave`, key `BRAVE_SEARCH_KEY`) |
+| LiteLLM MCP | The DJ's real local time (`time-get_current_time`) only | `https://litellm.twr.church/mcp` (`hosts.mcp`) |
 
 Notes:
 - LLMs are on separate hosts, so there is no GPU contention with song
@@ -676,8 +677,12 @@ QC rejects clips more than ±25 % off target.
 
 ### 6.4 News
 
-- `qwen38` with a search tool bound to searxng. Budget: **max 3 searches,
-  60 s wall clock**; abort and keep the previous bulletin if exceeded.
+- One bounded **Brave news search** (`hosts.brave`, BRAVE.md; `news.results`
+  headlines from the last `news.freshness` = 24 h, each line tagged with its
+  source and age) feeds `qwen38`. Budget: **max 3 searches, 60 s wall
+  clock**. A degraded or empty search still produces a bulletin from the
+  model alone (operator decision, BRAVE.md §0: the mix of invented and real
+  headlines is wanted); the previous bulletin is not kept instead.
 - Output: 3–4 headlines at headline depth, sources attributed on air
   ("according to…"), summarized in the model's own words, never read verbatim.
 - Tag `gravity: serious | normal` for the adjacency rule in §5.2.
@@ -1069,7 +1074,7 @@ refill target.
 | GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, url, art_url, type, duration_s, sfx, title, artist}`. `art_url` is the song's cover on CloudFront (`public_base_url + "/" + art_s3_key`) once uploaded, else `""` — there is no origin art fallback (ALBUM_ART.md Step 7); non-song items always send `""`. `url` is where the audio lives: the CloudFront URL once the item is in S3, else `/api/media/<id>` (§8.4). `sfx` is a list (usually empty) of overlays to play over that item: `{media_id, url, cue, kind, offset_s, duration_s, gain, duck}`. `title`/`artist` come from the referenced inventory item on both initial and incremental responses, normalized to empty strings when absent (song label, COSMETIC_PATCHING §3). |
 | POST | `/api/station/heartbeat` | `{seq, media_id, position, type, player_id}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events. Optional playback telemetry (§9.2): `platform` (`ios`\|`android`\|`other`), `ctx_state` (`running`\|`suspended`\|`interrupted`\|`closed`), `hidden` (page in background / device locked), `sink` (`element`\|`direct`), `resumed` (interruption recoveries this session). Kept per live player (pruned with the listener map, bounded by `visitors.max_listeners`), summarised on the admin `/api/health` as `listeners: {count, reporting, by_platform, hidden, not_running, sink_element, resumed_total}`, and logged as `listener.telemetry` on change. Reported, never acted on |
 | GET | `/api/media/<id>` | Transitional fallback (§8.4): the item's file from the origin library (`audio/mpeg` for MP3, `audio/flac` for a not-yet-migrated FLAC). Browsers use it only for items without an `s3_key` |
-| GET | `/api/health` | Admin: backend status (incl. `sfx`), inventory levels vs. targets (incl. `field_report`, `promo` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate, `art` = `{backend: ok\|down\|busy\|disabled, with_art, without_art}`, and `idle` = `{idle, since, wakes}` (IDLE.md: the frozen playhead, when it began, and how many wakes this process has served). Public listener: `{on_air, art: {backend}, time}` only — no DB read, no FLUX probe, and **no `idle` field** (the browser's OFF AIR logic must not see idle; `on_air` stays true while frozen) (ALBUM_ART.md Step 5) |
+| GET | `/api/health` | Admin: backend status (incl. `sfx`; `search` = Brave, true until a real call degrades, false without a key, with `search_last: {status, at, kind, error}` — no metered probe), inventory levels vs. targets (incl. `field_report`, `promo` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate, `art` = `{backend: ok\|down\|busy\|disabled, with_art, without_art}`, and `idle` = `{idle, since, wakes}` (IDLE.md: the frozen playhead, when it began, and how many wakes this process has served). Public listener: `{on_air, art: {backend}, time}` only — no DB read, no FLUX probe, and **no `idle` field** (the browser's OFF AIR logic must not see idle; `on_air` stays true while frozen) (ALBUM_ART.md Step 5) |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
 | GET | `/api/requests` | Request board: `{queue: [{id, text, status, paid, stage, song_title, score, votable, buried}], recent: [{text, song_title, song_artist, paid, wait_s}], cap, voting_enabled}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); `score` is the vote sum, `votable` false for paid rows or when `voting.enabled` is false, `buried` true for a free queued row at/below `voting.bury_threshold` (VOTING.md §1); recent = **last 5** aired, never scored (no retrospective voting). The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `wait_s` (Prep Time) is whole seconds from `prep_started_at` — the moment lyrics/brief writing began — to the **earlier of `aired_at` and `due_at`**. `due_at` is the wall time the song was scheduled to air when it was teed up (committed or spliced into the programme, §5.2); with listeners present it agrees with `aired_at` to within seconds, but with nobody listening the playhead is frozen (§3, IDLE.md D3) and `aired_at` only lands on the next PLAY, hours later: that wait is capped at when the song would have aired. Time spent in line or waiting for the station to come back is not prep, and a row with no recorded writing start (aired before that column existed) sends `null`, which the page renders as an em dash (`—`) — measured-or-nothing, never queue idle dressed up as prep. Rows that aired before `due_at` existed are recovered from the station log by `make due-backfill` (tee-up line + frozen spans; dry run unless `DUE_ARGS="--apply"`). `POST` answers `line_full: true` when the free line is at `free_queue_max` |
 | POST | `/api/requests/{id}/vote` | VOTING.md: `{voter_id, value}` where `voter_id` is the browser's 32-hex id and `value` ∈ {−1, 0, +1} (0 retracts). Upsert per `(request_id, voter_id)`; only free rows in `queued/producing/ready` are votable. `200 {ok, score, mine, open}`; `404 not_found`; `409 {code: voting_closed\|not_votable, score}`; `422` bad body/id; `429` rate limit or `too_many_voters` (max distinct ids per IP per request); `404` when `voting.enabled` is false. `no-store` |
@@ -1189,7 +1194,8 @@ deployment's encrypted connection or an SSH tunnel.
 hosts:
   kokoro: http://192.168.68.89:8001
   litellm: https://litellm.twr.church/v1
-  searxng: https://litellm.twr.church/mcp   # LiteLLM MCP (web_search tool)
+  mcp: https://litellm.twr.church/mcp       # LiteLLM MCP: the DJ's time tool only
+  brave: https://api.search.brave.com       # Brave Search API (BRAVE.md); key BRAVE_SEARCH_KEY
   sfx: http://192.168.68.88:8000  # MOSS-SoundEffect v2.0
   flux: http://127.0.0.1:8084     # FLUX 3 Image Klein, cover art (ALBUM_ART.md)
 
@@ -1269,6 +1275,15 @@ news:
   refresh_s: 1800
   max_searches: 3
   budget_s: 60
+  results: 8              # Brave news results per bulletin
+  freshness: pd           # last 24 h
+
+search:                   # Brave Search API client (BRAVE.md)
+  timeout_s: 15
+  retries: 1
+  backoff_s: 0.5
+  country: US
+  lang: en
 
 requests:
   queue_cap: 50          # request-board display size (no eviction on the public line)
@@ -1303,7 +1318,6 @@ payments:
   managed_payments: false      # managed_payments[enabled]=false (tax code ineligible)
   copyright:                   # copied-lyrics screen before Checkout (PAYMENT.md Step 12b)
     enabled: true
-    engines: startpage         # pinned; bing truncates queries, others rate-limit
     max_probes: 4
     min_words: 6
     min_content_words: 3

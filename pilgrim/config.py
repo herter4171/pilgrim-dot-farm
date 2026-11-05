@@ -101,7 +101,8 @@ class Hosts(BaseModel):
     # Song generation is not a host: it is the backend pool in songs.gen_backends.
     kokoro: str
     litellm: str
-    searxng: str
+    mcp: str  # LiteLLM MCP (Streamable HTTP): the DJ's time tool only (docs/backends.md §5)
+    brave: str = "https://api.search.brave.com"  # Brave Search API (BRAVE.md; docs/backends.md §11)
     sfx: str = "http://127.0.0.1:8000"  # MOSS-SoundEffect v2.0 (docs/backends.md §7)
     flux: str = "http://127.0.0.1:8084"  # FLUX 3 Image Klein, cover art (docs/backends.md §10)
 
@@ -341,6 +342,30 @@ class News(BaseModel):
     refresh_s: int = 1800
     max_searches: int = 3
     budget_s: int = 60
+    results: int = 8          # Brave news results handed to the anchor (BRAVE.md)
+    freshness: str = "pd"     # Brave freshness: pd/pw/pm/py or a date range
+
+    @model_validator(mode="after")
+    def _validate(self) -> News:
+        if self.results < 1 or self.refresh_s <= 0 or self.budget_s <= 0:
+            raise ValueError("news.results/refresh_s/budget_s must be positive")
+        return self
+
+
+class Search(BaseModel):
+    """Brave Search API client limits (BRAVE.md; docs/backends.md §11). Shared
+    by the news bulletin and the copied-lyrics screen."""
+    timeout_s: float = 15.0   # per HTTP call
+    retries: int = 1          # extra attempts on 429/5xx/transport errors
+    backoff_s: float = 0.5    # sleep before retry n is backoff_s * n
+    country: str = "US"
+    lang: str = "en"
+
+    @model_validator(mode="after")
+    def _validate(self) -> Search:
+        if self.timeout_s <= 0 or self.retries < 0 or self.backoff_s < 0:
+            raise ValueError("search.timeout_s > 0, retries >= 0, backoff_s >= 0")
+        return self
 
 
 class Visitors(BaseModel):
@@ -475,11 +500,9 @@ class Ratings(BaseModel):
 
 class CopyrightCheck(BaseModel):
     """Web screen for copied lyrics in paid prompts (PAYMENT.md Step 12b).
-    Deterministic text matching against searxng snippets; no LLM decides."""
+    Deterministic text matching against Brave web-search snippets (BRAVE.md);
+    no LLM decides."""
     enabled: bool = True
-    # Pinned engines: the default mix waits on suspended engines and bing
-    # truncates queries to their first word (docs/backends.md).
-    engines: str = "startpage"
     max_probes: int = 4        # lyric lines searched per request
     min_words: int = 6         # a probed line has at least this many words
     min_content_words: int = 3  # ...of which this many are not stopwords
@@ -786,6 +809,7 @@ class Config(BaseModel):
     inventory: Inventory = Field(default_factory=Inventory)
     songs: Songs = Field(default_factory=Songs)
     news: News = Field(default_factory=News)
+    search: Search = Field(default_factory=Search)
     requests: Requests = Field(default_factory=Requests)
     payments: Payments = Field(default_factory=Payments)
     visitors: Visitors = Field(default_factory=Visitors)
@@ -900,6 +924,11 @@ def load_secret(name: str, env_file: Path | None = None) -> str:
 def load_api_key(env_file: Path | None = None) -> str:
     """LiteLLM bearer token: $LITELLM_TOKEN, else LITELLM_TOKEN= in the .env."""
     return load_secret("LITELLM_TOKEN", env_file)
+
+
+def load_brave_key(env_file: Path | None = None) -> str:
+    """Brave Search API key (BRAVE.md §2): $BRAVE_SEARCH_KEY, else the .env line."""
+    return load_secret("BRAVE_SEARCH_KEY", env_file)
 
 
 def stripe_env(env: Mapping[str, str] | None = None,

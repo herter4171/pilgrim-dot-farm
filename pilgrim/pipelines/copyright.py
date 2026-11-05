@@ -2,7 +2,8 @@
 
 A paid prompt can carry many lines of lyrics. Before a Checkout Session is
 created, a few of its most distinctive lines are searched as exact phrases
-through searxng, and the result snippets are compared word by word. The
+through Brave web search (BRAVE.md), and the result snippets are compared
+word by word. The
 decision is deterministic text matching; no LLM sees the snippets (web text
 can carry prompt injection) and none makes the call.
 
@@ -27,7 +28,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from pilgrim.config import Config
-from pilgrim.pipelines.mcp import SearchOutcome, searxng_lookup
+from pilgrim.pipelines.brave import BraveSearch, SearchOutcome
 from pilgrim.pipelines.verbatim import extract_caption
 
 log = logging.getLogger("radio.copyright")
@@ -234,15 +235,15 @@ class CopyrightScreen:
     """Bounded, parallel probe searches + `judge`. `search` is injectable so
     tests never reach the network (AGENTS §1.2)."""
 
-    def __init__(self, cfg: Config, api_key: str, search: Search | None = None):
+    def __init__(self, cfg: Config, client: BraveSearch | None = None,
+                 search: Search | None = None):
         self.cfg = cfg
-        self.api_key = api_key
-        self.search: Search = search or self._searxng
+        # No client = no key = degraded without the network (tests).
+        self.client = client or BraveSearch(cfg, "")
+        self.search: Search = search or self._brave
 
-    async def _searxng(self, query: str) -> SearchOutcome:
-        cc = self.cfg.payments.copyright
-        return await searxng_lookup(self.cfg, self.api_key, query,
-                                    engines=cc.engines, limit=cc.results)
+    async def _brave(self, query: str) -> SearchOutcome:
+        return await self.client.web(query, count=self.cfg.payments.copyright.results)
 
     async def check(self, text: str, request_id: int | None = None) -> Verdict:
         cc = self.cfg.payments.copyright

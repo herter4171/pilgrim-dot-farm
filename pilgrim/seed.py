@@ -17,9 +17,11 @@ from pilgrim.config import (  # noqa: E402
     Config,
     ensure_dirs,
     load_api_key,
+    load_brave_key,
     load_config,
 )
 from pilgrim.logging_setup import err_text, setup_logging  # noqa: E402
+from pilgrim.pipelines.brave import BraveSearch  # noqa: E402
 from pilgrim.pipelines.llm import LLM  # noqa: E402
 from pilgrim.pipelines.news import NewsPipeline  # noqa: E402
 from pilgrim.pipelines.sfx import SfxClient, SfxPipeline  # noqa: E402
@@ -46,7 +48,8 @@ async def seed(cfg: Config, api_key: str) -> int:
     voice = VoicePipeline(cfg, llm, kokoro, db, media_dir, prompts=_prompts(cfg))
     songs = SongPipeline(cfg, llm, media_dir, prompts=_prompts(cfg), rng=rng,
                          api_key=api_key)
-    news = NewsPipeline(cfg, llm, api_key=api_key, prompts=_prompts(cfg))
+    news = NewsPipeline(cfg, llm, search=BraveSearch(cfg, load_brave_key()),
+                        prompts=_prompts(cfg))
     sfx_client = SfxClient(cfg)
     prod = Producer(cfg, db, llm, kokoro, voice, songs, Clock(), prompts=_prompts(cfg),
                     media_dir=media_dir, api_key=api_key, rng=rng,

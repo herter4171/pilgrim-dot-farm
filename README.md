@@ -121,7 +121,11 @@ All application code, prompts, the station bible, and tests live under
 ## Secrets
 
 Keep credentials in environment variables or the git-ignored `.env` file.
-`LITELLM_TOKEN` authenticates LLM, moderation, and news requests.
+`LITELLM_TOKEN` authenticates LLM, moderation, and the DJ time-tool requests.
+`BRAVE_SEARCH_KEY` is the Brave Search API key (BRAVE.md): the news bulletin
+and the copied-lyrics screen send it as `X-Subscription-Token`. Without it
+the station still runs: news is model-written and the copyright screen
+reports `unchecked`. Origin `.env` only; never logged.
 `PILGRIM_DJ_TOKEN` authenticates `/api/admin/dj/*` on the admin listener
 (`127.0.0.1:5081`); `make tui` reads it. Never use the LiteLLM token for DJ
 controls. Service URLs belong in `pilgrim/config.yaml`.

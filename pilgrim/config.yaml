@@ -15,9 +15,11 @@ hosts:
   # song generators are the pool in songs.gen_backends (RADIO §6.2)
   kokoro: http://192.168.68.89:8001
   litellm: https://litellm.twr.church/v1
-  # searxng is reached through the LiteLLM MCP server (web_search-searxng tool),
-  # NOT a direct HTTP /search. This is the MCP Streamable-HTTP endpoint.
-  searxng: https://litellm.twr.church/mcp
+  # LiteLLM MCP (Streamable HTTP): only the DJ's time tool now (docs/backends.md §5).
+  mcp: https://litellm.twr.church/mcp
+  # Brave Search API: news bulletin + copied-lyrics screen (BRAVE.md; docs/backends.md §11).
+  # Key: BRAVE_SEARCH_KEY in .env, sent as X-Subscription-Token.
+  brave: https://api.search.brave.com
   sfx: http://192.168.68.88:8000   # MOSS-SoundEffect v2.0 (docs/backends.md §7)
   flux: http://127.0.0.1:8084      # FLUX 3 Image Klein, cover art (ALBUM_ART.md; docs/backends.md §10)
 
@@ -131,6 +133,16 @@ news:
   refresh_s: 1800
   max_searches: 3
   budget_s: 60
+  results: 8          # Brave news results handed to the anchor per bulletin
+  freshness: pd       # last 24 h (pd/pw/pm/py or YYYY-MM-DDtoYYYY-MM-DD)
+
+# Brave Search API client (BRAVE.md). Shared by news and the copyright screen.
+search:
+  timeout_s: 15       # per HTTP call
+  retries: 1          # extra attempts on 429/5xx/transport errors
+  backoff_s: 0.5      # sleep before retry n = backoff_s * n
+  country: US
+  lang: en
 
 # Listener request line. FIFO top-N with LLM moderation: clean/playful requests ok,
 # innuendo and mild rude words ok ("Keep it cleanish. Innuendo welcome."), but
@@ -358,7 +370,6 @@ payments:
   managed_payments: false      # send managed_payments[enabled]=false (tax code ineligible)
   copyright:                   # web screen for copied lyrics (PAYMENT.md Step 12b)
     enabled: true
-    engines: startpage         # bing truncates queries; others rate-limit us
     max_probes: 4              # lyric lines searched per paid request
     min_words: 6
     min_content_words: 3

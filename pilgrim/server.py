@@ -42,6 +42,7 @@ from pilgrim.config import (
     Config,
     ensure_dirs,
     load_api_key,
+    load_brave_key,
     load_config,
     load_secret,
     stripe_env,
@@ -56,6 +57,7 @@ from pilgrim.payments import (
     WebhookError,
     verify_webhook,
 )
+from pilgrim.pipelines.brave import BraveSearch
 from pilgrim.pipelines.copyright import CopyrightScreen
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.moderation import Moderation
@@ -87,7 +89,9 @@ class Station:
         self.kokoro = KokoroClient(cfg)
         self.prompts = _load_prompts(cfg)
         self.moderator = Moderation(cfg, self.llm, prompts=self.prompts)
-        self.copyright = CopyrightScreen(cfg, api_key)
+        # One Brave client for news + the copyright screen (BRAVE.md).
+        self.search = BraveSearch(cfg, load_brave_key())
+        self.copyright = CopyrightScreen(cfg, self.search)
         self.voice = VoicePipeline(cfg, self.llm, self.kokoro, self.db, self.media_dir,
                                    prompts=self.prompts)
         self.songs = SongPipeline(cfg, self.llm, self.media_dir,
@@ -95,7 +99,7 @@ class Station:
         swept = self.songs.sweep_temp()  # render temp files a crash left behind
         if swept:
             log.info("song.tmp_swept", extra={"count": swept})
-        self.news = NewsPipeline(cfg, self.llm, api_key=api_key,
+        self.news = NewsPipeline(cfg, self.llm, search=self.search,
                                 prompts=self.prompts)
         self.sfx_client = SfxClient(cfg)
         self.sfx = SfxPipeline(cfg, self.sfx_client, self.media_dir)
@@ -195,7 +199,7 @@ class Station:
         def ok(status: int) -> bool:
             return 200 <= status < 500
         st: dict = {"litellm": False, "kokoro": False, "music": False,
-                    "searxng": False, "sfx": False}
+                    "search": False, "sfx": False}
         try:
             r = await self._http.get(
                 self.cfg.hosts.litellm.rstrip("/") + "/models", headers=self._auth)
@@ -210,12 +214,10 @@ class Station:
         st["music_backends"] = await song_backend_health(
             self.cfg, self._http, self.api_key)
         st["music"] = any(st["music_backends"].values())
-        try:
-            r = await self._http.get(self.cfg.hosts.searxng.rstrip("/") + "/health",
-                                     headers=self._auth)
-            st["searxng"] = ok(r.status_code)
-        except Exception:
-            st["searxng"] = False
+        # Brave is metered: report the last real search instead of probing
+        # (BRAVE.md Step 6). True until a call degrades, False without a key.
+        st["search"] = self.search.healthy
+        st["search_last"] = dict(self.search.last)
         try:
             r = await self._http.get(self.cfg.hosts.sfx.rstrip("/") + "/health")
             st["sfx"] = ok(r.status_code)
@@ -815,6 +817,10 @@ def build_station(cfg: Config) -> Station:
     if not api_key:
         logging.getLogger("radio.server").warning(
             "LITELLM_TOKEN not set (env or .env); LLM and MCP calls will fail")
+    if not load_brave_key():
+        logging.getLogger("radio.server").warning(
+            "BRAVE_SEARCH_KEY not set (env or .env); news runs without search "
+            "and the copyright screen reports unchecked")
     return Station(cfg, api_key)
 
 

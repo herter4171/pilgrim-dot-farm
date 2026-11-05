@@ -55,7 +55,7 @@ def test_current_local_time_parses_mcp_shape(cfg):
     assert dt.hour == 19
     assert dt.utcoffset().total_seconds() == -4 * 3600  # -04:00 as recorded
     assert ses.list_tools_called is True
-    assert _TOOL_CACHE.get(cfg.hosts.searxng) == "time-get_current_time"
+    assert _TOOL_CACHE.get(cfg.hosts.mcp) == "time-get_current_time"
 
 
 class _BoomSession:

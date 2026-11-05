@@ -1,7 +1,7 @@
 """Real-backend smoke probe (AGENTS §6 `make smoke`).
 
 Explicitly NOT part of the unit suite: contacts LiteLLM/Kokoro/song
-generators/searxng. Only run deliberately. Verifies /health on every host and
+generators/Brave. Only run deliberately. Verifies /health on every host and
 reports a summary.
 
 `--gen` (only when asked; hard rule 6) also renders one 10 s instrumental per
@@ -18,7 +18,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from pilgrim.config import load_config  # noqa: E402
+from pilgrim.config import load_brave_key, load_config  # noqa: E402
 
 _TIMEOUT = httpx.Timeout(8.0, connect=5.0)
 
@@ -76,11 +76,23 @@ def probe() -> int:
         print(f"{'music:' + name:10s} {'':45s} {'OK' if ok else 'FAIL'}")
         if not ok:
             failures.append(f"music backend {name} unreachable")
-    # searxng goes through the LiteLLM MCP endpoint (not a /health route)
-    ok, why = _mcp_probe(cfg.hosts.searxng, key)
-    print(f"{'searxng':10s} {cfg.hosts.searxng:45s} {'OK' if ok else 'FAIL'} ({why})")
+    # the LiteLLM MCP endpoint (time tool; no /health route): handshake only
+    ok, why = _mcp_probe(cfg.hosts.mcp, key)
+    print(f"{'mcp(time)':10s} {cfg.hosts.mcp:45s} {'OK' if ok else 'FAIL'} ({why})")
     if not ok:
-        failures.append(f"searxng {why}")
+        failures.append(f"mcp {why}")
+    # Brave Search (BRAVE.md): one real 1-result news query, the cheapest
+    # call that proves the key, the plan and the response shape together.
+    from pilgrim.pipelines.brave import BraveSearch
+
+    brave = BraveSearch(cfg, load_brave_key())
+    out = asyncio.run(brave.news("top news headlines today", count=1,
+                                 freshness=cfg.news.freshness))
+    ok = out.status == "ok"
+    print(f"{'brave':10s} {cfg.hosts.brave:45s} {'OK' if ok else 'FAIL'} "
+          f"({out.status}{': ' + out.error if out.error else ''})")
+    if not ok:
+        failures.append(f"brave {out.status} {out.error}")
     if failures:
         print("\nSMOKE FAILURES:")
         for f in failures:

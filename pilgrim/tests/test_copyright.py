@@ -1,14 +1,14 @@
 """PAYMENT.md Step 12b: the copied-lyrics screen (pure matching + fakes).
 
 The "published" song here is invented; the result shapes mirror what the live
-searxng/startpage probe returned (Title / Description / URL, lyric sites).
+Brave web-search probe returned (title / description / url, lyric sites).
 """
 from __future__ import annotations
 
 import asyncio
 
 from pilgrim.pipelines import copyright as cr
-from pilgrim.pipelines.mcp import SearchOutcome, parse_results
+from pilgrim.pipelines.brave import SearchOutcome
 
 # An invented "existing song" as a lyric site would show it in a snippet.
 SONG = ("Lyrics for Lanterns Over Galveston by The Velvet Ferrymen. "
@@ -132,14 +132,6 @@ def test_song_key_drops_site_names():
     assert cr._same_song(a, b)
 
 
-def test_parse_results_reads_the_observed_format():
-    text = ("Title: A - B Lyrics - Genius\nDescription: some words\nURL: https://x\n"
-            "Relevance Score: 1.000\n\nTitle: C\nDescription: more\nURL: https://y\n")
-    rows = parse_results(text)
-    assert [r["title"] for r in rows] == ["A - B Lyrics - Genius", "C"]
-    assert rows[1]["description"] == "more"
-
-
 def test_screen_runs_probes_in_parallel_through_the_injected_search(cfg):
     seen: list[str] = []
 
@@ -147,7 +139,7 @@ def test_screen_runs_probes_in_parallel_through_the_injected_search(cfg):
         seen.append(query)
         return _ok()
 
-    screen = cr.CopyrightScreen(cfg, api_key="", search=search)
+    screen = cr.CopyrightScreen(cfg, search=search)
     text = ("[verse]\nCarry my lantern down the salted pier tonight\n"
             "Every gull above the water knows the reason why\n")
     v = asyncio.run(screen.check(text))
@@ -163,7 +155,7 @@ def test_screen_timeout_is_unchecked(cfg):
         await asyncio.sleep(1)
         return _ok()
 
-    screen = cr.CopyrightScreen(cfg, api_key="", search=slow)
+    screen = cr.CopyrightScreen(cfg, search=slow)
     v = asyncio.run(screen.check("[verse]\nCarry my lantern down the salted pier tonight"))
     assert v.outcome == "unchecked" and v.allowed
 
@@ -175,12 +167,12 @@ def test_screen_disabled_is_skipped(cfg):
     async def never(query: str) -> SearchOutcome:
         raise AssertionError("searched while disabled")
 
-    screen = cr.CopyrightScreen(cfg, api_key="", search=never)
+    screen = cr.CopyrightScreen(cfg, search=never)
     assert asyncio.run(screen.check("[verse]\nanything at all here ok")).outcome == "skipped"
 
 
-def test_default_search_without_token_is_degraded_not_networked(cfg):
-    screen = cr.CopyrightScreen(cfg, api_key="")
+def test_default_search_without_key_is_degraded_not_networked(cfg):
+    screen = cr.CopyrightScreen(cfg)
     out = asyncio.run(screen.search('"x" lyrics'))
     assert out.status == "degraded"
 
