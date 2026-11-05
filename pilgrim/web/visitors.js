@@ -36,7 +36,7 @@
 
   load(); // once per page load; no continuous refresh needed (§6)
 
-  /* Listening now: "69." + (live listener count + LISTENER_OFFSET), from
+  /* Listening now: "68." + (live listener count + LISTENER_OFFSET), from
      /api/station/state (operator decision, RADIO §9.1; constant +10 offset
      added 2026-10-03). A failed poll keeps the last value. */
   const LISTENER_OFFSET = 10; // constant added to the displayed listener count

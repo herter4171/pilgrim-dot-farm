@@ -53,7 +53,7 @@ test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", as
     expect(centre).toBeGreaterThan(textBox!.y);
     expect(centre).toBeLessThan(textBox!.y + textBox!.height);
   }
-  await expect(page.locator("#listeners")).toHaveText("Listening now: 69.10");
+  await expect(page.locator("#listeners")).toHaveText("Listening now: 68.10");
   // the hit-counter pane carries the social links as icons (cosmetic patch):
   // Instagram / Reddit / GitHub, each an SVG glyph in a new tab
   const socials = await page.$$eval(".social-row a", els => els.map(a => {

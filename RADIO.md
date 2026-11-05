@@ -929,9 +929,9 @@ the station name.
   **Unique visitors**, a persistent count of distinct
   canonical client IPs (RADIO §14), starting at 0. Falls back to `0` if the
   call fails; never disturbs playback or requests. Below it, **Listening
-  now: 69.N+10**, where N is the integer live listener count (`listeners` on
+  now: 68.N+10**, where N is the integer live listener count (`listeners` on
   `GET /api/station/state`, §14) plus a constant offset of 10 (operator
-  decision, 2026-10-03), polled every 15 s; `69.10` until the first poll, and
+  decision, 2026-10-03), polled every 15 s; `68.10` until the first poll, and
   a failed poll keeps the last value (operator decision, 2026-10-02).
 - **OFF AIR**: when an edge cannot reach the origin it answers `/api/health`
   with `{"on_air": false, "off_air": true}`; the page shows the OFF AIR
