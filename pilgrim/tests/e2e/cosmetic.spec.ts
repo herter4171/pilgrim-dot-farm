@@ -176,6 +176,54 @@ test("aired requests table shows up to five with a prep time", async ({ page }) 
   const pos = await page.$eval(".req-scroll thead th",
                                el => getComputedStyle(el).position);
   expect(pos).toBe("sticky");
+  // Mobile (≤520 px): the Prep Time column keeps its header and a width of
+  // at least 3 ch so "min" never breaks one character per line; the queue's
+  // Status column still folds under the Title; nothing scrolls horizontally.
+  await page.setViewportSize({ width: 360, height: 420 });
+  await expect(airedTable.getByRole("columnheader", { name: "Prep Time" }))
+    .toBeVisible();
+  const prep = await airedTable.evaluate((table) => {
+    const ths = Array.from(table.querySelectorAll("thead th"));
+    const time = ths[2];
+    const probe = document.createElement("span");
+    probe.style.cssText = `position: absolute; visibility: hidden;
+      font: ${getComputedStyle(time).font};`;
+    probe.textContent = "0";   // 1 ch measured against the header's font
+    document.body.appendChild(probe);
+    const ch = probe.getBoundingClientRect().width;
+    probe.remove();
+    const cell = Array.from(table.querySelectorAll("td.req-wait"))
+      .find((e) => /min/.test(e.textContent || ""));
+    let minOneLine = true;
+    if (cell && cell.firstChild) {
+      const txt = cell.textContent || "";
+      const i = txt.indexOf("min");
+      const r = document.createRange();
+      r.setStart(cell.firstChild, i);
+      r.setEnd(cell.firstChild, i + 3);
+      // a single character never spans two line boxes, so its rect height is
+      // exactly one line box (line-height can compute to "normal"/non-numeric)
+      const one = document.createRange();
+      one.setStart(cell.firstChild, 0);
+      one.setEnd(cell.firstChild, 1);
+      const lineH = one.getBoundingClientRect().height;
+      // a mid-word break of "min" spans two line boxes; one fits in 1.5 of it
+      minOneLine = r.getBoundingClientRect().height <= lineH * 1.5;
+    }
+    return {
+      width: time.getBoundingClientRect().width,
+      ch,
+      minOneLine,
+      overflow: table.scrollWidth - table.clientWidth,
+    };
+  });
+  expect(prep.width).toBeGreaterThanOrEqual(3 * prep.ch);
+  expect(prep.minOneLine).toBe(true);
+  expect(prep.overflow).toBeLessThanOrEqual(1);
+  // the queue table's Status header is still hidden on mobile
+  const queueStatus = await page.$eval("#req-queue thead .c-time",
+                                        el => getComputedStyle(el).display);
+  expect(queueStatus).toBe("none");
 });
 
 test("a failed visitor counter never breaks PLAY or request submission", async ({ page }) => {

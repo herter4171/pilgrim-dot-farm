@@ -172,7 +172,7 @@ body {
 .pay-note { color: var(--cyan); font-size: 14px; letter-spacing: 1px; }
 .pay-btn {
   width: 100%; height: 56px; font-size: 20px; font-family: inherit; font-weight: bold;  /* 1.5x the 13.33px UA button default */
-  letter-spacing: 2px; cursor: pointer; border: none; border-radius: 6px;
+  letter-spacing: 2px; white-space: pre-line; cursor: pointer; border: none; border-radius: 6px;
   color: #0a0118; background-color: #00FF66;
   background-image: linear-gradient(
     90deg,
@@ -471,9 +471,17 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   .req-table .c-prompt { width: 50%; }
   .req-table .c-title { width: calc(50% - 48px); }
   .req-table .c-vote { width: 48px; }
-  /* aired table has no vote column and hides Prep Time: a clean 50/50 split */
-  .req-table-aired .c-prompt, .req-table-aired .c-title { width: 50%; }
-  .req-table .c-time, .req-table td.req-status { display: none; }
+  /* Aired table keeps its Prep Time column: a fixed 48 px slice (the header
+     wraps "Prep" / "Time" and the value wraps "16" / "min" — "min" itself
+     never breaks), Prompt and Title split the rest. The total is still 100%
+     so nothing scrolls horizontally down to 320 px (RADIO §9.1). */
+  .req-table-aired .c-prompt, .req-table-aired .c-title { width: calc(50% - 24px); }
+  .req-table-aired .c-time { width: 48px; }
+  /* Queue only: the Status header and cell hide (the label folds under the
+     Title). The selector must not catch the aired table's Prep Time header —
+     it used to, leaving the value column with zero width on phones. */
+  .req-table td.req-status { display: none; }
+  .req-table:not(.req-table-aired) .c-time { display: none; }
   .req-status-inline { display: block; color: var(--dim); font-size: 10px;
     letter-spacing: 1px; }
 }
