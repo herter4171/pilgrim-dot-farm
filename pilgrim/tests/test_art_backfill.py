@@ -26,7 +26,10 @@ def _song(store, tmp, n, **kw):
 
 
 def _args(**kw):
-    base = {"apply": False, "limit": 10, "item": None, "force": False, "seed": None}
+    # Mirrors the argparse defaults in tools/art_backfill.py (--scene was added
+    # in 724577f; the helper was not updated, so run() crashed on args.scene).
+    base = {"apply": False, "limit": 10, "item": None, "force": False,
+            "seed": None, "scene": None, "ignore_lease": False}
     base.update(kw)
     return argparse.Namespace(**base)
 
