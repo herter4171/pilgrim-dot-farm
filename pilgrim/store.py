@@ -825,6 +825,21 @@ class Store:
                 "SELECT COUNT(*) FROM visitor_ips").fetchone()[0]
         return int(n)
 
+    def request_counts(self) -> tuple[int, int]:
+        """(paid, total) listener requests for the HIT COUNTER pane
+        (RADIO §9.1, §14). `paid` counts priority rows that actually became
+        paid (Stripe confirmed or an operator comp, both of which set
+        `paid_at`); rows still in checkout (`checking`, `awaiting_payment`) or
+        `abandoned`/`rejected` before payment never count as paid. `total` is
+        every request row ever stored, free or paid."""
+        with self._lock:
+            paid = self._conn.execute(
+                "SELECT COUNT(*) FROM requests WHERE priority=1 "
+                "AND paid_at IS NOT NULL").fetchone()[0]
+            total = self._conn.execute(
+                "SELECT COUNT(*) FROM requests").fetchone()[0]
+        return int(paid), int(total)
+
     # -------------------------------------------------------------- requests
     def add_request(self, text: str, cap: int | None, status: str = "queued",
                     reason: str | None = None, priority: int = 0) -> dict[str, Any]:

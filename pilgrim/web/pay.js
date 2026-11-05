@@ -14,7 +14,7 @@
   const mount = $("pay-checkout");
   if (!btn || !panel || !mount) return;
 
-  const LABEL = "PRIORIT¥ R€QU€$T";
+  const LABEL = "PRIORITY REQUEST: $3 MIN";
   const STORE_KEY = "pd_pay_token";
   const STORE_TTL_MS = 10 * 60 * 1000;
 

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PILGRIM DOT FARM — radio</title>
-<link rel="stylesheet" href="style.css?v=20261103e">
+<link rel="stylesheet" href="style.css?v=20261105b">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -97,11 +97,10 @@
       <div id="req-err" class="req-err hidden"></div>
       <div class="req-list-head pay-head">I NEED ABOUT TREE FIDDY</div>
       <div class="pay-note">
-        WANT A TRULY CUSTOM SONG WITHOUT THE BARNYARD BRANDING?  Skip ahead of the free for all above!<br><br>
-        Help us pay Amazon Web Services and Detroit Edison.<br>
-        "Money me. Money now. Me a money, needing a lot now."
+	      <span style="font-size: 1.5em; display: block;">SKIP THE BARNYARD!</span><br>
+        Help us pay the power and cloud bills!
       </div>
-      <button id="pay-open" class="pay-btn" type="button">PRIORIT¥ R€QU€$T</button>
+      <button id="pay-open" class="pay-btn" type="button">PRIORITY REQUEST: $3 MIN</button>
       <div id="pay-panel" class="pay-panel hidden">
         <label for="pay-text" class="req-note">Describe your song in as much
           detail as you'd like: style, tempo, mood, instruments, what it's about, and
@@ -138,12 +137,18 @@
       <span class="win-title">HIT COUNTER & SOCIAL</span>
     </div>
     <div class="win-body hit">
+      <div class="paid-counter">
+        <img class="paid-counter-icon" src="img/cornucopia.png" alt="" aria-hidden="true" width="48" height="40" loading="lazy" decoding="async">
+        <span id="paid-requests" class="paid-requests">Paid requests: 0</span>
+        <img class="paid-counter-icon" src="img/cornucopia.png" alt="" aria-hidden="true" width="48" height="40" loading="lazy" decoding="async">
+      </div>
+      <div id="total-requests" class="total-requests">Total request: 0</div>
       <div id="visitors" class="visitors">Unique visitors: 0</div>
       <div id="listeners" class="listeners">Listening now: 68.10</div>
       <div class="social-row">
-        <a href="https://www.instagram.com/pilgrim.farm/" target="_blank" rel="noopener noreferrer"><img src="img/instagram.svg" alt="Instagram" width="44" height="44" loading="lazy" decoding="async"></a>
-        <a href="https://www.reddit.com/r/pilgrimdotfarm" target="_blank" rel="noopener noreferrer"><img src="img/reddit.svg" alt="Reddit" width="44" height="44" loading="lazy" decoding="async"></a>
-        <a href="https://github.com/pilgrim-dot-farm/pilgrim-dot-farm" target="_blank" rel="noopener noreferrer"><img src="img/github.svg" alt="GitHub" width="44" height="44" loading="lazy" decoding="async"></a>
+        <a href="https://www.instagram.com/pilgrim.farm/" target="_blank" rel="noopener noreferrer"><img src="img/instagram.svg" alt="Instagram" width="66" height="66" loading="lazy" decoding="async"></a>
+        <a href="https://www.reddit.com/r/pilgrimdotfarm" target="_blank" rel="noopener noreferrer"><img src="img/reddit.svg" alt="Reddit" width="66" height="66" loading="lazy" decoding="async"></a>
+        <a href="https://github.com/pilgrim-dot-farm/pilgrim-dot-farm" target="_blank" rel="noopener noreferrer"><img src="img/github.svg" alt="GitHub" width="66" height="66" loading="lazy" decoding="async"></a>
       </div>
     </div>
   </section>
@@ -202,7 +207,7 @@
 <script src="requests.js?v=20261103a"></script>
 <script src="votes.js?v=20261103a"></script>
 <script src="pay.js?v=20261031d"></script>
-<script src="visitors.js?v=20261031a"></script>
+<script src="visitors.js?v=20261105b"></script>
 <script src="rating.js?v=20261103a"></script>
 <script src="player.js?v=20261104a"></script>
 </body>

@@ -45,15 +45,19 @@ body {
   display: flex; flex-direction: column; align-items: center;
   justify-content: flex-start; gap: 16px; padding: 16px; overflow-y: auto; }
 /* More-below cue for the scrolling stack (same idea as the queue's .has-more):
-   a sticky 36 px gradient pinned to the bottom of the scrollport, shown only
-   while content continues past the fold. titlebar.js toggles the class. */
-#desktop::after {
-  content: ""; position: sticky; bottom: 0; flex: 0 0 36px;
-  width: 100%; margin-top: -36px; pointer-events: none;
+   a 36 px gradient hung from the top edge of the stationary footer, so it
+   always ends flush against the footer's border (no page-background slot
+   between the fade and the footer). Shown only while content continues past
+   the fold; titlebar.js toggles .has-more on #desktop. Lives outside the
+   scroll container so it adds no scroll height. */
+#desktop.has-more + #footer::before { opacity: 1; }
+#footer::before {
+  content: ""; position: absolute; bottom: 100%; left: 50%;
+  width: 100vw; height: 36px; transform: translateX(-50%);
+  pointer-events: none;
   background: linear-gradient(to bottom, transparent, rgba(10,1,24,.95));
   opacity: 0; transition: opacity .2s;
 }
-#desktop.has-more::after { opacity: 1; }
 
 .window.requests { width: min(94vw, 484px); }
 .win-body.requests { align-items: stretch; text-align: left; gap: 12px; }
@@ -377,6 +381,17 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
 /* Hit counter pane (COSMETIC_PATCHING §6). */
 .window.hit { width: min(94vw, 484px); }
 .win-body.hit { gap: 8px; }
+/* Paid + total requests above the unique-visitor line, fed by the same
+   POST /api/visitors (RADIO §9.1). The cornucopia marks a paid request, so
+   it bookends the paid line at either end, vertically centred on that line
+   (same height as the text). */
+.paid-counter { display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; }
+.paid-counter-icon { flex: none; height: 1.5em; width: auto; display: block; }
+.paid-requests, .total-requests { font-size: 14px; letter-spacing: 2px;
+  text-align: center; min-height: 1.2em; }
+.paid-requests { color: var(--warn); }
+.total-requests { color: var(--ok); }
 .visitors, .listeners { font-size: 14px; letter-spacing: 2px; color: var(--ok);
   text-align: center; min-height: 1.2em; }
 .hit-link { font-size: 14px; letter-spacing: 1px; color: var(--dim);

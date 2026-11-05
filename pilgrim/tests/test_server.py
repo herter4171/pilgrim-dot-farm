@@ -263,6 +263,49 @@ def test_visitors_disabled_returns_count_without_registering(tmp_env, monkeypatc
     assert r.status_code == 200 and r.json()["unique_visitors"] == 0
 
 
+def test_visitors_returns_paid_and_total_request_counts(tmp_env):
+    """RADIO §9.1: the HIT COUNTER's paid/total lines are DB-backed and ride
+    the one page-load POST /api/visitors (no extra endpoint, no extra call)."""
+    cfg, _, _ = tmp_env
+    cfg.visitors.trusted_proxies = ["127.0.0.1"]
+    app = create_app(cfg)
+    c = TestClient(app, client=("127.0.0.1", 50000))
+    h = {"X-Real-IP": "1.2.3.4"}
+    body = c.post("/api/visitors", headers=h).json()
+    assert body == {"unique_visitors": 1, "paid_requests": 0,
+                    "total_requests": 0}
+    sdb = app.state.station.db
+    sdb.add_request("free one", cap=None)
+    paid = sdb.add_paid_request("paid one")
+    sdb.attach_checkout(paid["id"], "cs_test_counts")
+    assert sdb.mark_request_paid(
+        paid["id"], session_id="cs_test_counts", payment_intent_id="pi_test",
+        amount_cents=350, currency="usd", livemode=False)
+    # abandoned checkout rows stay out of the paid count
+    sdb.add_paid_request("never paid")
+    body = c.post("/api/visitors", headers=h).json()
+    assert body["paid_requests"] == 1 and body["total_requests"] == 3
+    assert body["unique_visitors"] == 1   # same peer, still one visitor
+
+
+def test_visitors_request_counts_failure_reports_zero(tmp_env, monkeypatch):
+    """A store error on the request counts must not break the counter: the
+    pane falls back to zeros, like the visitor count (RADIO §14)."""
+    cfg, _, _ = tmp_env
+    cfg.visitors.trusted_proxies = ["127.0.0.1"]
+    app = create_app(cfg)
+    c = TestClient(app, client=("127.0.0.1", 50000))
+
+    def boom() -> tuple[int, int]:
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(app.state.station.db, "request_counts", boom)
+    r = c.post("/api/visitors", headers={"X-Real-IP": "1.2.3.4"})
+    assert r.status_code == 200
+    assert r.json() == {"unique_visitors": 1, "paid_requests": 0,
+                        "total_requests": 0}
+
+
 # --------------------------------------------------------------------------- #
 # Live listener count (RADIO §9.1, §11, §14): heartbeating player_ids within
 # visitors.listener_timeout_s, exposed on /api/station/state. SimClock-driven.

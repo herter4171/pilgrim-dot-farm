@@ -49,3 +49,35 @@ def test_raw_ip_is_stored_and_legacy_signature_table_dropped(tmp_path):
     tables = {r[0] for r in s._conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     assert "visitor_signatures" not in tables
+
+
+def test_request_counts_paid_and_total(tmp_path):
+    """HIT COUNTER counts (RADIO §9.1): `paid` = paid priority rows only;
+    `total` = every request row, free or paid."""
+    s = Store(tmp_path / "station.db")
+    assert s.request_counts() == (0, 0)
+
+    s.add_request("free one", cap=None)
+    s.add_request("free two", cap=None)
+    assert s.request_counts() == (0, 2)
+
+    # paid row: awaiting_payment/checking/abandoned never count as paid
+    paid = s.add_paid_request("paid one")
+    s.attach_checkout(paid["id"], "cs_test_1")
+    assert s.request_counts() == (0, 3)
+    assert s.mark_request_paid(
+        paid["id"], session_id="cs_test_1", payment_intent_id="pi_test",
+        amount_cents=350, currency="usd", livemode=False)
+    assert s.request_counts() == (1, 3)
+
+    # an operator comp (paid_at set, amount 0) also counts as a paid request
+    comp = s.add_checking_request("comped one", comped=True)
+    s.set_request_stage(comp["id"], "ready")
+    assert s.mark_request_comped(comp["id"])
+    assert s.request_counts() == (2, 4)
+
+    # a paid row abandoned at checkout stays out of the paid count
+    abandoned = s.add_paid_request("never paid")
+    s.attach_checkout(abandoned["id"], "cs_test_2")
+    assert s.mark_request_abandoned(abandoned["id"])
+    assert s.request_counts() == (2, 5)

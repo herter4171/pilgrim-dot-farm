@@ -620,6 +620,17 @@ class Station:
             log.exception("visitor.register failed")
             return 0
 
+    def request_counts(self) -> dict[str, int]:
+        """Paid + total request counts for the HIT COUNTER pane (RADIO §9.1).
+        Never fails: a store error reports zeros, exactly like the visitor
+        counter, so the pane renders instead of throwing (RADIO §14)."""
+        try:
+            paid, total = self.db.request_counts()
+            return {"paid_requests": paid, "total_requests": total}
+        except Exception:
+            log.exception("request.counts failed")
+            return {"paid_requests": 0, "total_requests": 0}
+
     async def startup(self) -> None:
         # warm the program immediately with whatever inventory exists
         self.scheduler.commit_lookahead()
@@ -1199,9 +1210,12 @@ def _add_public_routes(app: FastAPI, station: Station,
     async def register_visitor(request: Request):
         """Register the server-derived client IP and return the unique count
         (RADIO §14). Idempotent per client; media fetches / heartbeats / health
-        polls / request submissions never hit this. Always 200 with a count."""
+        polls / request submissions never hit this. Always 200 with a count.
+        Also returns the DB request counts the HIT COUNTER pane shows
+        (RADIO §9.1): `paid_requests` (paid priority rows) and
+        `total_requests` (every request row)."""
         n = station.register_visitor(request)
-        resp = JSONResponse({"unique_visitors": n},
+        resp = JSONResponse({"unique_visitors": n, **station.request_counts()},
                             headers={"Cache-Control": "no-store"})
         return resp
 

@@ -248,10 +248,13 @@ def build_app() -> FastAPI:
     @app.post("/api/visitors")
     async def visitors(request: Request):
         """e2e mirror of RADIO §14: store the server-derived peer IP and
-        return the unique count (current count when no identity)."""
+        return the unique count (current count when no identity), plus the
+        HIT COUNTER request counts (RADIO §9.1)."""
         peer = request.client.host if (request.client and request.client.host) else None
         n = store.register_visitor(peer) if peer else store.unique_visitors()
-        return JSONResponse({"unique_visitors": n},
+        paid, total = store.request_counts()
+        return JSONResponse({"unique_visitors": n, "paid_requests": paid,
+                             "total_requests": total},
                             headers={"Cache-Control": "no-store"})
 
     @app.get("/api/requests")

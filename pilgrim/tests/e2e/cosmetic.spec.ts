@@ -28,6 +28,31 @@ test("page layout: pane order, RADIO BROADCAST title, credits + hit counter", as
   expect(links[5]).toEqual(["Kokoro-82M", "https://huggingface.co/hexgrad/Kokoro-82M", "_blank"]);
   for (const [, href] of links) expect(href).toMatch(/^https:\/\/huggingface\.co\//);
   expect(await page.textContent(".visitors")).toMatch(/^Unique visitors:/);
+  // HIT COUNTER above it: DB-backed request counts (RADIO §9.1). The e2e
+  // server seeds 5 aired + 12 free + 1 paid = 18 rows, one paid.
+  await expect(page.locator("#paid-requests")).toHaveText("Paid requests: 1");
+  await expect(page.locator("#total-requests")).toHaveText("Total request: 18");
+  // the cornucopia marks a paid request: one icon at either end of that line
+  const paidIcons = page.locator(".paid-counter .paid-counter-icon");
+  await expect(paidIcons).toHaveCount(2);
+  for (const icon of await paidIcons.all()) {
+    await icon.scrollIntoViewIfNeeded();
+    await expect.poll(
+      () => icon.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0),
+      { timeout: 10_000 }).toBe(true);
+    expect(await icon.getAttribute("src")).toBe("img/cornucopia.png");
+    // decorative: the text already says "Paid requests"
+    expect(await icon.getAttribute("alt")).toBe("");
+  }
+  // icons and text share one line height: each icon's vertical centre sits
+  // within the text's box (same height at either end)
+  const textBox = await page.locator("#paid-requests").boundingBox();
+  for (const icon of await paidIcons.all()) {
+    const box = await icon.boundingBox();
+    const centre = box!.y + box!.height / 2;
+    expect(centre).toBeGreaterThan(textBox!.y);
+    expect(centre).toBeLessThan(textBox!.y + textBox!.height);
+  }
   await expect(page.locator("#listeners")).toHaveText("Listening now: 69.10");
   // the hit-counter pane carries the social links as icons (cosmetic patch):
   // Instagram / Reddit / GitHub, each an SVG glyph in a new tab
@@ -145,6 +170,8 @@ test("a failed visitor counter never breaks PLAY or request submission", async (
   await page.goto("/");
   // counter falls back to 0, never a hyphen
   await expect(page.locator("#visitors")).toHaveText("Unique visitors: 0");
+  await expect(page.locator("#paid-requests")).toHaveText("Paid requests: 0");
+  await expect(page.locator("#total-requests")).toHaveText("Total request: 0");
   // PLAY still works
   await page.click("#btn-play");
   await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 15_000 });

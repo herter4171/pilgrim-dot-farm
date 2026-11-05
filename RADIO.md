@@ -906,7 +906,16 @@ the station name.
   each model name linking to its Hugging Face model card in a new tab (see
   MODELS.md for the on-air attribution copy; DeepSeek is a development credit
   and is flagged as such).
-- **HIT COUNTER**: labeled **Unique visitors**, a persistent count of distinct
+- **HIT COUNTER**: above the visitor line, **Paid requests: X** and
+  **Total request: Y**, both read from `station.db` and returned by the same
+  page-load `POST /api/visitors` (§11, §14). X counts priority requests that
+  actually became paid — Stripe confirmed or an operator comp, both of which
+  set `paid_at` — so `checking`/`awaiting_payment`/`abandoned`/`rejected`
+  rows never count; Y is every request row ever stored, free or paid. The
+  cornucopia icon (`img/cornucopia.png`, the paid-request marker) bookends
+  the paid line at either end, vertically centred on that line. Both fall
+  back to `0` on a failed call, like the visitor count. Below them, labeled
+  **Unique visitors**, a persistent count of distinct
   canonical client IPs (RADIO §14), starting at 0. Falls back to `0` if the
   call fails; never disturbs playback or requests. Below it, **Listening
   now: 69.N+10**, where N is the integer live listener count (`listeners` on
@@ -1069,7 +1078,7 @@ refill target.
 | GET | `/api/paid-requests/{token}` | `{status, position, stage, comped, reason?}` (`no-store`): `stage` is `moderation\|copyright\|ready` while `status=checking`; `reason` only when `rejected`. Reconciles an `awaiting_payment` row with Stripe when payments are active |
 | POST | `/api/paid-requests/{token}/checkout` | Only for a non-comped row at `checking/ready`: claims it once (`-> awaiting_payment`) and creates the Checkout Session → `{ok, client_secret, publishable_key, expires_at}`; `client_secret` is returned once and never stored. `409` not ready / already claimed, `424` Stripe failure (row `abandoned`), `503` payments inactive |
 | POST | `/api/stripe/webhook` | Signature-verified Stripe events (PAYMENT.md Step 5) |
-| POST | `/api/visitors` | Register the server-derived client IP; returns `{unique_visitors: <nonnegative int>}` with `Cache-Control: no-store`. One call per page load; media/heartbeat/health/request calls never hit it. Always 200: an unresolvable identity or disabled counter returns the current count without registering (RADIO §14) |
+| POST | `/api/visitors` | Register the server-derived client IP; returns `{unique_visitors: <nonnegative int>, paid_requests: <nonnegative int>, total_requests: <nonnegative int>}` with `Cache-Control: no-store`. `paid_requests` = priority requests that actually became paid (`paid_at` set by Stripe or an operator comp); `total_requests` = every request row, free or paid (§9.1). One call per page load; media/heartbeat/health/request calls never hit it. Always 200: an unresolvable identity or disabled counter returns the current count without registering, and a store error on the request counts reports zeros (RADIO §14) |
 | POST | `/api/admin/dj/play` | Operator: `{media_id}` — air this song next. Splices a ready, airable song into the slot after whatever is playing, with the §5.2 words-between-songs bridges, and bumps the revision so clients refetch (`{ok, seq, revision}`). Not the full command service (no `command_id`/epoch/revision handshake): a narrow operator convenience that creates no request and never waits on production. `403 dj_disabled` when `dj.enabled` is false, `409 cannot_place` for a non-song, a missing media file, or no legal slot |
 | GET | `/api/admin/voices` | Kokoro voice list (for voice sampling) |
 | GET | `/api/station/state` | Cheap station state for DJ-aware clients: `{epoch, revision, current_seq, current_type, current_url, current_art_url, current_offset_s, server_time, prepared_cutover, listeners, idle, rating}` (TUI.md §4); `current_url` is the on-air item's audio URL (§8.4) and `current_art_url` its cover (same rule as `program`'s `art_url`) — with `current_offset_s` it says what is playing and how far in; `listeners` is the live listener count (§14); `idle` is the frozen playhead (IDLE.md) and `rating` = `{open, count, avg}` for the on-air song's current window + lifetime aggregate, or `null` when `ratings.enabled` is false (voter-independent, so the shared `max-age=1` cache stays correct) |

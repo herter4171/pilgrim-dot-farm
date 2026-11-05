@@ -1,26 +1,36 @@
 /* Pilgrim Dot Farm — persistent unique-visitor counter (RADIO §14,
    COSMETIC_PATCHING §6). One POST /api/visitors per page load; the server
    derives the client IP itself (never client-supplied). Counts once per
-   distinct network address. A failed request falls back to 0 and never
-   disturbs playback or the request line. Also refreshes the
-   "Listening now" line from the live listener count. */
+   distinct network address. The same response carries the DB request counts
+   shown above it (RADIO §9.1): paid priority requests and every request row.
+   A failed request falls back to 0 and never disturbs playback or the request
+   line. Also refreshes the "Listening now" line from the live listener count. */
 (() => {
   "use strict";
 
   const el = document.getElementById("visitors");
   if (!el) return;
 
+  const paidEl = document.getElementById("paid-requests");
+  const totalEl = document.getElementById("total-requests");
+
+  function setCount(node, label, raw) {
+    const n = Number(raw);
+    if (node) node.textContent = label + (Number.isInteger(n) && n >= 0 ? n : 0);
+  }
+
   async function load() {
     try {
       const r = await fetch("/api/visitors", { method: "POST" });
       if (!r.ok) throw new Error("visitor HTTP " + r.status);
       const d = await r.json();
-      const n = Number(d && d.unique_visitors);
-      el.textContent = Number.isInteger(n) && n >= 0
-        ? "Unique visitors: " + n
-        : "Unique visitors: 0";
+      setCount(el, "Unique visitors: ", d && d.unique_visitors);
+      setCount(paidEl, "Paid requests: ", d && d.paid_requests);
+      setCount(totalEl, "Total request: ", d && d.total_requests);
     } catch (e) {
-      el.textContent = "Unique visitors: 0";
+      setCount(el, "Unique visitors: ", 0);
+      setCount(paidEl, "Paid requests: ", 0);
+      setCount(totalEl, "Total request: ", 0);
     }
   }
 
