@@ -90,9 +90,12 @@ body {
   text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--violet); }
 .req-table td { padding: 5px 6px; vertical-align: top; overflow-wrap: anywhere;
   border-bottom: 1px solid rgba(166, 61, 255, 0.18); }
-.req-table .c-prompt { width: 52%; }
+/* Status (`.c-time`) is 1.1x wider than the aired table's Prep Time slice so
+   single words in the status text don't wrap one character per line; the extra
+   1.4% comes out of Request. Queue totals stay at 86% + 48px as before. */
+.req-table .c-prompt { width: 50.6%; }
 .req-table .c-title { width: 20%; }
-.req-table .c-time { width: 14%; }
+.req-table .c-time { width: 15.4%; }
 .req-table .c-vote { width: 48px; }
 /* AIRED REQUESTS has no vote column: Prompt and Title are the same width, each
    taking half of what is left after Prep Time's fixed 14% slice (43 + 43 + 14). */
