@@ -46,7 +46,7 @@
       const r = await fetch("/api/station/state");
       if (!r.ok) throw new Error("state HTTP " + r.status);
       const n = Number((await r.json()).listeners);
-      if (Number.isInteger(n) && n >= 0) lis.textContent = "Listening now: 69." + (n + LISTENER_OFFSET);
+      if (Number.isInteger(n) && n >= 0) lis.textContent = "Listening now: 68." + (n + LISTENER_OFFSET);
     } catch (e) { /* keep last value */ }
   }
   if (lis) {
