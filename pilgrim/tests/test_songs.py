@@ -320,6 +320,32 @@ def test_reggae_request_brief_is_accepted(cfg):
     assert "listener asked for 'reggae'" in llm.user
 
 
+def test_decade_subgenre_is_a_valid_genre_pair(cfg):
+    """A subgenre that opens with a digit is still a Genre / Subgenre pair.
+
+    Request 549 (2026-11-05) died five times because "Rock / 2000s Electroclash
+    Dance-Rock" failed a check that demanded a letter right after the slash.
+    """
+    cap = VALID_CAPTION.replace("Jazz Pop / Cabaret Swing",
+                                "Rock / 2000s Electroclash Dance-Rock")
+    llm = _Rec(valid_brief("pop-alternative-rock", style_prompt=cap))
+    sp = _brief_pipeline(cfg, llm)
+    out = asyncio.run(sp.brief([], request_text="2000s electroclash, sleazy dance-rock"))
+    assert out["genre"] == "pop-alternative-rock"
+    assert llm.calls == 1
+
+
+def test_time_signature_is_not_a_genre_pair(cfg):
+    """Relaxing the pair check for digit-led subgenres must not turn a bare
+    time signature into a genre."""
+    cap = VALID_CAPTION.replace("Jazz Pop / Cabaret Swing", "12/8 time signature")
+    llm = _Rec(valid_brief("jazz-swing-big-band", style_prompt=cap))
+    sp = _brief_pipeline(cfg, llm)
+    with pytest.raises(LLMError, match="Genre / Subgenre pair"):
+        asyncio.run(sp.brief([], request_text="jazz"))
+    assert llm.calls == 2  # bounded retry, then give up
+
+
 def test_caption_that_does_not_name_the_requested_style_is_rejected(cfg):
     """The reported failure: a reggae request must not come back captioned as
     country. The caption is the text the audio model actually hears."""

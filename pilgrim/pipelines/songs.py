@@ -108,6 +108,24 @@ def _mentions(text: str, term: str, inflect: bool = False) -> bool:
     return any(not neg for neg, _ in _hits(text, term, inflect))
 
 
+def _names_genre_pair(line: str) -> bool:
+    """True when the Basic Attributes line names a `Genre / Subgenre` pair.
+
+    The subgenre may open with a digit — "2000s Electroclash", "90s R&B",
+    "808 Bass", "2-step" — so nothing is required to be a letter right after
+    the slash. A bare time signature ("12/8") still fails: the word before the
+    slash must be a word, not a number. The old letter-only check rejected a
+    correct caption and burned every attempt of a paid request (2026-11-05).
+    """
+    for m in re.finditer(r"([A-Za-z][^/\n]{0,60})/\s*([^/\n]{1,60})", line):
+        before = m.group(1).strip()
+        after = m.group(2).strip()
+        last = before.split()[-1] if before else ""
+        if re.search(r"[A-Za-z]", last) and re.search(r"[A-Za-z]", after):
+            return True
+    return False
+
+
 def _negates(text: str, term: str) -> bool:
     """True when `term` appears inside an exclusion ("no fiddle")."""
     return any(neg for neg, _ in _hits(text, term))
@@ -189,7 +207,7 @@ def _validate_brief(obj: dict, expected_family: str | None = None,
     if not basic:
         raise ValueError("caption has no Basic Attributes line")
     line = basic.group(1)
-    if not re.search(r"[A-Za-z][^/\n]{1,60}/\s*[A-Za-z]", line):
+    if not _names_genre_pair(line):
         raise ValueError(
             "Basic Attributes must name a Genre / Subgenre pair")
     if style_hint and not re.search(
