@@ -12,6 +12,12 @@ station:
   admin_port: 5081
   serve_web: true          # no nginx edge in front: the app serves pilgrim/web/ itself
 
+visitors:
+  # The ALB is the only peer the web tier sees; it lives in the VPC. From it the
+  # browser IP is CF-Connecting-IP (Cloudflare -> ALB), else X-Forwarded-For
+  # (RADIO §14). Change with the VPC.
+  trusted_proxies: ["172.31.0.0/16"]
+
 library:
   dir: data/library        # /app/pilgrim/data is the one writable volume (Dockerfile)
   db: data/station.db

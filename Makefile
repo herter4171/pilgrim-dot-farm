@@ -3,7 +3,7 @@ PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
 FFMPEG := $(HOME)/bin/ffmpeg
 
-.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status media-smoke mp3-migrate art-backfill art-smoke reel due-backfill image image-smoke pg-test pg-migrate
+.PHONY: setup venv test sim lint run web seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status media-smoke mp3-migrate art-backfill art-smoke reel due-backfill image image-smoke pg-test pg-migrate
 
 # --- setup ---------------------------------------------------------------
 venv:
@@ -94,6 +94,11 @@ edge-status:
 run:
 	PATH="$(HOME)/bin:$(PATH)" LITELLM_TOKEN=$$(grep LITELLM_TOKEN .env | cut -d= -f2) \
 		$(PY) -m pilgrim.server   # public + admin listeners from config.yaml
+
+# The Fargate web tier, locally (SCALABILITY.md Step 5). Needs REDIS_URL (a
+# station publishing to it) and optionally DATABASE_URL in the env or .env.
+web:
+	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.web_app
 
 logs:
 	tail -f pilgrim/logs/station.log

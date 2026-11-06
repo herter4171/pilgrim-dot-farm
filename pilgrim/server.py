@@ -21,6 +21,7 @@ import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
@@ -74,11 +75,156 @@ from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
 from pilgrim.producer import Producer
 from pilgrim.scheduler import Scheduler
 from pilgrim.selector import RandomSelector
+from pilgrim.store import Store
 
 log = logging.getLogger("radio.server")
 
 
-class Station:
+class PublicSurface:
+    """What the public routes need from whoever serves them (RADIO §11): the
+    station process and the Fargate web tier (SCALABILITY.md Step 5,
+    `pilgrim/web_app.py`) both inherit this. Client identity through the
+    trusted-proxy chain (RADIO §14), the visitor counter, and the Stripe
+    setup (PAYMENT.md). Requires `cfg`, `db` and `clock` on the instance;
+    the attributes below are what `_add_public_routes` reads."""
+
+    cfg: Config
+    db: Store
+    clock: Clock
+    llm: LLM
+    moderator: Moderation
+    copyright: CopyrightScreen
+    producer: Any
+    payments_active: bool
+    payment_service: PaymentService | None
+    publishable_key: str
+    webhook_secret: str
+    override_token: str
+    prompts: dict
+    scheduler: Any  # a Scheduler, or the web tier's cached view (a property there)
+
+    def wake(self, reason: str) -> None:
+        raise NotImplementedError
+
+    def program_response(self, after_seq: int | None, client_epoch: str | None = None,
+                         client_revision: int | None = None) -> dict:
+        raise NotImplementedError
+
+    def public_state(self) -> dict:
+        raise NotImplementedError
+
+    def touch_listener(self, player_id: str | None) -> None:
+        raise NotImplementedError
+
+    def record_player_telemetry(self, player_id: str | None,
+                                payload: dj.HeartbeatIn) -> None:
+        raise NotImplementedError
+
+    @staticmethod
+    def _canonical_ip(raw: str | None) -> str | None:
+        """Canonicalize a client IP string via stdlib ipaddress, folding
+        IPv4-mapped IPv6 into IPv4 and taking the first of an XFF list (13)."""
+        if not raw:
+            return None
+        raw = raw.strip()
+        if "," in raw:
+            raw = raw.split(",")[0].strip()  # leftmost = the client we saw
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            return None
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None:
+            ip = mapped
+        return ip.compressed
+
+    def _client_ip(self, request: Request) -> str | None:
+        """Resolve the canonical public client IP through the deployment's
+        trusted-proxy chain (SPLIT_PLAN §3.2).
+
+        A peer is trusted only when its canonical address is inside a
+        configured network (`visitors.trusted_proxies`, single IPs and CIDRs).
+        From a trusted peer: `CF-Connecting-IP`, else `X-Real-IP`, else the
+        first `X-Forwarded-For` entry. From an untrusted peer: the socket peer address; both headers
+        are ignored so a spoof cannot reach the visitor counter."""
+        peer = request.client.host if (request.client and request.client.host) else None
+        if self.cfg.visitors.is_trusted(self._canonical_ip(peer)):
+            # Behind Cloudflare -> ALB (SCALABILITY.md Step 5) the browser IP
+            # is CF-Connecting-IP; X-Forwarded-For may start with whatever the
+            # browser sent, since Cloudflare appends rather than replaces.
+            header = (request.headers.get("cf-connecting-ip")
+                      or request.headers.get("x-real-ip"))
+            if not header:
+                xff = request.headers.get("x-forwarded-for")
+                header = xff.split(",")[0].strip() if xff else None
+        else:
+            header = peer
+        return self._canonical_ip(header)
+
+    def register_visitor(self, request: Request) -> int:
+        """Store the raw canonical client IP (deduped) and return the unique
+        count, starting from 0. Disabled, an unresolvable identity, or a store
+        error all just return the current count — the counter never fails and
+        never breaks radio/requests (RADIO §14)."""
+        ip = self._client_ip(request) if self.cfg.visitors.enabled else None
+        try:
+            if ip:
+                return self.db.register_visitor(ip)
+            log.warning("visitor.register skipped: no canonical client identity")
+            return self.db.unique_visitors()
+        except Exception:
+            log.exception("visitor.register failed")
+            return 0
+
+    def request_counts(self) -> dict[str, int]:
+        """Paid + total request counts for the HIT COUNTER pane (RADIO §9.1).
+        Never fails: a store error reports zeros, exactly like the visitor
+        counter, so the pane renders instead of throwing (RADIO §14)."""
+        try:
+            paid, total = self.db.request_counts()
+            return {"paid_requests": paid, "total_requests": total}
+        except Exception:
+            log.exception("request.counts failed")
+            return {"paid_requests": 0, "total_requests": 0}
+
+    def _setup_payments(self, cfg: Config) -> None:
+        """Stripe wiring shared by the station and the web tier (PAYMENT.md).
+        Needs `self.db` and `self.clock`; never logs a key."""
+        # Paid priority requests (PAYMENT.md). Off unless config + keys agree.
+        # The keys come from the environment or the repo-root .env fallback
+        # (config.stripe_env), so a plain `python -m pilgrim.server` restart
+        # does not silently close payments (Step 12 regression, Oct 31).
+        stripe_keys = stripe_env()
+        self.payments_active = cfg.payments.active(stripe_keys)
+        self.payment_service: PaymentService | None = None
+        self.stripe_client: StripeClient | None = None
+        self.publishable_key = ""
+        self.webhook_secret = ""
+        if self.payments_active:
+            secret_key = stripe_keys["STRIPE_SECRET_KEY"]
+            self.publishable_key = stripe_keys["STRIPE_PUBLISHABLE_KEY"]
+            self.webhook_secret = stripe_keys["STRIPE_WEBHOOK_SECRET"]
+            self.stripe_client = StripeClient(cfg.payments, secret_key)
+            self.payment_service = PaymentService(
+                cfg.payments, self.db, self.stripe_client, secret_key,
+                self.publishable_key, self.webhook_secret, now=self.clock.wall)
+            log.info("payment.mode", extra={"mode": self.payment_service.mode})
+        cutoff = (datetime.now(UTC)
+                  - timedelta(seconds=cfg.payments.abandon_after_s)).isoformat()
+        abandoned = self.db.abandon_stale_checkouts(cutoff)
+        if abandoned:
+            log.info("payment.abandoned_stale", extra={"count": abandoned})
+        # Staged checks run as background tasks; a restart orphans them.
+        orphaned = self.db.abandon_checking_requests()
+        if orphaned:
+            log.info("payment.abandoned_checking", extra={"count": orphaned})
+        # Operator comp secret (PAYMENT.md Step 12b). Never logged or stored.
+        self.override_token = load_secret(PAID_OVERRIDE_ENV)
+
+
+class Station(PublicSurface):
+    scheduler: Scheduler
+
     def __init__(self, cfg: Config, api_key: str) -> None:
         self.cfg = cfg
         self.api_key = api_key
@@ -149,36 +295,7 @@ class Station:
                 log.info("hotstate.enabled", extra={"publish_s": cfg.cache.publish_s})
             except Exception as e:  # noqa: BLE001 - no redis lib / bad URL: degrade
                 log.warning("hotstate.disabled", extra={"error": str(e)[:300]})
-        # Paid priority requests (PAYMENT.md). Off unless config + keys agree.
-        # The keys come from the environment or the repo-root .env fallback
-        # (config.stripe_env), so a plain `python -m pilgrim.server` restart
-        # does not silently close payments (Step 12 regression, Oct 31).
-        stripe_keys = stripe_env()
-        self.payments_active = cfg.payments.active(stripe_keys)
-        self.payment_service: PaymentService | None = None
-        self.stripe_client: StripeClient | None = None
-        self.publishable_key = ""
-        self.webhook_secret = ""
-        if self.payments_active:
-            secret_key = stripe_keys["STRIPE_SECRET_KEY"]
-            self.publishable_key = stripe_keys["STRIPE_PUBLISHABLE_KEY"]
-            self.webhook_secret = stripe_keys["STRIPE_WEBHOOK_SECRET"]
-            self.stripe_client = StripeClient(cfg.payments, secret_key)
-            self.payment_service = PaymentService(
-                cfg.payments, self.db, self.stripe_client, secret_key,
-                self.publishable_key, self.webhook_secret, now=self.clock.wall)
-            log.info("payment.mode", extra={"mode": self.payment_service.mode})
-        cutoff = (datetime.now(UTC)
-                  - timedelta(seconds=cfg.payments.abandon_after_s)).isoformat()
-        abandoned = self.db.abandon_stale_checkouts(cutoff)
-        if abandoned:
-            log.info("payment.abandoned_stale", extra={"count": abandoned})
-        # Staged checks run as background tasks; a restart orphans them.
-        orphaned = self.db.abandon_checking_requests()
-        if orphaned:
-            log.info("payment.abandoned_checking", extra={"count": orphaned})
-        # Operator comp secret (PAYMENT.md Step 12b). Never logged or stored.
-        self.override_token = load_secret(PAID_OVERRIDE_ENV)
+        self._setup_payments(cfg)  # PAYMENT.md; shared with the web tier (PublicSurface)
         self._tasks: list = []
         self._http = httpx.AsyncClient(timeout=4.0)
         # Cover art (ALBUM_ART.md Step 5): its own task, never inside playout.
@@ -449,6 +566,7 @@ class Station:
     def _hot_snapshot(self) -> dict:
         return {"program": self.program_response(None),
                 "state": self.public_state(),
+                "stages": {str(k): v for k, v in self.producer.request_stage.items()},
                 "health": {"on_air": self.on_air,
                            "art": {"backend": self.art_worker.backend
                                    if self.art_worker else "disabled"},
@@ -471,6 +589,8 @@ class Station:
                 snapshot = self._hot_snapshot()
                 result = await asyncio.to_thread(self.hot.tick, **snapshot)
                 self._apply_hot_result(result)
+                if result.get("wake"):
+                    continue   # publish the thawed programme right away, not a tick later
             except Exception as e:  # noqa: BLE001 - the cache must never break radio
                 log.warning("hotstate.tick_failed: %s", e)
             await asyncio.sleep(self.cfg.cache.publish_s)
@@ -643,69 +763,6 @@ class Station:
                 "catalogue_revision": cat_rev}
 
     # -------------------------------------------------------------- visitors
-    @staticmethod
-    def _canonical_ip(raw: str | None) -> str | None:
-        """Canonicalize a client IP string via stdlib ipaddress, folding
-        IPv4-mapped IPv6 into IPv4 and taking the first of an XFF list (13)."""
-        if not raw:
-            return None
-        raw = raw.strip()
-        if "," in raw:
-            raw = raw.split(",")[0].strip()  # leftmost = the client we saw
-        try:
-            ip = ipaddress.ip_address(raw)
-        except ValueError:
-            return None
-        mapped = getattr(ip, "ipv4_mapped", None)
-        if mapped is not None:
-            ip = mapped
-        return ip.compressed
-
-    def _client_ip(self, request: Request) -> str | None:
-        """Resolve the canonical public client IP through the deployment's
-        trusted-proxy chain (SPLIT_PLAN §3.2).
-
-        A peer is trusted only when its canonical address is inside a
-        configured network (`visitors.trusted_proxies`, single IPs and CIDRs).
-        From a trusted peer: `X-Real-IP`, else the first `X-Forwarded-For`
-        entry. From an untrusted peer: the socket peer address; both headers
-        are ignored so a spoof cannot reach the visitor counter."""
-        peer = request.client.host if (request.client and request.client.host) else None
-        if self.cfg.visitors.is_trusted(self._canonical_ip(peer)):
-            header = request.headers.get("x-real-ip")
-            if not header:
-                xff = request.headers.get("x-forwarded-for")
-                header = xff.split(",")[0].strip() if xff else None
-        else:
-            header = peer
-        return self._canonical_ip(header)
-
-    def register_visitor(self, request: Request) -> int:
-        """Store the raw canonical client IP (deduped) and return the unique
-        count, starting from 0. Disabled, an unresolvable identity, or a store
-        error all just return the current count — the counter never fails and
-        never breaks radio/requests (RADIO §14)."""
-        ip = self._client_ip(request) if self.cfg.visitors.enabled else None
-        try:
-            if ip:
-                return self.db.register_visitor(ip)
-            log.warning("visitor.register skipped: no canonical client identity")
-            return self.db.unique_visitors()
-        except Exception:
-            log.exception("visitor.register failed")
-            return 0
-
-    def request_counts(self) -> dict[str, int]:
-        """Paid + total request counts for the HIT COUNTER pane (RADIO §9.1).
-        Never fails: a store error reports zeros, exactly like the visitor
-        counter, so the pane renders instead of throwing (RADIO §14)."""
-        try:
-            paid, total = self.db.request_counts()
-            return {"paid_requests": paid, "total_requests": total}
-        except Exception:
-            log.exception("request.counts failed")
-            return {"paid_requests": 0, "total_requests": 0}
-
     async def startup(self) -> None:
         # warm the program immediately with whatever inventory exists
         self.scheduler.commit_lookahead()
@@ -767,7 +824,7 @@ def _fallback_summary(text: str, max_length: int) -> str:
     return clean[: max_length - 1] + "…" if len(clean) > max_length else clean
 
 
-async def _summarise_paid(station: Station, text: str, max_length: int) -> str:
+async def _summarise_paid(station: PublicSurface, text: str, max_length: int) -> str:
     """One-line board label for a paid request (PAYMENT.md §3.4). LLM first,
     deterministic fallback when the model fails; never blocks the request."""
     fallback = _fallback_summary(text, max_length)
@@ -824,7 +881,7 @@ def _normalise_paid(text: str) -> str:
 _MIN_OVERRIDE_LEN = 24
 
 
-def _override_secret(station: Station) -> str:
+def _override_secret(station: PublicSurface) -> str:
     secret = station.override_token or ""
     return secret if len(secret) >= _MIN_OVERRIDE_LEN else ""
 
@@ -849,7 +906,7 @@ _CHECK_FAILED = ("Couldn't finish checking your request. You were not charged; "
                  "try again.")
 
 
-async def _run_paid_checks(station: Station, request_id: int, text: str,
+async def _run_paid_checks(station: PublicSurface, request_id: int, text: str,
                            comped: bool) -> None:
     """Moderation -> copyright screen -> summary -> ready (or comped into the
     queue). Runs after the POST has answered; the client polls the stage
@@ -899,7 +956,7 @@ def build_station(cfg: Config) -> Station:
     return Station(cfg, api_key)
 
 
-def _make_rate_limiter(station: Station,
+def _make_rate_limiter(station: PublicSurface,
                        limit: int | None = None) -> Callable[[Request], bool]:
     """Per-app request-line rate limit: client IP -> timestamps (4.3).
 
@@ -980,7 +1037,7 @@ def _mount_web(app: FastAPI, cfg: Config) -> None:
               name="web")
 
 
-def _add_public_routes(app: FastAPI, station: Station,
+def _add_public_routes(app: FastAPI, station: PublicSurface,
                        health: Callable[[Station], Awaitable[dict]]) -> None:
     """Register the edge-facing surface exactly once, shared by both apps.
 

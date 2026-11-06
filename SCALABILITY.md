@@ -8,8 +8,10 @@ subnet router"). Step 2 (Postgres store) is in code: `pilgrim/db.py`,
 "Postgres cutover") has not been run: the station stays on SQLite until the
 web tier can take heartbeats and the programme from Valkey, so Step 3 lands
 first and the cutover is one event. Step 3 (hot state, including Step 4's
-wake flag) is in code: `pilgrim/hotstate.py`, `REDIS_URL`, `cache:`. Steps 5–7
-and 9 have not started. RADIO.md remains the source of truth; every section this plan
+wake flag) is in code: `pilgrim/hotstate.py`, `REDIS_URL`, `cache:`. Step 5
+(the web entry point, `pilgrim/web_app.py`) is in code and is the image's
+command; the running task still needs the LLM/Brave/Stripe secrets and an
+outbound path. Steps 6, 7 and 9 have not started. RADIO.md remains the source of truth; every section this plan
 changes is listed in §5 and is updated in the same commit as the code.
 
 ## 0. Target
@@ -88,17 +90,18 @@ ask for comes from Valkey, Postgres or CloudFront.
    `cache.publish_s`"; the station half is in `hotstate.py`, the web half
    (setting the key) lands with Step 5.
 
-5. **The `web` entry point.** `pilgrim/web_app.py` (name per RADIO §18 when
-   written): the public routes of `server.py` re-implemented over Valkey +
-   Postgres, plus the static mount. It replaces the edge nginx, the gateway
+5. **The `web` entry point** (in code). `pilgrim/web_app.py`: the public
+   routes of `server.py` **reused unchanged** over a `WebStation` backed by
+   Valkey + Postgres (a `PublicSurface` mixin holds what both tiers share:
+   client identity, visitors, Stripe setup), plus the static mount. It replaces the edge nginx, the gateway
    nginx and Tailscale serve, so their jobs move with it: off-air bodies
    when `station:alive` is missing (RADIO §11 "Edge-generated off-air
    responses"), the voting/rating path allowlist, `Cache-Control` as today,
    and a `/api/health` that never depends on the station (§6).
    Client IP comes from the ALB's `X-Forwarded-For` (Cloudflare puts the
    browser first); `visitors.trusted_proxies` becomes the VPC CIDR. The
-   request-line and vote rate limiters move from process memory into Valkey
-   so N tasks share one ceiling. `payments.py` moves to this tier unchanged
+   request-line and vote rate limiters stay per task for now (one task runs;
+   moving them into Valkey is a follow-up when the service scales out). `payments.py` moves to this tier unchanged
    (it never touched playout: AGENTS §1.11); the Stripe webhook URL moves
    with it. Moderation (LiteLLM), the copied-lyrics screen (Brave) and the
    paid summary are public APIs reachable from Fargate.

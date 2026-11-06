@@ -33,6 +33,7 @@ Key contract (web tier reads; RADIO §14):
 | `<p>program`       | GET /api/station/program body (no cursor)      | cache.alive_ttl_s        |
 | `<p>state`         | GET /api/station/state body                    | cache.alive_ttl_s        |
 | `<p>health`        | public GET /api/health body                    | cache.alive_ttl_s        |
+| `<p>stages`        | {request_id: stage} for in-flight requests     | cache.alive_ttl_s        |
 | `<p>player:<id>`   | {at, platform, ctx_state, hidden, sink, resumed} | listener_timeout_s |
 | `<p>wake`          | reason string                                  | cache.wake_ttl_s         |
 """
@@ -120,13 +121,24 @@ class HotState:
                 or len(self._pending_players) < self.cfg.visitors.max_listeners):
             self._pending_players[player_id] = {"at": self._now(), **telemetry}
 
+    def write_player(self, player_id: str, telemetry: dict[str, Any]) -> None:
+        """The web tier's side of a heartbeat: one SET with the listener
+        timeout as TTL, right away (no tick loop on that tier). Raises on a
+        cache failure; the caller decides (the heartbeat still returns ok)."""
+        if not player_id or len(player_id) > 64:
+            return
+        self.client.set(self.key(f"player:{player_id}"),
+                        json.dumps({"at": self._now(), **telemetry}),
+                        ex=int(self.cfg.visitors.listener_timeout_s))
+
     def set_wake(self, reason: str) -> None:
         """The web tier's side of a wake (a programme fetch or heartbeat
         reaching a frozen station). Kept here so both tiers share one key."""
         self.client.set(self.key("wake"), reason, ex=int(self.cfg.cache.wake_ttl_s))
 
     def tick(self, *, program: dict[str, Any], state: dict[str, Any],
-             health: dict[str, Any]) -> dict[str, Any]:
+             health: dict[str, Any],
+             stages: dict[str, str] | None = None) -> dict[str, Any]:
         """One publish round trip: alive/program/state/health + the queued
         player keys in one pipeline, then read the live players and take the
         wake flag. Returns {"players": set[str], "wake": str | None}. Never
@@ -143,6 +155,7 @@ class HotState:
             pipe.set(self.key("program"), json.dumps(program), ex=ttl)
             pipe.set(self.key("state"), json.dumps(state), ex=ttl)
             pipe.set(self.key("health"), json.dumps(health), ex=ttl)
+            pipe.set(self.key("stages"), json.dumps(stages or {}), ex=ttl)
             for pid, tel in pending.items():
                 pipe.set(self.key(f"player:{pid}"), json.dumps(tel), ex=ptl)
             pipe.execute()

@@ -60,7 +60,7 @@ RUN apt-get update \
 USER pilgrim
 
 
-# --- web: the Fargate front-end and the default target. Until the web tier
-# exists (SCALABILITY.md Step 5) this runs today's single-host server, which is
-# enough to build, scan and push the image and to shape the task definition.
+# --- web: the Fargate front-end and the default target (SCALABILITY.md
+# Step 5): the public API + static site from Valkey and Postgres only.
 FROM base AS web
+CMD ["python", "-m", "pilgrim.web_app"]

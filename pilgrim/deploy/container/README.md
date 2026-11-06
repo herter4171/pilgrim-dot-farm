@@ -8,7 +8,11 @@ make image-smoke                             # test-only `smoke` stage (+ffmpeg)
 
 The station (scheduler, producer, pipelines, S3 publisher) is **not**
 containerised: it stays a native launchd process on the Mac Studio (RADIO §2,
-`pilgrim/deploy/mac/origin.sh`). Only the public web tier ships as an image.
+`pilgrim/deploy/mac/origin.sh`). Only the public web tier ships as an image:
+`python -m pilgrim.web_app` (SCALABILITY.md Step 5, RADIO §11 "Web tier"),
+which serves the site and the public API from Valkey (`REDIS_URL`, required)
+and Postgres (`DATABASE_URL`) and never reaches the Mac. Without the station's
+`alive` key it answers off-air bodies; `/api/health` stays 200.
 
 The image holds application code only: no `.env`, no `station.db`, no
 `library/` (`.dockerignore`), and no ffmpeg (the web tier does no audio work).
@@ -60,8 +64,12 @@ Secrets and endpoints come from the task environment (README "Secrets"; no
 | `DB_PASS_SECRET_ARN` | web (station natively, Step 2) | Secrets Manager JSON `{"username","password"}` (RDS-managed master secret) |
 | `LITELLM_TOKEN`, `BRAVE_SEARCH_KEY`, `STRIPE_*`, `PAID_OVERRIDE_TOKEN` | as today | from Secrets Manager via the task definition's `secrets`, never `environment` |
 
-None of the three new variables is read by the code yet; the task definition
-carries them so the IaC side can be finished in parallel with Steps 2 and 3.
+`REDIS_URL` and `DATABASE_URL`/`DB_PASS_SECRET_ARN` are read at start. The
+running task definition (`pg-app:2`, checked 2026-11-05) carries only those
+three: before cutover it also needs `LITELLM_TOKEN` (request moderation, paid
+summaries), `BRAVE_SEARCH_KEY` (copied-lyrics screen) and the Stripe keys +
+`PAID_OVERRIDE_TOKEN` as Secrets Manager `secrets`, and the tasks need an
+outbound path (NAT or public IP) to reach LiteLLM, Brave and Stripe.
 
 ## Task definition
 

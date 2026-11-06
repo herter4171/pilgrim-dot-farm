@@ -185,6 +185,7 @@ make media-smoke  # one 2 s tone through S3 + CloudFront (only when asked)
 make mp3-migrate  # library backfill to MP3 + S3; dry run unless MIGRATE_ARGS="--apply --upload"
 make due-backfill # requests.due_at (Prep Time cap) from the station log; dry run unless DUE_ARGS="--apply"
 make image        # the Fargate web image (pilgrim:web, linux/arm64); make image-smoke runs the fakes e2e server in it
+make web          # the Fargate web tier locally (python -m pilgrim.web_app; needs REDIS_URL)
 make pg-test      # the whole unit suite against a throwaway Postgres container (fakes only)
 make pg-migrate   # station.db -> Postgres copy; dry run unless PG_MIGRATE_ARGS="--apply"
 ```

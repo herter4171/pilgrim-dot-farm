@@ -1159,6 +1159,25 @@ admin DJ mutation (`POST /api/admin/dj/play`) wake it; `GET /api/health`,
 those). Both nginx hops allowlist the two voting paths; the origin's own
 limiter (`voting/ratings.per_client_per_10min`) is the per-listener ceiling.
 
+**Web tier (SCALABILITY.md Step 5; `pilgrim/web_app.py`).** On Fargate the
+public listener is served by `python -m pilgrim.web_app`, which registers the
+same public routes over a `WebStation` backed by Valkey and Postgres instead
+of a scheduler: `program`, `state` and the public `health` come from the
+published documents (§14 "Hot state"; a cursor fetch filters the published
+window to rows after `after_seq`, a stale cursor returns it whole with
+`reset`), heartbeats write `player:<id>` keys and one `airplay` row each, a
+programme fetch or heartbeat against a frozen station sets `wake`, the board,
+votes, ratings (window from the published state), visitors and every paid
+route use the shared database, and the rating/vote/request limiters stay
+per task. It takes over the edge's jobs: `GET /api/health` answers
+`200 {"on_air": false, "off_air": true}` and every other `/api/*` route
+`503 {"off_air": true, "detail": "station is off the air"}` while the
+station's `alive` key is missing; `/api/admin/*` and station control are
+404; `GET /api/media/{id}` is 404 (everything a listener plays is on
+CloudFront, §8.4). The client IP is `CF-Connecting-IP` from the trusted
+ALB peer (§14). There is no `/edge-health`: the ALB target group checks
+`/api/health`.
+
 **Caching (SPLIT_PLAN §2).** The origin states cache intent once, so edges and
 Cloudflare only have to honor it:
 
@@ -1619,6 +1638,7 @@ so the web tier serves them without the origin or Postgres:
 | `<prefix>program` | the `GET /api/station/program` body with no cursor (full window, URLs, epoch, revision, `start_offset_s`, `server_time`) | `cache.alive_ttl_s` |
 | `<prefix>state` | the `GET /api/station/state` body | `cache.alive_ttl_s` |
 | `<prefix>health` | the public `GET /api/health` body | `cache.alive_ttl_s` |
+| `<prefix>stages` | `{request_id: stage}` for in-flight requests (the producer's `request_stage`, so the web tier's board can show "being written" etc.) | `cache.alive_ttl_s` |
 | `<prefix>player:<player_id>` | `{at, platform, ctx_state, hidden, sink, resumed}`: the last heartbeat, written by whichever tier received it | `visitors.listener_timeout_s` |
 | `<prefix>wake` | reason string, set by the web tier when a programme fetch or heartbeat reaches a frozen station; taken (`GETDEL`) by the station | `cache.wake_ttl_s` |
 
@@ -1753,7 +1773,8 @@ the edge always overwrites whatever the client sent:
 |-----|--------|---------------------|
 | Edge nginx | Cloudflare's IP ranges (prod) / nobody (local) | `$remote_addr` after `real_ip` processing (the browser) |
 | Gateway nginx | the edge peers that reach it (tailnet in prod, loopback locally) | the edge's `X-Real-IP`, unchanged |
-| Origin | `visitors.trusted_proxies` (single IPs **and** CIDRs) | reads `X-Real-IP`; falls back to the first `X-Forwarded-For` entry |
+| Origin | `visitors.trusted_proxies` (single IPs **and** CIDRs) | reads `CF-Connecting-IP`, else `X-Real-IP`; falls back to the first `X-Forwarded-For` entry |
+| Web tier (Fargate) | the ALB, i.e. the VPC CIDR (`visitors.trusted_proxies` in the container overlay) | reads `CF-Connecting-IP` (Cloudflare → ALB; Cloudflare appends to `X-Forwarded-For` rather than replacing it, so the first entry can be browser-supplied), else as the origin |
 
 A peer is trusted only when its canonical address is inside a configured
 network. From an untrusted peer both headers are ignored and the socket peer
@@ -1974,6 +1995,9 @@ normalization, seed script, fakes and simulation tests, minimal UI.
 pilgrim/
   config.yaml
   server.py
+  web_app.py            # Fargate web tier: public routes over Valkey + Postgres (SCALABILITY.md Step 5)
+  db.py                 # SQLite/Postgres connection adapter for store.py (Step 2)
+  hotstate.py           # hot-state publisher/reader, Valkey (Step 3)
   dj_api.py             # authenticated /api/admin/dj/* routes (typed contracts)
   dj_control.py         # serialized commands, prepared cutovers, policy checks
   scheduler.py          # playout, selectors, committed window
