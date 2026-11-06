@@ -106,15 +106,15 @@
           td.className = "req-vote";
           tr.appendChild(td);
         }
-        tr.appendChild(promptCell(r, i + 1));
-        const titleTd = cell("req-title", r.song_title || "—");
-        // mobile: the status column is hidden and its text moves under the
-        // title, so the table is Vote / Request / Title+status at 520 px
+        // the queue has no Title column (the aired table shows titles); on
+        // phones the Status column is hidden and its text sits under the
+        // request text, so the table is Vote / Request+status at 520 px
+        const promptTd = promptCell(r, i + 1);
         const inline = document.createElement("span");
         inline.className = "req-status-inline";
         inline.textContent = label;
-        titleTd.appendChild(inline);
-        tr.appendChild(titleTd);
+        promptTd.appendChild(inline);
+        tr.appendChild(promptTd);
         tr.appendChild(cell("req-status", label));
         queueEl.appendChild(tr);
       });

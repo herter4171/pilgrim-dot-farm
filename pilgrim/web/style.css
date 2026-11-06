@@ -79,10 +79,11 @@ body {
 .req-err { font-size: 15px; min-height: 14px; letter-spacing: 0.5px; transition: opacity .6s; }
 .req-list-head { font-size: 16px; letter-spacing: 2px; color: var(--magenta);
   border-bottom: 1px solid var(--violet); padding-bottom: 4px; }
-/* Request board tables: Votes | Prompt | Title | Prep Time. The queue scrolls
-   inside its own box (up to 50 rows) with the header row pinned. */
+/* Request board tables: the queue is Votes | Request | Status (no Title; the
+   aired table is Prompt | Title | Prep Time). The queue scrolls inside its own
+   520 px box (up to 50 rows) with the header row pinned. */
 .req-table-wrap { width: 100%; }
-.req-scroll { max-height: 260px; overflow-y: auto; }
+.req-scroll { max-height: 520px; overflow-y: auto; }
 .req-table { width: 100%; border-collapse: separate; border-spacing: 0;
   table-layout: fixed; font-size: 15px; }
 .req-table th { position: sticky; top: 0; z-index: 1; background: #170a2e;
@@ -91,10 +92,9 @@ body {
 .req-table td { padding: 5px 6px; vertical-align: top; overflow-wrap: anywhere;
   border-bottom: 1px solid rgba(166, 61, 255, 0.18); }
 /* Status (`.c-time`) is 1.1x wider than the aired table's Prep Time slice so
-   single words in the status text don't wrap one character per line; the extra
-   1.4% comes out of Request. Queue totals stay at 86% + 48px as before. */
-.req-table .c-prompt { width: 50.6%; }
-.req-table .c-title { width: 20%; }
+   single words in the status text don't wrap one character per line; Request
+   takes everything else. Queue totals stay at 86% + 48px as before. */
+.req-table .c-prompt { width: 70.6%; }
 .req-table .c-time { width: 15.4%; }
 .req-table .c-vote { width: 48px; }
 /* AIRED REQUESTS has no vote column: Prompt and Title are the same width, each
@@ -465,11 +465,10 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   .turkey { width: 44px; height: 44px; }
   .turkey svg { width: 30px; height: 30px; }
   .rate-agg { font-size: 13px; }
-  /* Queue: three visual columns — Vote / Request / Title+status. */
+  /* Queue: two visual columns — Vote / Request+status. */
   .req-table td { padding: 6px 4px; }
   .req-text { hyphens: auto; }
-  .req-table .c-prompt { width: 50%; }
-  .req-table .c-title { width: calc(50% - 48px); }
+  .req-table .c-prompt { width: calc(100% - 48px); }
   .req-table .c-vote { width: 48px; }
   /* Aired table keeps its Prep Time column: a fixed 48 px slice (the header
      wraps "Prep" / "Time" and the value wraps "16" / "min" — "min" itself
@@ -478,7 +477,7 @@ a.cred-model:hover, a.cred-model:focus-visible { text-decoration: underline; }
   .req-table-aired .c-prompt, .req-table-aired .c-title { width: calc(50% - 24px); }
   .req-table-aired .c-time { width: 48px; }
   /* Queue only: the Status header and cell hide (the label folds under the
-     Title). The selector must not catch the aired table's Prep Time header —
+     request text). The selector must not catch the aired table's Prep Time header —
      it used to, leaving the value column with zero width on phones. */
   .req-table td.req-status { display: none; }
   .req-table:not(.req-table-aired) .c-time { display: none; }

@@ -166,10 +166,12 @@ test("aired requests table shows up to five with a prep time", async ({ page }) 
   });
   expect(Math.abs(widths.prompt - widths.title)).toBeLessThanOrEqual(1);
   expect(widths.prompt / widths.total).toBeCloseTo(0.43, 1);
-  // the queue's vote column is left-most (cosmetic patch)
+  // the queue's vote column is left-most (cosmetic patch); no Title column
+  // (RADIO §9.1) and the box is 520 px tall
   const queueTable = page.locator(".req-table").filter({ has: page.locator("#req-queue") });
   await expect(queueTable.getByRole("columnheader"))
-    .toHaveText(["Votes", "Request", "Title", "Status"]);
+    .toHaveText(["Votes", "Request", "Status"]);
+  expect(await page.$eval(".req-scroll", el => getComputedStyle(el).maxHeight)).toBe("520px");
   expect(await page.$eval("#req-queue tr.req-item td:first-child",
     td => td.classList.contains("req-vote"))).toBe(true);
   // the queue table's header row stays pinned while its box scrolls
@@ -178,7 +180,7 @@ test("aired requests table shows up to five with a prep time", async ({ page }) 
   expect(pos).toBe("sticky");
   // Mobile (≤520 px): the Prep Time column keeps its header and a width of
   // at least 3 ch so "min" never breaks one character per line; the queue's
-  // Status column still folds under the Title; nothing scrolls horizontally.
+  // Status column still folds under the request text; nothing scrolls horizontally.
   await page.setViewportSize({ width: 360, height: 420 });
   await expect(airedTable.getByRole("columnheader", { name: "Prep Time" }))
     .toBeVisible();
