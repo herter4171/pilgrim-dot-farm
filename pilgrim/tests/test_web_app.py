@@ -83,6 +83,7 @@ def test_program_and_state_come_from_the_cache(tmp_env, monkeypatch):
     assert body["epoch"] == station.epoch and body["revision"] == direct["revision"]
     assert [it["seq"] for it in body["items"]] == [it["seq"] for it in direct["items"]]
     assert all(it["url"] for it in body["items"])
+    assert all("rating_count" in it and "rating_avg" in it for it in body["items"])
     assert body["reset"] is False
     # incremental cursor: only rows after after_seq, offset 0
     first = body["items"][0]["seq"]

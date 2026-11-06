@@ -450,11 +450,18 @@ class Station(PublicSurface):
         else:
             items = scheduler.store.program_after(after_seq)
             start_offset = 0.0
+        # FIX_RATINGS.md Step 2 (VOTING.md V10): every song row carries its
+        # lifetime aggregate so the client can show it the instant the song
+        # is audible. One batch query; non-songs and disabled ratings send 0/null.
+        song_ids = [it["item_id"] for it in items if it["type"] == "song"]
+        aggs = (self.db.song_ratings_for(song_ids)
+                if self.cfg.ratings.enabled and song_ids else {})
         out = []
         for it in items:
             inv = self.db.get_item(it["item_id"])
             title = (inv.get("title") if inv else None) or ""
             artist = (inv.get("artist") if inv else None) or ""
+            agg = aggs.get(it["item_id"]) if it["type"] == "song" else None
             out.append({"seq": it["seq"], "media_id": it["item_id"],
                         "url": self.media_url(it["item_id"], inv),
                         # ALBUM_ART Step 7: "" until the JPEG is in S3; no
@@ -462,7 +469,9 @@ class Station(PublicSurface):
                         "art_url": art_url(self.cfg, inv),
                         "type": it["type"], "duration_s": it["duration_s"],
                         "sfx": self._with_urls(scheduler.overlays_for(it["seq"])),
-                        "title": title, "artist": artist})
+                        "title": title, "artist": artist,
+                        "rating_count": agg["count"] if agg else 0,
+                        "rating_avg": agg["avg"] if agg else None})
         return {"items": out, "start_offset_s": start_offset,
                 "epoch": scheduler.epoch, "revision": scheduler.revision,
                 "reset": stale, "server_time": time.time()}

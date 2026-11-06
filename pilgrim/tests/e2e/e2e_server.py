@@ -164,13 +164,20 @@ def build_app() -> FastAPI:
         else:
             items = store.program_after(after_seq)
             start_offset = 0.0
-        return JSONResponse({"items": [{"seq": it["seq"], "media_id": it["item_id"],
-                           "type": it["type"], "duration_s": it["duration_s"],
-                           "sfx": sched.overlays_for(it["seq"]),
-                           "title": (store.get_item(it["item_id"]) or {}).get("title") or "",
-                           "artist": (store.get_item(it["item_id"]) or {}).get("artist") or "",
-                           "art_url": _art_url(store, it["item_id"])}
-                          for it in items], "start_offset_s": start_offset,
+        aggs = store.song_ratings_for(
+            [it["item_id"] for it in items if it["type"] == "song"])
+        out = []
+        for it in items:
+            agg = aggs.get(it["item_id"]) if it["type"] == "song" else None
+            out.append({"seq": it["seq"], "media_id": it["item_id"],
+                        "type": it["type"], "duration_s": it["duration_s"],
+                        "sfx": sched.overlays_for(it["seq"]),
+                        "title": (store.get_item(it["item_id"]) or {}).get("title") or "",
+                        "artist": (store.get_item(it["item_id"]) or {}).get("artist") or "",
+                        "art_url": _art_url(store, it["item_id"]),
+                        "rating_count": agg["count"] if agg else 0,
+                        "rating_avg": agg["avg"] if agg else None})
+        return JSONResponse({"items": out, "start_offset_s": start_offset,
                 "epoch": sched.epoch, "revision": sched.revision,
                 "reset": stale, "server_time": time.time()},
                 headers={"Cache-Control": "public, max-age=1"})

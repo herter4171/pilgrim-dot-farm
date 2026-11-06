@@ -580,6 +580,12 @@ def test_rating_route_window_and_state(tmp_env):
     assert r.headers["cache-control"] == "no-store"
     state = c.get("/api/station/state").json()
     assert state["rating"] == {"open": True, "count": 1, "avg": 4.0}
+    # FIX_RATINGS.md Step 2: the programme carries the song's aggregate
+    prog = c.get("/api/station/program").json()["items"]
+    by_seq = {it["seq"]: it for it in prog}
+    assert by_seq[seq]["rating_count"] == 1 and by_seq[seq]["rating_avg"] == 4.0
+    liner_row = next(it for it in prog if it["type"] == "liner")
+    assert liner_row["rating_count"] == 0 and liner_row["rating_avg"] is None
     # wrong epoch / closed window
     assert c.post("/api/station/rating",
                   json={"voter_id": VOTER, "epoch": "other",
@@ -588,6 +594,8 @@ def test_rating_route_window_and_state(tmp_env):
     assert c.get("/api/station/state").json()["rating"]["open"] is False
     st.cfg.ratings.enabled = False
     assert c.get("/api/station/state").json()["rating"] is None
+    assert all(it["rating_count"] == 0 and it["rating_avg"] is None
+               for it in c.get("/api/station/program").json()["items"])
     assert c.post("/api/station/rating",
                   json={"voter_id": VOTER, "epoch": st.scheduler.epoch,
                         "seq": seq, "stars": 4}).status_code == 404

@@ -232,3 +232,23 @@ def test_rotation_weight_favours_high_ratings_when_enabled(cfg, tmp_env):
     cfg.ratings.rotation_min_votes = 6
     assert sched._song_weight(store.get_item(a), now) == \
            sched._song_weight(store.get_item(b), now)
+
+
+def test_song_ratings_for_batches_lifetime_aggregates(cfg, tmp_env):
+    """FIX_RATINGS.md Step 2: one query, keyed by item, over every airing."""
+    _, store, _ = tmp_env
+    a = store.add_item(type_="song", media_path="/tmp/a.flac", duration_s=60.0, fresh=True)
+    b = store.add_item(type_="song", media_path="/tmp/b.flac", duration_s=60.0, fresh=True)
+    c = store.add_item(type_="song", media_path="/tmp/c.flac", duration_s=60.0, fresh=True)
+    cap = cfg.ratings.max_voters_per_ip
+    store.cast_song_rating(item_id=a, epoch="e", seq=1, voter_id="1" * 32, ip=None,
+                           stars=5, max_voters_per_ip=cap)
+    store.cast_song_rating(item_id=a, epoch="e", seq=9, voter_id="1" * 32, ip=None,
+                           stars=4, max_voters_per_ip=cap)   # a later airing
+    store.cast_song_rating(item_id=b, epoch="e", seq=2, voter_id="2" * 32, ip=None,
+                           stars=2, max_voters_per_ip=cap)
+    aggs = store.song_ratings_for([a, b, c, a])
+    assert aggs == {a: {"count": 2, "avg": 4.5}, b: {"count": 1, "avg": 2.0}}
+    assert c not in aggs
+    assert store.song_ratings_for([]) == {}
+    assert aggs[a] == store.song_rating(a)

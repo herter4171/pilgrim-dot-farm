@@ -1272,6 +1272,27 @@ class Store:
         avg = round(float(agg[1]), 2) if agg[1] is not None else None
         return {"count": count, "avg": avg}
 
+    def song_ratings_for(self, item_ids: list[int]) -> dict[int, dict[str, Any]]:
+        """Lifetime aggregates for several songs in one query (FIX_RATINGS.md
+        Step 2; VOTING.md V10): {item_id: {"count": n, "avg": float|None}}.
+        Ids with no ratings are absent; callers default to count 0 / avg None.
+        One round trip per programme response, not one per song (the store
+        may be Postgres across the tailnet)."""
+        ids = sorted({int(i) for i in item_ids})
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT item_id, COUNT(*) AS n, AVG(stars) AS avg_stars "
+                f"FROM song_ratings WHERE item_id IN ({marks}) GROUP BY item_id",
+                ids).fetchall()
+        return {int(r["item_id"]): {
+                    "count": int(r["n"]),
+                    "avg": round(float(r["avg_stars"]), 2)
+                           if r["avg_stars"] is not None else None}
+                for r in rows}
+
     def recent_votes(self, limit: int = 100) -> list[dict[str, Any]]:
         """Admin audit trail. Deliberately omits voter_id and ip (they are
         pseudonymous identifiers; the DB keeps them for the abuse cap only)."""
