@@ -83,6 +83,7 @@ If a task cannot be done without breaking one, stop and report.
 | Edge (stateless) | EC2 `pf`, `/home/ec2-user/radio` | nginx edge `:8080` behind Cloudflare → ALB; reaches the origin only via Tailscale serve (`make edge-up`, `LOCAL_GATEWAY=0`). Holds no station state. **No SSH port forwarding** anymore |
 | Song generation | pool in `songs.gen_backends` | MiniMax Music 3 ×3 (M5 mlx-serve + two audiocpp GPU boxes) via LiteLLM's vLLM pass-through `https://litellm.twr.church/vllm/v1/audio/music-generations`, `model: MiniMax-Music-3`, Bearer `LITELLM_TOKEN`. The station enforces the slot ceiling and staggers submissions (docs/backends.md §2b). Read `pipelines/songs.py` before writing new code. |
 | LiteLLM | `https://litellm.twr.church/v1` | LLMs, song pool (`/vllm`), MCP time tool (`/mcp`, `hosts.mcp`) |
+| LiteLLM relay (web tier only) | bastion `pf` `:4000` → `tailscale serve` on the M5 → LiteLLM | LiteLLM is a LAN service behind a public name; Fargate reaches it only via `pilgrim/deploy/bastion/relay.sh`. The web tier's `hosts.litellm` points at the relay (container overlay) |
 | `qwen38` (Qwen 3.8 27B) | 5090 host | via LiteLLM; news, song briefs, DJ talk |
 | `ornith` | 4070 Ti host | via LiteLLM; commercials, liners |
 | Kokoro TTS | `192.168.68.89:8001` | `/tts`, `/voices`, `/health`; 16-bit mono 24 kHz |

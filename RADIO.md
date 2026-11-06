@@ -47,6 +47,7 @@ without touching the rest of the system.
 | FLUX 3 Image Klein | Cover art per song (ALBUM_ART.md): 1024×1024 PNG, ~40 s/image, single-flight, blocks while rendering | `127.0.0.1:8084` (`hosts.flux`, docs/backends.md §10) |
 | Brave Search API | Web search: news bulletin + copied-lyrics screen (BRAVE.md) | `https://api.search.brave.com` (`hosts.brave`, key `BRAVE_SEARCH_KEY`) |
 | LiteLLM MCP | The DJ's real local time (`time-get_current_time`) only | `https://litellm.twr.church/mcp` (`hosts.mcp`) |
+| LiteLLM from the VPC (web tier only) | Request moderation and paid summaries run on Fargate (§11 "Web tier"); LiteLLM is a LAN service behind a public name, so the tasks reach it through the bastion relay: bastion `:4000` → `tailscale serve` on the M5 → LiteLLM (`pilgrim/deploy/bastion/`). The home LAN is a dependency of the request line by design | `hosts.litellm` = `http://<bastion>:4000/v1` in the container overlay |
 
 Notes:
 - LLMs are on separate hosts, so there is no GPU contention with song

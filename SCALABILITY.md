@@ -103,8 +103,13 @@ ask for comes from Valkey, Postgres or CloudFront.
    request-line and vote rate limiters stay per task for now (one task runs;
    moving them into Valkey is a follow-up when the service scales out). `payments.py` moves to this tier unchanged
    (it never touched playout: AGENTS §1.11); the Stripe webhook URL moves
-   with it. Moderation (LiteLLM), the copied-lyrics screen (Brave) and the
-   paid summary are public APIs reachable from Fargate.
+   with it. The copied-lyrics screen (Brave) and Stripe are public APIs
+   reachable from Fargate. **LiteLLM is not**: `litellm.twr.church` is a
+   public name and certificate on a LAN address (found at cutover). Request
+   moderation and paid summaries on the web tier reach it through the
+   bastion relay (`pilgrim/deploy/bastion/`): task → bastion:4000 →
+   `tailscale serve` on the Mac → LiteLLM. The home LAN is a dependency of
+   the request line by design (operator decision, 2026-11-05).
 
 6. **No origin media fallback.** `/api/media/<id>` cannot exist on Fargate.
    `require_published` already holds requests until S3 has the file; the

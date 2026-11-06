@@ -12,6 +12,13 @@ station:
   admin_port: 5081
   serve_web: true          # no nginx edge in front: the app serves pilgrim/web/ itself
 
+hosts:
+  # LiteLLM is a LAN service (public name, private IP). From the VPC it is
+  # reached through the bastion relay (pilgrim/deploy/bastion/README.md):
+  # task -> bastion:4000 -> tailscale serve on the Mac -> litellm.twr.church.
+  # The bastion's private IP; change with the instance.
+  litellm: http://172.31.25.15:4000/v1
+
 visitors:
   # The ALB is the only peer the web tier sees; it lives in the VPC. From it the
   # browser IP is CF-Connecting-IP (Cloudflare -> ALB), else X-Forwarded-For
