@@ -490,7 +490,13 @@
     // rating.js ignores repeats of the same airing.
     document.dispatchEvent(new CustomEvent("pd:nowplaying", {
       detail: named ? { epoch, seq: it.seq, media_id: it.media_id,
-                        title: it.title, artist: it.artist } : null,
+                        title: it.title, artist: it.artist,
+                        // FIX_RATINGS.md Step 3: the lifetime aggregate rides
+                        // on the programme row (RADIO §11), so the rating row
+                        // can show it the instant the song is audible.
+                        rating_count: it.rating_count || 0,
+                        rating_avg: (typeof it.rating_avg === "number") ? it.rating_avg : null }
+                    : null,
     }));
   }
 

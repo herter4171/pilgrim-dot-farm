@@ -366,6 +366,12 @@ body {
 .turkey.filled { color: var(--cyan); }
 .turkey.filled svg { fill: currentColor;
   filter: drop-shadow(0 0 4px rgba(36, 224, 255, .45)); }
+/* FIX_RATINGS.md Step 3: until this browser rates the airing, the turkeys
+   show the COMMUNITY average in magenta ("pink"); casting a rating replaces
+   it with the listener's own level in cyan. */
+.turkey.prior { color: var(--magenta); }
+.turkey.prior svg { fill: currentColor;
+  filter: drop-shadow(0 0 4px rgba(255, 47, 214, .45)); }
 .turkey:hover:not(:disabled), .turkey:focus-visible {
   color: var(--cyan);
   filter: brightness(1.2); outline: 2px solid var(--cyan); outline-offset: -2px;

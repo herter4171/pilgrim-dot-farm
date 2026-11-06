@@ -27,7 +27,7 @@ async function waitForSong(page: Page, timeout = 15000) {
 function announce(page: Page, airing: { epoch: string; seq: number } | null) {
   return page.evaluate((detail) => {
     document.dispatchEvent(new CustomEvent("pd:nowplaying", { detail }));
-  }, airing ? { ...airing, media_id: 1, title: "T", artist: "A" } : null);
+  }, airing ? { ...airing, media_id: 1, title: "T", artist: "A", rating_count: 0, rating_avg: null } : null);
 }
 
 test("rating row is disabled before PLAY, enabled while a song is audible, STOP closes it", async ({ page }) => {
@@ -46,6 +46,8 @@ test("a turkey click posts, fills the row, and shows the aggregate", async ({ pa
   const airing = await waitForSong(page);
   await announce(page, airing);
   await expect(page.locator("#rate-row")).toHaveAttribute("aria-disabled", "false");
+  // FIX_RATINGS.md Step 3: the aggregate is never blank while a song is audible
+  await expect(page.locator("#rate-agg")).not.toHaveText("");
   const [resp] = await Promise.all([
     page.waitForResponse((r) => r.url().includes("/api/station/rating")),
     page.click(".turkey[data-stars='4']"),
@@ -56,6 +58,8 @@ test("a turkey click posts, fills the row, and shows the aggregate", async ({ pa
   expect(body.count).toBe(1);
   expect(body.avg).toBe(4);
   await expect(page.locator(".turkey[data-stars='4']")).toHaveClass(/filled/);
+  // D2: once rated, the pink community level is gone; cyan is the listener's own
+  await expect(page.locator(".turkey.prior")).toHaveCount(0);
   await expect(page.locator("#rate-agg")).toHaveText("4.0 · 1", { timeout: 2000 });
   // the response is never cached
   expect(resp.headers()["cache-control"]).toBe("no-store");
@@ -87,7 +91,8 @@ test("a stored rating is restored for the same airing after a reload", async ({ 
     document.dispatchEvent(new CustomEvent("pd:nowplaying", { detail }));
     return document.querySelector(".turkey[data-stars='5']")
       .classList.contains("filled");
-  }, { ...airing, media_id: 1, title: "T", artist: "A" });
+  }, { ...airing, media_id: 1, title: "T", artist: "A",
+       rating_count: 0, rating_avg: null });
   expect(restored).toBe(true);
 });
 
@@ -119,6 +124,33 @@ test("the server closes the window after the song ends", async ({ page }) => {
   // the control is gone once the player announces the next item / nothing
   await announce(page, null);
   await expect(page.locator("#rate-row")).toHaveAttribute("aria-disabled", "true");
+});
+
+test("the community average shows as pink turkeys until the listener rates", async ({ page }) => {
+  // FIX_RATINGS.md Step 3 (D2): rating_avg 3.4 rounds to 3 pink turkeys and the
+  // exact text is beside them; with no ratings nothing is pink and the text
+  // says NO RATINGS YET. Both are read in the same evaluate as the dispatch.
+  await page.goto("/");
+  const airing = await waitForSong(page);
+  const shown = await page.evaluate((detail) => {
+    document.dispatchEvent(new CustomEvent("pd:nowplaying", { detail }));
+    const cls = (n: number) => document.querySelector(`.turkey[data-stars='${n}']`)!.className;
+    return { t3: cls(3), t4: cls(4), agg: document.getElementById("rate-agg")!.textContent };
+  }, { ...airing, media_id: 1, title: "T", artist: "A", rating_count: 2, rating_avg: 3.4 });
+  expect(shown.t3).toMatch(/prior/);
+  expect(shown.t3).not.toMatch(/filled/);
+  expect(shown.t4).not.toMatch(/prior/);
+  expect(shown.agg).toBe("3.4 · 2");
+  await announce(page, null);
+  const empty = await page.evaluate((detail) => {
+    document.dispatchEvent(new CustomEvent("pd:nowplaying", { detail }));
+    return { prior: document.querySelectorAll(".turkey.prior").length,
+             agg: document.getElementById("rate-agg")!.textContent };
+  }, { ...airing, seq: airing.seq + 1000, media_id: 1, title: "T", artist: "A",
+       rating_count: 0, rating_avg: null });
+  expect(empty.prior).toBe(0);
+  expect(empty.agg).toBe("NO RATINGS YET");
+  await announce(page, null);
 });
 
 test("queue votes: up, retract, down; the paid row has no buttons", async ({ page }) => {
