@@ -71,7 +71,10 @@ class CachedScheduler:
     """The slice of `Scheduler` that `voting.rating_window` reads, rebuilt from
     the published `state` and `program` documents. `on_air()` is the station's
     snapshot (up to one publish tick old), which the rating grace already
-    tolerates (VOTING.md V8)."""
+    tolerates (VOTING.md V8). `_cum` and `position()` mean what they mean on
+    `Scheduler`, in program-seconds counted from the first published row, so
+    the grace branch (`position() - _cum[idx] <= grace_s`) is the published
+    offset into the on-air row (FIX_RATINGS.md Step 1)."""
 
     def __init__(self, state: dict[str, Any], program: dict[str, Any]) -> None:
         self.epoch: str = str(state.get("epoch") or "")
@@ -82,6 +85,11 @@ class CachedScheduler:
              "item_id": int(it.get("media_id") or 0),
              "duration_s": float(it.get("duration_s") or 0.0)}
             for it in program.get("items", [])]
+        self._cum: list[float] = []
+        t = 0.0
+        for r in self._items:
+            self._cum.append(t)
+            t += r["duration_s"]
         seq = state.get("current_seq")
         self._on_air: tuple[int | None, float] = (
             int(seq) if seq is not None else None,
@@ -89,6 +97,15 @@ class CachedScheduler:
 
     def on_air(self) -> tuple[int | None, float]:
         return self._on_air
+
+    def position(self) -> float:
+        """The snapshot's playhead: the on-air row's start plus the published
+        offset into it. 0.0 when the on-air row is not in the window."""
+        seq, offset = self._on_air
+        idx = next((i for i, r in enumerate(self._items) if r["seq"] == seq), None)
+        if idx is None:
+            return 0.0
+        return self._cum[idx] + offset
 
 
 class _Stages:

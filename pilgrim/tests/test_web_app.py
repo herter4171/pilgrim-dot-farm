@@ -175,3 +175,35 @@ def test_client_ip_prefers_cf_connecting_ip_from_a_trusted_peer(tmp_env, monkeyp
                               x_forwarded_for="10.0.0.1, 203.0.113.9")) == "203.0.113.9"
     assert web._client_ip(req(alb, x_forwarded_for="198.51.100.7, 1.2.3.4")) == "198.51.100.7"
     assert web._client_ip(req("8.8.8.8", cf_connecting_ip="203.0.113.9")) == "8.8.8.8"
+
+
+def test_cached_scheduler_rating_window_grace_and_song_start():
+    """FIX_RATINGS.md Step 1 (VOTING.md V8 over the published snapshot): the
+    grace branch reads `_cum` and `position()`, which the cached scheduler
+    must provide; a rating for a song the snapshot has not reached is closed."""
+    from pilgrim.voting import rating_window
+    from pilgrim.web_app import CachedScheduler
+    program = {"items": [
+        {"seq": 10, "type": "song", "media_id": 2928, "duration_s": 180.0},
+        {"seq": 11, "type": "liner", "media_id": 55, "duration_s": 8.0},
+        {"seq": 12, "type": "song", "media_id": 777, "duration_s": 200.0},
+    ]}
+
+    def window(seq, offset, ask_seq):
+        st = {"epoch": "e1", "revision": 1, "current_seq": seq,
+              "current_offset_s": offset}
+        return rating_window(CachedScheduler(st, program), "e1", ask_seq, 5.0)
+
+    assert window(10, 100.0, 10) == (True, 2928)      # the song is on air
+    assert window(11, 2.0, 10) == (True, 2928)        # liner on air, 2 s in: grace
+    assert window(11, 6.0, 10) == (False, None)       # past the grace
+    assert window(12, 1.0, 10) == (False, None)       # two rows later: closed
+    assert window(10, 179.5, 12) == (False, None)     # a future song is closed
+    assert window(11, 2.0, 11) == (False, None)       # a liner is never ratable
+    sched = CachedScheduler({"epoch": "e1", "current_seq": 11,
+                             "current_offset_s": 2.0}, program)
+    assert sched._cum == [0.0, 180.0, 188.0]
+    assert sched.position() == 182.0
+    # a frozen station is closed (IDLE.md), whatever the row
+    st = {"epoch": "e1", "current_seq": 10, "current_offset_s": 1.0, "idle": True}
+    assert rating_window(CachedScheduler(st, program), "e1", 10, 5.0) == (False, None)
