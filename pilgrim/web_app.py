@@ -20,7 +20,10 @@ client IP from `CF-Connecting-IP` behind the ALB (RADIO §14).
 Required environment: `REDIS_URL` (the station's hot state) and, in
 production, `DATABASE_URL` + `DB_PASS_SECRET_ARN` (RADIO §12). Optional:
 `LITELLM_TOKEN` (moderation, paid summaries), `BRAVE_SEARCH_KEY` (copied-lyrics
-screen), the Stripe keys and `PAID_OVERRIDE_TOKEN` (PAYMENT.md).
+screen), the Stripe keys and `PAID_OVERRIDE_TOKEN` (PAYMENT.md); any of those
+may instead arrive through `STRIPE_SECRET_ARN`, a Secrets Manager JSON whose
+allow-listed keys are exported into the environment at start
+(`pilgrim/aws_secrets.py`).
 """
 from __future__ import annotations
 
@@ -33,6 +36,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from pilgrim import dj_contracts as dj
+from pilgrim.aws_secrets import STRIPE_SECRET_ARN_ENV, export_secret_env
 from pilgrim.config import Clock, Config, load_api_key, load_brave_key, load_config, load_secret
 from pilgrim.db import env_summary as db_env_summary
 from pilgrim.db import open_store
@@ -241,6 +245,9 @@ def build_web_station(cfg: Config) -> WebStation:
         log.error("web.no_redis_url", extra={"env": REDIS_URL_ENV})
         raise SystemExit(f"{REDIS_URL_ENV} is required: the web tier reads the "
                          "station's hot state from Valkey (RADIO §14)")
+    # The task carries ARNs, not values: STRIPE_SECRET_ARN is a JSON secret with
+    # the three Stripe keys (RADIO §12). Exported before anything reads them.
+    export_secret_env(STRIPE_SECRET_ARN_ENV, cfg.media.aws_profile)
     store = open_store(cfg)
     hot = HotState(cfg, cache_connect(url, cfg), epoch="web")
     api_key = load_api_key()

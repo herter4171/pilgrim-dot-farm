@@ -1,8 +1,10 @@
 {
-  "_comment": "ECS Fargate task definition for the web tier (SCALABILITY.md Step 1). Placeholders in @@...@@ are filled by IaC (terraform-aws-pilgrim). Secrets are referenced, never inlined. The container port matches the ALB target group (modules/ec2/alb.tf: port 8080); the target group health path becomes /api/health at cutover (SCALABILITY.md §6). ARM64 is the operator's choice (Graviton; native build on the M5). Until the web tier exists (Step 5) the image runs today's single-host server, so this is a shape to build IaC against, not a deployable service.",
+  "_comment": "ECS Fargate task definition for the web tier (SCALABILITY.md Step 1). Placeholders in @@...@@ are filled by IaC (terraform-aws-pilgrim). Secrets are referenced, never inlined. The container port matches the ALB target group (modules/ec2/alb.tf: port 8080); the target group health path becomes /api/health at cutover (SCALABILITY.md \u00a76). ARM64 is the operator's choice (Graviton; native build on the M5). Until the web tier exists (Step 5) the image runs today's single-host server, so this is a shape to build IaC against, not a deployable service. STRIPE_SECRET_ARN is a Secrets Manager JSON {STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET} the app reads itself with the task role (pilgrim/aws_secrets.py); the task role needs GetSecretValue on it and on DB_PASS_SECRET_ARN.",
   "family": "pilgrim-web",
   "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
   "cpu": "512",
   "memory": "1024",
   "runtimePlatform": {
@@ -19,22 +21,51 @@
       "readonlyRootFilesystem": false,
       "user": "10001:10001",
       "portMappings": [
-        { "containerPort": 8080, "protocol": "tcp", "appProtocol": "http" }
+        {
+          "containerPort": 8080,
+          "protocol": "tcp",
+          "appProtocol": "http"
+        }
       ],
       "environment": [
-        { "name": "REDIS_URL", "value": "@@REDIS_URL@@" },
-        { "name": "DATABASE_URL", "value": "@@DATABASE_URL@@" },
-        { "name": "DB_PASS_SECRET_ARN", "value": "@@DB_PASS_SECRET_ARN@@" },
-        { "name": "PILGRIM_CONFIG_OVERLAY", "value": "/app/pilgrim/deploy/container/overlay.yaml" },
-        { "name": "PILGRIM_ENV_FILE", "value": "" }
+        {
+          "name": "REDIS_URL",
+          "value": "@@REDIS_URL@@"
+        },
+        {
+          "name": "DATABASE_URL",
+          "value": "@@DATABASE_URL@@"
+        },
+        {
+          "name": "DB_PASS_SECRET_ARN",
+          "value": "@@DB_PASS_SECRET_ARN@@"
+        },
+        {
+          "name": "PILGRIM_CONFIG_OVERLAY",
+          "value": "/app/pilgrim/deploy/container/overlay.yaml"
+        },
+        {
+          "name": "PILGRIM_ENV_FILE",
+          "value": ""
+        },
+        {
+          "name": "STRIPE_SECRET_ARN",
+          "value": "@@STRIPE_SECRET_ARN@@"
+        }
       ],
       "secrets": [
-        { "name": "LITELLM_TOKEN", "valueFrom": "@@LITELLM_TOKEN_SECRET_ARN@@" },
-        { "name": "BRAVE_SEARCH_KEY", "valueFrom": "@@BRAVE_SEARCH_KEY_SECRET_ARN@@" },
-        { "name": "STRIPE_SECRET_KEY", "valueFrom": "@@STRIPE_SECRET_KEY_SECRET_ARN@@" },
-        { "name": "STRIPE_PUBLISHABLE_KEY", "valueFrom": "@@STRIPE_PUBLISHABLE_KEY_SECRET_ARN@@" },
-        { "name": "STRIPE_WEBHOOK_SECRET", "valueFrom": "@@STRIPE_WEBHOOK_SECRET_SECRET_ARN@@" },
-        { "name": "PAID_OVERRIDE_TOKEN", "valueFrom": "@@PAID_OVERRIDE_TOKEN_SECRET_ARN@@" }
+        {
+          "name": "LITELLM_TOKEN",
+          "valueFrom": "@@LITELLM_TOKEN_SECRET_ARN@@"
+        },
+        {
+          "name": "BRAVE_SEARCH_KEY",
+          "valueFrom": "@@BRAVE_SEARCH_KEY_SECRET_ARN@@"
+        },
+        {
+          "name": "PAID_OVERRIDE_TOKEN",
+          "valueFrom": "@@PAID_OVERRIDE_TOKEN_SECRET_ARN@@"
+        }
       ],
       "healthCheck": {
         "command": [

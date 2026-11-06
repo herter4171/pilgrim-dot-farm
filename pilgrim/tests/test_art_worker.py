@@ -307,8 +307,11 @@ def test_program_and_state_carry_art_url(tmp_env):
     prog = station.program_response(None)
     assert prog["items"][0]["art_url"] == ""          # not uploaded yet
 
-    store.set_art(iid, "/art/song_20.jpg", {"scene": "s"})
-    store.set_art_published(iid, "art/song_20-abc123.jpg")
+    # Written through the station's own store, as the live art worker does:
+    # its item cache invalidates on the write (a second process's write shows
+    # up within store.ITEM_CACHE_TTL_S instead; test_store_cache.py).
+    station.db.set_art(iid, "/art/song_20.jpg", {"scene": "s"})
+    station.db.set_art_published(iid, "art/song_20-abc123.jpg")
     prog = station.program_response(None)
     assert prog["items"][0]["art_url"] == "https://cdn.example/art/song_20-abc123.jpg"
 

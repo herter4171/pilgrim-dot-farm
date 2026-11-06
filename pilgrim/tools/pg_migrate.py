@@ -49,10 +49,12 @@ def copy(src: sqlite3.Connection, store: Store, *, apply: bool, truncate: bool,
     """Copy every table; return 0 on success. Prints a per-table report."""
     conn = store._conn
     with store._lock:
+        conn.begin()   # one transaction: the connection is autocommit otherwise
         before = _target_counts(store)
         if any(before.values()):
             if not truncate:
                 print(f"target is not empty: {before}; pass --truncate to wipe it", file=out)
+                conn.rollback()
                 return 2
             for t in reversed(TABLES):
                 conn.execute(f"DELETE FROM {t}")

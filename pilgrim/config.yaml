@@ -182,7 +182,7 @@ idle:
 cache:
   key_prefix: "pilgrim:"
   publish_s: 1             # publish tick = wake latency when the web tier flags a wake
-  alive_ttl_s: 15          # liveness/snapshot TTL (>= 3 ticks); web tier shows off-air after it
+  alive_ttl_s: 30          # liveness/snapshot TTL (>= 3 ticks); web tier shows off-air after it
   wake_ttl_s: 60
   timeout_s: 2             # per-call socket timeout; a slow cache degrades, never blocks playout
 

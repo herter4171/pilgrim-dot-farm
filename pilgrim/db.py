@@ -22,7 +22,6 @@ password or a URL that could carry one.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -121,6 +120,7 @@ class Conn(Protocol):
     def execute(self, sql: str, params: Sequence[Any] = ()) -> Any: ...
     def executemany(self, sql: str, rows: Iterable[Sequence[Any]]) -> None: ...
     def executescript(self, script: str) -> None: ...
+    def begin(self) -> None: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
     def close(self) -> None: ...
@@ -153,6 +153,12 @@ class SqliteConn:
 
     def executescript(self, script: str) -> None:
         self._c.executescript(script)
+
+    def begin(self) -> None:
+        """Explicit transaction; sqlite3 would otherwise open one implicitly
+        at the first write and `commit()` closes either."""
+        if not self._c.in_transaction:
+            self._c.execute("BEGIN")
 
     def commit(self) -> None:
         self._c.commit()
@@ -195,12 +201,17 @@ _open_postgres: weakref.WeakSet[PostgresConn] = weakref.WeakSet()
 class PostgresConn:
     """psycopg 3 connection speaking `Store`'s SQLite-flavoured SQL.
 
-    Transactions: writes commit explicitly in `Store` (as they always did);
-    a read leaves a transaction open in Postgres, so `released()` (called when
-    the store lock is released) rolls that back rather than leaving the
-    connection idle-in-transaction. A dropped connection (tailnet hiccup) is
-    reopened once and the statement retried when no transaction was in flight;
-    mid-transaction failures raise, and the caller's commit never happens.
+    Transactions: the connection runs in **autocommit** mode. Every statement
+    is its own transaction, so a read costs one round trip, not a statement
+    plus a `ROLLBACK` (at ~85 ms per round trip from the Mac that halved the
+    station's database load, 2026-11-05). `Store`'s explicit `commit()` calls
+    are then no-ops; the Python store lock still serialises the few
+    multi-statement writes. `begin()` opens a real transaction for the one
+    caller that needs atomicity across many statements (`tools/pg_migrate.py`);
+    `commit()`/`rollback()` close it, and `released()` rolls back anything
+    still open when the store lock is released. A dropped connection (tailnet
+    hiccup) is reopened once and the statement retried when no transaction was
+    in flight; mid-transaction failures raise.
     """
 
     dialect = "postgres"
@@ -219,7 +230,7 @@ class PostgresConn:
     def _connect(self) -> None:
         self._c = self._psycopg.connect(
             self._dsn, password=self._password, connect_timeout=10,
-            autocommit=False, row_factory=_row_factory,
+            autocommit=True, row_factory=_row_factory,
             application_name="pilgrim")
 
     def _idle(self) -> bool:
@@ -245,11 +256,18 @@ class PostgresConn:
         for stmt in split_script(script):
             self._c.execute(translate_sql(stmt))
 
+    def begin(self) -> None:
+        """Open an explicit transaction (autocommit otherwise)."""
+        if self._idle():
+            self._c.execute("BEGIN")
+
     def commit(self) -> None:
-        self._c.commit()
+        if not self._idle():
+            self._c.execute("COMMIT")
 
     def rollback(self) -> None:
-        self._c.rollback()
+        if not self._idle():
+            self._c.execute("ROLLBACK")
 
     def close(self) -> None:
         if not self._c.closed:
@@ -354,8 +372,8 @@ def database_settings(env_file: Path | None = None) -> DatabaseSettings | None:
 
 
 def _secret_region(arn: str) -> str | None:
-    parts = arn.split(":")
-    return parts[3] if len(parts) > 4 and parts[0] == "arn" else None
+    from pilgrim.aws_secrets import secret_region
+    return secret_region(arn)
 
 
 def resolve_password(settings: DatabaseSettings, profile: str | None = None) -> str | None:
@@ -367,17 +385,9 @@ def resolve_password(settings: DatabaseSettings, profile: str | None = None) -> 
         return settings.password
     if not settings.secret_arn:
         return None
-    import boto3
-    from botocore.exceptions import ProfileNotFound
+    from pilgrim.aws_secrets import read_secret_json
 
-    region = _secret_region(settings.secret_arn)
-    try:
-        session = boto3.Session(profile_name=profile or None, region_name=region)
-    except ProfileNotFound:
-        session = boto3.Session(region_name=region)
-    body = session.client("secretsmanager").get_secret_value(
-        SecretId=settings.secret_arn)["SecretString"]
-    data = json.loads(body)
+    data = read_secret_json(settings.secret_arn, profile)
     password = data.get("password")
     if not isinstance(password, str) or not password:
         raise ValueError("DB secret has no `password` key")

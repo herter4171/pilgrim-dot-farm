@@ -462,7 +462,7 @@ class Cache(BaseModel):
     `alive` has been missing for `alive_ttl_s`."""
     key_prefix: str = "pilgrim:"
     publish_s: float = 1.0        # publish tick; also the wake latency from the web tier
-    alive_ttl_s: float = 15.0     # liveness + snapshot TTL (>= 3 publish ticks)
+    alive_ttl_s: float = 30.0     # liveness + snapshot TTL (>= 3 publish ticks)
     wake_ttl_s: float = 60.0      # a wake flag nobody took expires
     timeout_s: float = 2.0        # socket connect/read timeout per call (own task, never playout)
 

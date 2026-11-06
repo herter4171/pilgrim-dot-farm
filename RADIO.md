@@ -1381,7 +1381,7 @@ idle:                      # IDLE.md: freeze playout + pause production with no 
 cache:                     # SCALABILITY.md Step 3: hot state in Valkey; REDIS_URL (env) enables it
   key_prefix: "pilgrim:"
   publish_s: 1             # publish tick = wake latency via the web tier
-  alive_ttl_s: 15          # liveness/snapshot TTL (>= 3 ticks)
+  alive_ttl_s: 30          # liveness/snapshot TTL (>= 3 ticks)
   wake_ttl_s: 60
   timeout_s: 2             # per-call socket timeout; own task, never playout
 
@@ -1576,6 +1576,16 @@ the SQLite file `library.db`. Tests always blank these (conftest) and
 TLS, no password; Valkey Serverless is TLS-only) enables the hot-state
 publisher described in §14; unset, the station behaves exactly as before
 (in-memory listener map, no publication). `cache:` above tunes it.
+
+**Secrets by ARN (SCALABILITY.md Step 5).** On Fargate the task carries ARNs,
+not values. Besides `DB_PASS_SECRET_ARN`, `STRIPE_SECRET_ARN` names a Secrets
+Manager JSON document whose allow-listed keys (`STRIPE_SECRET_KEY`,
+`STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`, `PAID_OVERRIDE_TOKEN`,
+`LITELLM_TOKEN`, `BRAVE_SEARCH_KEY`, `PILGRIM_DJ_TOKEN`) the web tier exports
+into its environment at start (`pilgrim/aws_secrets.py`), so `stripe_env()`
+and `load_secret()` work unchanged; an explicit environment value wins, other
+keys in the document are ignored, and a failed read leaves the feature off
+rather than stopping the app. Values are never logged.
 
 **Overlay (SCALABILITY.md Step 1).** `load_config()` deep-merges an optional
 second YAML over `config.yaml`: the file named by `PILGRIM_CONFIG_OVERLAY`

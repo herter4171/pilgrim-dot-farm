@@ -62,14 +62,14 @@ Secrets and endpoints come from the task environment (README "Secrets"; no
 | `REDIS_URL` | web (station reads it natively, Step 3) | `rediss://host:port`; Valkey Serverless is TLS-only, "no auth" = no password |
 | `DATABASE_URL` | web (station natively, Step 2) | `postgresql://pilgrim@host:5432/pilgrim`, no password in the URL |
 | `DB_PASS_SECRET_ARN` | web (station natively, Step 2) | Secrets Manager JSON `{"username","password"}` (RDS-managed master secret) |
-| `LITELLM_TOKEN`, `BRAVE_SEARCH_KEY`, `STRIPE_*`, `PAID_OVERRIDE_TOKEN` | as today | from Secrets Manager via the task definition's `secrets`, never `environment` |
+| `STRIPE_SECRET_ARN` | web | Secrets Manager JSON `{STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY, STRIPE_WEBHOOK_SECRET}`; read with the task role at start and exported into the environment (`pilgrim/aws_secrets.py`). The task role needs `GetSecretValue` on it |
+| `LITELLM_TOKEN`, `BRAVE_SEARCH_KEY`, `PAID_OVERRIDE_TOKEN` | as today | plain env, ECS `secrets`, or extra keys in the `STRIPE_SECRET_ARN` document (allow-listed) |
 
-`REDIS_URL` and `DATABASE_URL`/`DB_PASS_SECRET_ARN` are read at start. The
-running task definition (`pg-app:2`, checked 2026-11-05) carries only those
-three: before cutover it also needs `LITELLM_TOKEN` (request moderation, paid
-summaries), `BRAVE_SEARCH_KEY` (copied-lyrics screen) and the Stripe keys +
-`PAID_OVERRIDE_TOKEN` as Secrets Manager `secrets`, and the tasks need an
-outbound path (NAT or public IP) to reach LiteLLM, Brave and Stripe.
+`REDIS_URL`, `DATABASE_URL`/`DB_PASS_SECRET_ARN` and `STRIPE_SECRET_ARN` are
+read at start. Still to add for full function: `LITELLM_TOKEN` (request
+moderation, paid summaries), `BRAVE_SEARCH_KEY` (copied-lyrics screen) and
+`PAID_OVERRIDE_TOKEN`, either as more keys in the `STRIPE_SECRET_ARN` document
+or as ECS `secrets`. Tasks reach LiteLLM, Brave and Stripe through the NAT.
 
 ## Task definition
 

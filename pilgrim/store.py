@@ -147,6 +147,16 @@ def _project_recent_row(row: dict[str, Any], max_length: int) -> dict[str, Any]:
 REQUEST_PRIORITY_H = 24.0   # a request song made this recently jumps the queue
 
 
+ITEM_CACHE_MAX = 20_000
+# A row older than this is re-read: another PROCESS (tools/art_backfill,
+# tools/audit_library --apply, mp3_migrate) may have written `items` behind this
+# store's back, and in-process invalidation cannot see that. Cosmetic fields
+# (art, s3_key) may therefore lag by up to this long; flags the scheduler
+# needs are written in-process and invalidate immediately.
+ITEM_CACHE_TTL_S = 60.0
+_cache_clock = time.time   # patched by tests
+
+
 def _iso_ago(epoch: float, hours: float) -> str:
     return datetime.fromtimestamp(epoch - hours * 3600, tz=UTC).isoformat()
 
@@ -167,6 +177,12 @@ class Store:
             self.path = Path(db_path)
             self._conn = SqliteConn(self.path)
         self._lock = StoreLock(self._conn)
+        # Read-through cache for `get_item` (SCALABILITY.md Step 2 follow-up):
+        # the programme snapshot, the state and the DJ views look items up by
+        # id many times a second, and on Postgres each miss is a tailnet round
+        # trip. Every write to `items` in this class clears it (writes are a
+        # few a minute); rows are returned as copies. Bounded by ITEM_CACHE_MAX.
+        self._item_cache: dict[int, tuple[dict[str, Any], float]] = {}
         self._init_schema()
 
     @property
@@ -390,6 +406,7 @@ class Store:
             rid = cur.fetchone()[0]
             if type_ == "song":
                 self._bump_catalogue()
+            self._items_changed()
             self._conn.commit()
             return int(rid)
 
@@ -408,6 +425,7 @@ class Store:
             self._conn.execute(
                 "UPDATE items SET s3_key=?, uploaded_at=? WHERE id=?",
                 (s3_key, _now_iso(), item_id))
+            self._items_changed()
             self._conn.commit()
 
     # ------------------------------------------------------------------- art
@@ -459,6 +477,7 @@ class Store:
                 "UPDATE items SET art_path=?, meta_json=?, art_attempted_at=NULL, "
                 "art_s3_key=NULL, art_uploaded_at=NULL WHERE id=?",
                 (art_path, json.dumps(meta), item_id))
+            self._items_changed()
             self._conn.commit()
 
     def set_art_attempted(self, item_id: int, when: float) -> None:
@@ -466,6 +485,7 @@ class Store:
         with self._lock:
             self._conn.execute(
                 "UPDATE items SET art_attempted_at=? WHERE id=?", (when, item_id))
+            self._items_changed()
             self._conn.commit()
 
     def set_art_published(self, item_id: int, art_s3_key: str) -> None:
@@ -474,6 +494,7 @@ class Store:
             self._conn.execute(
                 "UPDATE items SET art_s3_key=?, art_uploaded_at=? WHERE id=?",
                 (art_s3_key, _now_iso(), item_id))
+            self._items_changed()
             self._conn.commit()
 
     def items_to_publish_art(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -504,12 +525,28 @@ class Store:
                 "UPDATE items SET media_path=?, duration_s=?, sample_rate=?, "
                 "channels=?, s3_key=NULL, uploaded_at=NULL WHERE id=?",
                 (media_path, duration_s, sample_rate, channels, item_id))
+            self._items_changed()
             self._conn.commit()
 
+    def _items_changed(self) -> None:
+        """Call after any write to `items` (under the lock)."""
+        self._item_cache.clear()
+
     def get_item(self, item_id: int) -> dict[str, Any] | None:
+        now = _cache_clock()
         with self._lock:
+            hit = self._item_cache.get(int(item_id))
+            if hit is not None and now - hit[1] < ITEM_CACHE_TTL_S:
+                return dict(hit[0])
             r = self._conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
-        return dict(r) if r else None
+            if r is None:
+                self._item_cache.pop(int(item_id), None)
+                return None
+            row = dict(r)
+            if len(self._item_cache) >= ITEM_CACHE_MAX:
+                self._item_cache.clear()
+            self._item_cache[int(item_id)] = (row, now)
+        return dict(row)
 
     def list_items(self, type_: str | None = None) -> list[dict[str, Any]]:
         q = "SELECT * FROM items WHERE retired=0"
@@ -573,6 +610,7 @@ class Store:
                 (json.dumps(meta), item_id))
             if r["type"] == "song":
                 self._bump_catalogue()
+            self._items_changed()
             self._conn.commit()
 
     def update_item_meta(self, item_id: int, meta: dict) -> None:
@@ -586,6 +624,7 @@ class Store:
             # future edit paths; keep the console's revision honest about the set
             if r and r["type"] == "song":
                 self._bump_catalogue()
+            self._items_changed()
             self._conn.commit()
 
     # ------------------------------------------------------- DJ catalogue (11)
@@ -660,6 +699,7 @@ class Store:
     def mark_aired(self, item_id: int) -> None:
         with self._lock:
             self._conn.execute("UPDATE items SET fresh=0 WHERE id=?", (item_id,))
+            self._items_changed()
             self._conn.commit()
 
     def commit_song_air(self, item_id: int, wall: float) -> None:
@@ -671,6 +711,7 @@ class Store:
             self._conn.execute(
                 "UPDATE items SET last_aired_at=?, play_count=play_count+1 WHERE id=?",
                 (wall, item_id))
+            self._items_changed()
             self._conn.commit()
 
     def backfill_airplay_history(self) -> None:
@@ -680,15 +721,26 @@ class Store:
         and safe: only NULL last_aired_at rows are touched, so live values set
         by read/replay of a given song survive."""
         with self._lock:
+            # Only the rows that still need it: on Postgres over the tailnet
+            # every statement is a round trip, and a blanket UPDATE per item
+            # (6.5k of them) held the station's start for minutes (2026-11-05).
+            need = [int(r[0]) for r in self._conn.execute(
+                "SELECT id FROM items WHERE last_aired_at IS NULL "
+                "AND id IN (SELECT item_id FROM airplay)").fetchall()]
+            if not need:
+                return
+            marks = ",".join("?" * len(need))
             rows = self._conn.execute(
                 "SELECT item_id, COUNT(*) AS plays, MAX(recorded_at) AS last "
-                "FROM airplay GROUP BY item_id").fetchall()
+                f"FROM airplay WHERE item_id IN ({marks}) GROUP BY item_id",
+                tuple(need)).fetchall()
             for r in rows:
                 last = _parse_epoch(r["last"])
                 self._conn.execute(
                     "UPDATE items SET last_aired_at=?, play_count=? "
                     "WHERE id=? AND last_aired_at IS NULL",
                     (last, r["plays"], r["item_id"]))
+            self._items_changed()
             self._conn.commit()
 
     def last_played_at(self, item_id: int) -> float | None:

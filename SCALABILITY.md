@@ -157,6 +157,7 @@ wake latency). Tests keep running on fakes and SQLite.
 | `DATABASE_URL` | web, station (native, from `.env`) | `postgresql://user@host:5432/pilgrim` (no password) |
 | `DB_PASS_SECRET_ARN` | web, station (native, from `.env`) | Secrets Manager secret, JSON `{username, password}`; the web task role and the Mac's `mac-studio` profile can both read it |
 | `PILGRIM_CONFIG_OVERLAY` | web | YAML merged over `config.yaml` (binds, ports, data paths) |
+| `STRIPE_SECRET_ARN` | web | Secrets Manager JSON with the Stripe keys (and optionally the other allow-listed keys), exported into the environment at start |
 | `LITELLM_TOKEN`, `BRAVE_SEARCH_KEY`, `STRIPE_*`, `PAID_OVERRIDE_TOKEN`, `PILGRIM_DJ_TOKEN` | as today (README "Secrets") | web gets only the Stripe keys, Brave key and LiteLLM token |
 
 ## 5. RADIO.md sections this plan will touch
