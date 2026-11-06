@@ -30,13 +30,13 @@ def _seqs(sched):
     return [(r["seq"], r["type"], r["item_id"]) for r in sched._items]
 
 
-def test_epoch_mismatch_and_empty_program_are_closed(cfg, tmp_env):
+def test_epoch_mismatch_and_empty_program_are_closed(cfg, tmp_env, tmp_path):
     _, store, _ = tmp_env
     sched, _ = _sched(cfg, store, [("song", 30.0)])
     seq = sched._items[0]["seq"]
     assert voting.rating_window(sched, "other", seq, 5.0) == (False, None)
     assert voting.rating_window(sched, "", seq, 5.0) == (False, None)
-    empty = Scheduler(cfg, Store(store.path.parent / "empty.db"),
+    empty = Scheduler(cfg, Store(tmp_path / "empty.db"),   # a second, empty store
                       RandomSelector(RNG(1), cfg), SimClock(), RNG(1))
     assert voting.rating_window(empty, empty.epoch, 1, 5.0) == (False, None)
 

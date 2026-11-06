@@ -8,6 +8,8 @@ VOTING.md Agent A may run concurrently in separate worktrees. ALBUM_ART.md
 SPLIT_PLAN.md is complete (Steps 1–10) and stays the reference for
 the edge/gateway/origin layout. BRAVE.md (Steps 1–8, shipped 2026-11-04) is
 the reference for web search: Brave Search API direct, searxng retired.
+SCALABILITY.md is the plan for the VPC move (Fargate web tier, RDS Postgres,
+ElastiCache Valkey, Mac as writer); Step 1 (containers) is in progress.
 
 You are building an AI-generated radio station. **`RADIO.md` is the source of
 truth.** Read the relevant section of RADIO.md before implementing anything,
@@ -87,6 +89,7 @@ If a task cannot be done without breaking one, stop and report.
 | SFX (MOSS-SoundEffect v2.0) | `192.168.68.88:8000` | `/health` |
 | Brave Search API | `hosts.brave` = `https://api.search.brave.com` | News bulletin + copied-lyrics screen (BRAVE.md); key `BRAVE_SEARCH_KEY` in `.env`. Metered: never add a health probe, never call it from tests |
 | Media (S3 + CloudFront) | `media.*` in config | Public bucket `pilgrim-dot-farm-public` (us-west-1), read only by CloudFront `E2FWAKQQO45U1V`; station uploads with AWS profile `mac-studio` (RADIO §8.4, docs/backends.md §9) |
+| RDS Postgres + ElastiCache Valkey | VPC `172.31.0.0/16`, via the bastion's tailnet route (SCALABILITY.md Step 8) | `DATABASE_URL` + `DB_PASS_SECRET_ARN`, `REDIS_URL` (TLS, no password) in `.env` on the M5 and in the ECS task env; the web tier is `pilgrimdotfarm/front-end` on Fargate |
 | Stripe | `payments.api_base` in config | Checkout Sessions + webhooks; keys in `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (PAYMENT.md Step 0) |
 
 **Do not guess external APIs.** Before writing a client for any backend,
@@ -107,8 +110,11 @@ note it.
 - Validation: pydantic models for config, LLM JSON outputs, and API payloads.
 - Audio: `soundfile` + `numpy` for QC; **ffmpeg CLI** for two-pass `loudnorm`,
   silence trimming, and FLAC encoding.
-- Storage: SQLite (`station.db`) via the stdlib `sqlite3` module; media files
-  on disk under `pilgrim/library/`.
+- Storage: one engine-neutral `store.py` (SCALABILITY.md Step 2, RADIO §14):
+  SQLite (`station.db`, stdlib `sqlite3`) for tests, sim and dev; PostgreSQL
+  (RDS, psycopg 3) in production when `DATABASE_URL` is set. Engine
+  differences live only in `pilgrim/db.py`; never branch on the engine inside
+  `store.py`. Media files on disk under `pilgrim/library/`.
 - Web: plain HTML/CSS/JS, **no build step, no framework**.
 - Tests: pytest, pytest-asyncio; Playwright for the client gap test.
 
@@ -178,6 +184,9 @@ make pay-smoke    # Stripe test-mode smoke; refuses a live key (only when asked)
 make media-smoke  # one 2 s tone through S3 + CloudFront (only when asked)
 make mp3-migrate  # library backfill to MP3 + S3; dry run unless MIGRATE_ARGS="--apply --upload"
 make due-backfill # requests.due_at (Prep Time cap) from the station log; dry run unless DUE_ARGS="--apply"
+make image        # the Fargate web image (pilgrim:web, linux/arm64); make image-smoke runs the fakes e2e server in it
+make pg-test      # the whole unit suite against a throwaway Postgres container (fakes only)
+make pg-migrate   # station.db -> Postgres copy; dry run unless PG_MIGRATE_ARGS="--apply"
 ```
 
 ---

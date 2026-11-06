@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,8 +11,25 @@ ROOT = Path(__file__).resolve().parent.parent   # pilgrim package dir
 APP = ROOT.parent                               # repo root
 sys.path.insert(0, str(APP))
 
+from pilgrim import db as pilgrim_db  # noqa: E402
 from pilgrim.config import Config, ensure_dirs, load_config  # noqa: E402
 from pilgrim.store import Store  # noqa: E402
+
+# `make pg-test` (SCALABILITY.md Step 2): the SAME suite against a throwaway
+# Postgres. Unset (the default, `make test`) every store is the SQLite file in
+# the test's temp directory. Set, tmp_env and every Station open the Postgres
+# database instead, reset to an empty schema before each test.
+PG_TEST_URL = os.environ.get("PILGRIM_TEST_DATABASE_URL", "").strip()
+PG_TEST_PASSWORD = os.environ.get("PILGRIM_TEST_DATABASE_PASSWORD", "")
+
+
+def _reset_pg_schema() -> None:
+    import psycopg
+    pilgrim_db.close_all_postgres()
+    with psycopg.connect(PG_TEST_URL, password=PG_TEST_PASSWORD or None,
+                         autocommit=True, connect_timeout=10) as c:
+        c.execute("DROP SCHEMA public CASCADE")
+        c.execute("CREATE SCHEMA public")
 
 
 def iso_from_epoch(epoch: float) -> str:
@@ -29,8 +47,14 @@ def _no_repo_secrets(monkeypatch):
     """
     monkeypatch.setenv("PILGRIM_ENV_FILE", "")
     for name in ("STRIPE_SECRET_KEY", "STRIPE_PUBLISHABLE_KEY",
-                 "STRIPE_WEBHOOK_SECRET", "PAID_OVERRIDE_TOKEN", "BRAVE_SEARCH_KEY"):
+                 "STRIPE_WEBHOOK_SECRET", "PAID_OVERRIDE_TOKEN", "BRAVE_SEARCH_KEY",
+                 "DATABASE_URL", "DATABASE_PASSWORD", "DB_PASS_SECRET_ARN", "REDIS_URL"):
         monkeypatch.delenv(name, raising=False)
+    if PG_TEST_URL:
+        _reset_pg_schema()
+        monkeypatch.setenv("DATABASE_URL", PG_TEST_URL)
+        if PG_TEST_PASSWORD:
+            monkeypatch.setenv("DATABASE_PASSWORD", PG_TEST_PASSWORD)
 
 
 @pytest.fixture
@@ -55,8 +79,24 @@ def tmp_env(tmp_path, base_config):
     # keep test runs out of pilgrim/logs/ so the live JSON log stays clean (5.3)
     cfg.logging.dir = str(tmp_path / "logs")
     ensure_dirs(cfg)
+    store = pilgrim_db.open_store(cfg, path=tmp_path / "station.db")
+    yield cfg, store, tmp_path
+    store.close()
+
+
+@pytest.fixture
+def sqlite_env(tmp_path, base_config):
+    """Like tmp_env but ALWAYS the SQLite file, whatever `make pg-test` says:
+    for the tools that work on the station.db file itself (mp3_migrate,
+    purge_songs, pg_migrate) and tests that need a second, empty store."""
+    cfg = base_config.model_copy(deep=True)
+    cfg.library.dir = str(tmp_path / "library")
+    cfg.library.db = str(tmp_path / "station.db")
+    cfg.logging.dir = str(tmp_path / "logs")
+    ensure_dirs(cfg)
     store = Store(tmp_path / "station.db")
     yield cfg, store, tmp_path
+    store.close()
 
 
 def make_item(cfg, store, type_, duration, genre=None, fresh=True,

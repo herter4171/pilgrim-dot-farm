@@ -171,13 +171,86 @@ The serve config format was verified against `tailscale/tailscale:v1.104.4`
 format against that release's docs:
 <https://tailscale.com/kb/1589/tailscale-services-configuration-file>.
 
+## Bastion subnet router (SCALABILITY.md Step 8)
+
+The Fargate web tier reads Valkey and RDS Postgres inside the VPC; the Mac
+must write to them. The old edge host (`ssh pf`, `172.31.25.15`, security
+groups `pg-ec2` + `pg-cache` + `pg-db`) is the bastion: a Tailscale **subnet
+router** for the VPC CIDR, so the Mac's tailnet carries `172.31.0.0/16`.
+Done on 2026-11-05:
+
+```sh
+# on pf (keeps tag:radio-relay; `set` changes only this pref)
+sudo tailscale set --advertise-routes=172.31.0.0/16
+printf 'net.ipv4.ip_forward = 1\nnet.ipv6.conf.all.forwarding = 1\n' \
+  | sudo tee /etc/sysctl.d/99-tailscale.conf && sudo sysctl -p /etc/sysctl.d/99-tailscale.conf
+# on the Mac: already true ("Use Tailscale subnets")
+tailscale debug prefs | grep RouteAll
+```
+
+Then the tailnet policy needs two things, both in
+`tailscale/policy.example.hujson`: the `autoApprovers` block (else approve the
+route by hand: Machines → `ip-172-31-25-15` → Edit route settings), and the
+grant `pilgrim-origin → pilgrim-vpc` on `tcp:5432`/`tcp:6379`. Without the
+grant the control plane withholds the route from the Mac: the bastion shows
+`PrimaryRoutes: [172.31.0.0/16]` while the Mac's view of that peer lists no
+subnet in `AllowedIPs` (seen 2026-11-05). SNAT stays on (default), so the DB and
+cache see the bastion's private IP: their security groups already admit
+`pg-ec2`, and no source/dest-check change is needed. The instance's tags
+`REDIS_URL`, `DATABASE_URL`, `DB_PASS_SECRET_ARN` mirror the ECS task's
+environment (IMDS tags are enabled: `curl .../meta-data/tags/instance/`).
+
+Verify from the Mac once approved (hostnames resolve to private IPs from
+anywhere; only the route makes them reachable):
+
+```sh
+tailscale status --json | python3 -c 'import sys,json; print([p["PrimaryRoutes"] for p in json.load(sys.stdin)["Peer"].values()])'
+nc -z -w 5 pg-db.c782eceqccmf.us-west-1.rds.amazonaws.com 5432 && echo postgres tcp ok
+printf 'PING\r\n' | openssl s_client -quiet -connect pg-cache-3pmtqp.serverless.usw1.cache.amazonaws.com:6379 2>/dev/null | head -1   # +PONG
+```
+
+Verified 2026-11-05 from the Mac: route present, Postgres offers TLS, Valkey
+answers `+PONG` over TLS 1.3, and a full login (secret read with the
+`mac-studio` profile → `psycopg` with `sslmode=require`) reaches
+`PostgreSQL 18.6` as user `pilgrim` on an empty database. Nothing on the Mac
+reads the three variables yet (Steps 2–3); when it does, they go in the
+repo-root `.env` like the other station settings, and the password is fetched
+from the secret at start, never written to disk.
+
+## Station cutover: Postgres + Valkey (SCALABILITY.md Steps 2–3)
+
+The station keeps `station.db` and publishes nothing until this is run, and
+it must not run before the web tier (Step 5) reads heartbeats and the
+programme from Valkey: the two sides switch together. Steps, on the M5:
+
+```sh
+launchctl kill SIGTERM gui/$(id -u)/farm.pilgrim.station      # stop the station
+sqlite3 pilgrim/station.db ".backup pilgrim/station.db.pre-postgres-$(date -u +%Y%m%d-%H%M%SZ).bak"
+# .env gains (no password in it; the secret is read with the mac-studio profile):
+#   DATABASE_URL=postgresql://pilgrim@<rds-host>:5432/pilgrim?sslmode=require
+#   DB_PASS_SECRET_ARN=arn:aws:secretsmanager:...
+#   REDIS_URL=rediss://<cache-host>:6379          # hot state publisher (RADIO §14)
+make pg-migrate                                   # dry run: copies in a transaction, rolls back, prints counts
+make pg-migrate PG_MIGRATE_ARGS="--apply"         # commit; refuses a non-empty target without --truncate
+launchctl kickstart -k gui/$(id -u)/farm.pilgrim.station
+curl -s 127.0.0.1:5081/api/health | python3 -c 'import sys,json; h=json.load(sys.stdin); print(h["db"], h["cache"])'
+# expect db.engine == "postgres", cache.healthy == true and ticks climbing
+```
+
+Rollback: remove the three lines from `.env` and kickstart the station; the
+SQLite file was never modified (the tool opens it read-only), and only rows
+written between the copy and the rollback are lost. The RDS instance is
+reachable only through the bastion route, so the Mac must hold the
+`172.31.0.0/16` route (above) before the station starts.
+
 ## Tailnet policy
 
 `tailscale/policy.example.hujson` is a fragment, not a full policy. Merge it
 and walk its checklist: remove any default allow-all rule, confirm no other
 grant matches the two tags, enroll edges as ephemeral/pre-approved/tagged with
-keys from SSM, forbid exit nodes and subnet routes on edges, and enable HTTPS
-certificates + MagicDNS. The origin tag must never be a grant source.
+keys from SSM, forbid exit nodes, allow exactly one subnet route (the
+bastion's VPC CIDR, above), and enable HTTPS certificates + MagicDNS. The
+origin tag must never be a grant source.
 
 ## Operator IaC checklist (SPLIT_PLAN §9)
 

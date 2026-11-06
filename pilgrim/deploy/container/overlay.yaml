@@ -1,0 +1,20 @@
+# Container overlay for pilgrim/config.yaml (SCALABILITY.md Step 1).
+#
+# Deep-merged over config.yaml by load_config() when $PILGRIM_CONFIG_OVERLAY
+# names this file (the Dockerfile sets it). Same pydantic schema, no new keys:
+# only what differs inside a container. Hosts, models, weights and targets stay
+# in config.yaml (AGENTS §1.4).
+
+station:
+  host: 0.0.0.0            # the public listener must be reachable from outside the container
+  port: 8080               # matches the ALB target group (terraform modules/ec2/alb.tf)
+  admin_host: 127.0.0.1    # admin stays inside the container; never published
+  admin_port: 5081
+  serve_web: true          # no nginx edge in front: the app serves pilgrim/web/ itself
+
+library:
+  dir: data/library        # /app/pilgrim/data is the one writable volume (Dockerfile)
+  db: data/station.db
+
+logging:
+  dir: data/logs           # stdout is the real log sink in a container; the file is a courtesy

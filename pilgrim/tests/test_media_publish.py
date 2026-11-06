@@ -123,10 +123,11 @@ def test_media_route_serves_mp3_type(tmp_env):
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not on PATH")
-def test_migrate_encodes_beside_flac_and_repoints(tmp_env):
+def test_migrate_encodes_beside_flac_and_repoints(sqlite_env):
     """tools/mp3_migrate: MP3 next to each FLAC, FLAC kept (hard rule 5),
-    emergency rows untouched, a backup taken, rows repointed."""
-    cfg, store, tmp = tmp_env
+    emergency rows untouched, a backup taken, rows repointed. Works on the
+    SQLite file itself, so always sqlite_env."""
+    cfg, store, tmp = sqlite_env
     lib = tmp / "library"
     x = (0.3 * np.sin(2 * np.pi * 330 * np.arange(24000) / 24000)).astype(np.float32)
     flac = lib / "liner_1.flac"

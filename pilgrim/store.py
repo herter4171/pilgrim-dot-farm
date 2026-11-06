@@ -1,14 +1,23 @@
-"""station.db: inventory metadata + airplay ledger + committed program (RADIO.md §7, §11)."""
+"""station.db: inventory metadata + airplay ledger + committed program (RADIO.md §7, §11).
+
+Engine-neutral since SCALABILITY.md Step 2: every statement is written once in
+SQLite's flavour and runs unchanged on SQLite (tests, sim, dev) or Postgres
+(production) through `pilgrim.db`. Keep it that way: `?` placeholders, INTEGER
+flags, TEXT ISO timestamps, REAL epochs, `RETURNING` for new ids, upserts as
+`ON CONFLICT`, no `COLLATE NOCASE` (use LOWER), no PRAGMA/sqlite_sequence
+outside `pilgrim.db`.
+"""
 from __future__ import annotations
 
 import json
 import secrets
-import sqlite3
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from pilgrim.db import Conn, PostgresConn, SqliteConn, StoreLock
 
 
 # Queue order everywhere (RADIO §14; supersedes PAYMENT.md §3.2).
@@ -143,16 +152,33 @@ def _iso_ago(epoch: float, hours: float) -> str:
 
 
 class Store:
-    """Thin wrapper over SQLite. All writes go through a single connection per thread."""
+    """Thin wrapper over one database connection (SQLite file or Postgres DSN).
+    All access goes through `_lock`; writes commit explicitly."""
 
-    def __init__(self, db_path: Path) -> None:
-        self.path = Path(db_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._lock = __import__("threading").Lock()
+    def __init__(self, db_path: Path | None = None, *, dsn: str | None = None,
+                 password: str | None = None) -> None:
+        self._conn: Conn
+        if dsn:
+            self.path: Path | None = None
+            self._conn = PostgresConn(dsn, password)
+        else:
+            if db_path is None:
+                raise ValueError("Store needs a SQLite path or a Postgres dsn")
+            self.path = Path(db_path)
+            self._conn = SqliteConn(self.path)
+        self._lock = StoreLock(self._conn)
         self._init_schema()
+
+    @property
+    def dialect(self) -> str:
+        return self._conn.dialect
+
+    @property
+    def IntegrityError(self) -> type[Exception]:  # noqa: N802 - mirrors the DB-API name
+        return self._conn.IntegrityError
+
+    def close(self) -> None:
+        self._conn.close()
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -268,7 +294,7 @@ class Store:
                 """
             )
             # idempotent migration (OVERHAUL 2.2): retire truncated inventory
-            cols = {r[1] for r in self._conn.execute("PRAGMA table_info(items)")}
+            cols = self._conn.columns("items")
             if "retired" not in cols:
                 self._conn.execute(
                     "ALTER TABLE items ADD COLUMN retired INTEGER DEFAULT 0")
@@ -299,7 +325,7 @@ class Store:
                     self._conn.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
             # idempotent migration (OVERHAUL 4.4 + PAYMENT.md §3.1): request
             # lifecycle + paid-priority columns. Additive only.
-            req_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(requests)")}
+            req_cols = self._conn.columns("requests")
             for col, ddl in (("attempts", "INTEGER DEFAULT 0"),
                              ("song_item_id", "INTEGER"),
                              ("intro_item_id", "INTEGER"),
@@ -356,13 +382,12 @@ class Store:
                    (type, media_path, duration_s, title, artist, genre, sample_rate,
                     channels, role, evergreen, emergency, fresh, expires_at, gravity,
                     meta_json, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""",
                 (type_, media_path, duration_s, title, artist, genre, sample_rate,
                  channels, role, 1 if evergreen else 0, 1 if emergency else 0,
                  1 if fresh else 0, expires_at, gravity,
                  json.dumps(meta) if meta else None, created_at or _now_iso()))
-            rid = cur.lastrowid
-            assert rid is not None
+            rid = cur.fetchone()[0]
             if type_ == "song":
                 self._bump_catalogue()
             self._conn.commit()
@@ -570,7 +595,8 @@ class Store:
         detect a stale page and refetch (TUI.md §4)."""
         self._conn.execute(
             "INSERT INTO meta (key, value) VALUES ('catalogue_revision','1') "
-            "ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1")
+            "ON CONFLICT(key) DO UPDATE SET "
+            "value = CAST(CAST(meta.value AS INTEGER) + 1 AS TEXT)")
 
     def catalogue_revision(self) -> int:
         with self._lock:
@@ -598,24 +624,29 @@ class Store:
         other = "artist" if sort == "title" else "title"
         where = ["type='song'", "retired=0", "emergency=0"]
         args: list[Any] = []
+        # Case-insensitive via LOWER() on both sides (portable; SQLite's
+        # COLLATE NOCASE has no Postgres equivalent and both are ASCII-only).
         if q:
             esc = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            like = f"%{esc}%"
-            where.append("(title LIKE ? ESCAPE '\\' COLLATE NOCASE OR "
-                         "artist LIKE ? ESCAPE '\\' COLLATE NOCASE)")
+            like = f"%{esc.lower()}%"
+            where.append("(LOWER(COALESCE(title,'')) LIKE ? ESCAPE '\\' OR "
+                         "LOWER(COALESCE(artist,'')) LIKE ? ESCAPE '\\')")
             args += [like, like]
+        lsort = f"LOWER(COALESCE({sort},''))"
+        lother = f"LOWER(COALESCE({other},''))"
         if cursor:
             p0, s0, i0 = cursor
+            p0, s0 = p0.lower(), s0.lower()
             op = ">" if direction == "asc" else "<"
             where.append(
-                f"({sort} COLLATE NOCASE {op} ? OR ({sort} COLLATE NOCASE = ? AND "
-                f"({other} COLLATE NOCASE {op} ? OR ({other} COLLATE NOCASE = ? "
+                f"({lsort} {op} ? OR ({lsort} = ? AND "
+                f"({lother} {op} ? OR ({lother} = ? "
                 f"AND id {op} ?))))")
             args += [p0, p0, s0, s0, i0]
         sql = (f"SELECT id, title, artist, duration_s, fresh, last_aired_at "
                f"FROM items WHERE {' AND '.join(where)} "
-               f"ORDER BY {sort} COLLATE NOCASE {order}, "
-               f"{other} COLLATE NOCASE {order}, id {order} LIMIT ?")
+               f"ORDER BY {lsort} {order}, "
+               f"{lother} {order}, id {order} LIMIT ?")
         with self._lock:
             rows = self._conn.execute(sql, args + [limit + 1]).fetchall()
             rev = self._catalogue_revision_locked()
@@ -684,11 +715,11 @@ class Store:
     def append_program(self, item_id: int, type_: str, duration_s: float) -> int:
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO program (item_id, type, duration_s, committed_at) VALUES (?,?,?,?)",
+                "INSERT INTO program (item_id, type, duration_s, committed_at) "
+                "VALUES (?,?,?,?) RETURNING seq",
                 (item_id, type_, duration_s, _now_iso()))
+            rid = cur.fetchone()[0]
             self._conn.commit()
-            rid = cur.lastrowid
-            assert rid is not None
             return int(rid)
 
     def append_program_at(self, *, item_id: int, type_: str, duration_s: float,
@@ -701,6 +732,7 @@ class Store:
                 "INSERT INTO program (seq, item_id, type, duration_s, committed_at) "
                 "VALUES (?,?,?,?,?)",
                 (seq, item_id, type_, duration_s, _now_iso()))
+            self._conn.sync_sequence("program", "seq")
             self._conn.commit()
         return int(seq)
 
@@ -711,22 +743,15 @@ class Store:
         with self._lock:
             self._conn.execute(
                 "UPDATE program SET seq=? WHERE seq=?", (new_seq, old_seq))
+            self._conn.sync_sequence("program", "seq")
             self._conn.commit()
 
     def set_program_seq_high(self, seq: int) -> None:
-        """Raise the AUTOINCREMENT high-water mark after a splice renumbers
-        future rows; otherwise the next append could reuse a shifted seq."""
+        """Raise the seq high-water mark after a splice renumbers future rows;
+        otherwise the next append could reuse a shifted seq (engine-specific:
+        sqlite_sequence or the identity sequence, see pilgrim.db)."""
         with self._lock:
-            r = self._conn.execute(
-                "SELECT seq FROM sqlite_sequence WHERE name='program'").fetchone()
-            if r:
-                self._conn.execute(
-                    "UPDATE sqlite_sequence SET seq=? WHERE name='program'",
-                    (max(int(r[0]), int(seq)),))
-            else:
-                self._conn.execute(
-                    "INSERT INTO sqlite_sequence (name, seq) VALUES ('program', ?)",
-                    (int(seq),))
+            self._conn.set_sequence_high("program", "seq", int(seq))
             self._conn.commit()
 
     def shift_program_up_from(self, seq: int) -> None:
@@ -741,6 +766,7 @@ class Store:
                 (seq,)).fetchall()
             for (s,) in rows:
                 self._conn.execute("UPDATE program SET seq=? WHERE seq=?", (s + 1, s))
+            self._conn.sync_sequence("program", "seq")
             self._conn.commit()
 
     def program_after(self, seq: int) -> list[dict[str, Any]]:
@@ -789,11 +815,10 @@ class Store:
         with self._lock:
             cur = self._conn.execute(
                 ("INSERT INTO airplay (item_id, seq, item_type, started_at, position, "
-                 "underrun, recorded_at) VALUES (?,?,?,?,?,?,?)"),
+                 "underrun, recorded_at) VALUES (?,?,?,?,?,?,?) RETURNING id"),
                 (item_id, seq, item_type, started_at, position, underrun, _now_iso()))
+            rid = cur.fetchone()[0]
             self._conn.commit()
-            rid = cur.lastrowid
-            assert rid is not None
             return int(rid)
 
     def recent_airplay(self, limit: int = 200) -> list[dict[str, Any]]:
@@ -813,7 +838,7 @@ class Store:
         first-seen IP can't double-count (RADIO §14)."""
         with self._lock:
             self._conn.execute(
-                "INSERT OR IGNORE INTO visitor_ips (ip) VALUES (?)", (ip,))
+                "INSERT INTO visitor_ips (ip) VALUES (?) ON CONFLICT(ip) DO NOTHING", (ip,))
             n = self._conn.execute(
                 "SELECT COUNT(*) FROM visitor_ips").fetchone()[0]
             self._conn.commit()
@@ -851,10 +876,10 @@ class Store:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO requests (text, status, reason, created_at, updated_at, priority) "
-                "VALUES (?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?) RETURNING id",
                 (text, status, reason, _now_iso(), _now_iso(), priority))
+            rid = int(cur.fetchone()[0])
             self._conn.commit()
-            rid = int(cur.lastrowid or 0)
         if cap is not None:
             self._evict_overflow(cap)
         r = self.get_request(rid)
@@ -1222,7 +1247,7 @@ class Store:
                 "SELECT id, text, created_at, "
                 "(SELECT COALESCE(SUM(v.value), 0) FROM request_votes v "
                 "WHERE v.request_id = requests.id) AS score "
-                "FROM requests WHERE status='queued' AND priority=0) "
+                "FROM requests WHERE status='queued' AND priority=0) AS sub "
                 "WHERE score <= ? ORDER BY score ASC, id ASC LIMIT ?",
                 (int(bury_threshold), limit)).fetchall()
         return [dict(r) for r in rows]
@@ -1236,11 +1261,11 @@ class Store:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO requests (text, status, created_at, updated_at, "
-                "priority, public_token, summary) VALUES (?,?,?,?,?,?,?)",
+                "priority, public_token, summary) VALUES (?,?,?,?,?,?,?) RETURNING id",
                 (text, "awaiting_payment", _now_iso(), _now_iso(), 1, token,
                  summary))
+            rid = int(cur.fetchone()[0])
             self._conn.commit()
-            rid = int(cur.lastrowid or 0)
         row = self.get_request(rid)
         assert row is not None
         return row
@@ -1279,11 +1304,11 @@ class Store:
         with self._lock:
             cur = self._conn.execute(
                 "INSERT INTO requests (text, status, stage, created_at, updated_at, "
-                "priority, public_token, comped) VALUES (?,?,?,?,?,?,?,?)",
+                "priority, public_token, comped) VALUES (?,?,?,?,?,?,?,?) RETURNING id",
                 (text, "checking", "moderation", _now_iso(), _now_iso(), 1, token,
                  1 if comped else 0))
+            rid = int(cur.fetchone()[0])
             self._conn.commit()
-            rid = int(cur.lastrowid or 0)
         row = self.get_request(rid)
         assert row is not None
         return row
@@ -1396,11 +1421,12 @@ class Store:
 
     def record_stripe_event(self, event_id: str, type_: str, session_id: str | None,
                             outcome: str) -> bool:
-        """INSERT OR IGNORE; False means this event id was already seen."""
+        """Insert-or-ignore; False means this event id was already seen."""
         with self._lock:
             cur = self._conn.execute(
-                "INSERT OR IGNORE INTO stripe_events "
-                "(event_id, type, session_id, outcome, received_at) VALUES (?,?,?,?,?)",
+                "INSERT INTO stripe_events "
+                "(event_id, type, session_id, outcome, received_at) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(event_id) DO NOTHING",
                 (event_id, type_, session_id, outcome, _now_iso()))
             self._conn.commit()
             return cur.rowcount > 0

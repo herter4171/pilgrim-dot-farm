@@ -453,6 +453,28 @@ class Idle(BaseModel):
         return self
 
 
+class Cache(BaseModel):
+    """Hot state in Valkey (SCALABILITY.md Step 3; RADIO §14 "Hot state").
+
+    Selected by the environment (`REDIS_URL`, RADIO §12), tuned here. The
+    station publishes programme/state/health/alive every `publish_s` from its
+    own task and reads heartbeat keys back; the web tier shows off-air once
+    `alive` has been missing for `alive_ttl_s`."""
+    key_prefix: str = "pilgrim:"
+    publish_s: float = 1.0        # publish tick; also the wake latency from the web tier
+    alive_ttl_s: float = 15.0     # liveness + snapshot TTL (>= 3 publish ticks)
+    wake_ttl_s: float = 60.0      # a wake flag nobody took expires
+    timeout_s: float = 2.0        # socket connect/read timeout per call (own task, never playout)
+
+    @model_validator(mode="after")
+    def _validate(self) -> Cache:
+        if self.publish_s <= 0 or self.timeout_s <= 0 or self.wake_ttl_s <= 0:
+            raise ValueError("cache.publish_s, cache.timeout_s, cache.wake_ttl_s > 0")
+        if self.alive_ttl_s < 3 * self.publish_s:
+            raise ValueError("cache.alive_ttl_s must be >= 3 * cache.publish_s")
+        return self
+
+
 class Voting(BaseModel):
     """Community request-queue votes (VOTING.md, RADIO §11, §14).
 
@@ -814,6 +836,7 @@ class Config(BaseModel):
     payments: Payments = Field(default_factory=Payments)
     visitors: Visitors = Field(default_factory=Visitors)
     idle: Idle = Field(default_factory=Idle)
+    cache: Cache = Field(default_factory=Cache)
     voting: Voting = Field(default_factory=Voting)
     ratings: Ratings = Field(default_factory=Ratings)
     audio: Audio = Field(default_factory=Audio)
@@ -879,9 +902,67 @@ class Config(BaseModel):
         return self
 
 
-def load_config(path: Path | None = None) -> Config:
+OVERLAY_ENV = "PILGRIM_CONFIG_OVERLAY"
+
+
+def _deep_merge(base: Mapping[str, Any], over: Mapping[str, Any]) -> dict[str, Any]:
+    """`over` on top of `base`, recursing into nested mappings; lists and
+    scalars are replaced, never concatenated."""
+    out: dict[str, Any] = dict(base)
+    for key, value in over.items():
+        if isinstance(value, Mapping) and isinstance(out.get(key), Mapping):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _unknown_overlay_keys(model: type[BaseModel], over: Mapping[str, Any],
+                          prefix: str = "") -> list[str]:
+    """Dotted paths in `over` that `model` has no field for. Pydantic ignores
+    extra keys, so a typo in an overlay would otherwise silently do nothing."""
+    bad: list[str] = []
+    for key, value in over.items():
+        field = model.model_fields.get(str(key))
+        if field is None:
+            bad.append(f"{prefix}{key}")
+            continue
+        sub = field.annotation
+        if (isinstance(sub, type) and issubclass(sub, BaseModel)
+                and isinstance(value, Mapping)):
+            bad.extend(_unknown_overlay_keys(sub, value, f"{prefix}{key}."))
+    return bad
+
+
+def _overlay_path() -> Path | None:
+    """$PILGRIM_CONFIG_OVERLAY, or none when unset/empty."""
+    value = os.environ.get(OVERLAY_ENV, "").strip()
+    return Path(value) if value else None
+
+
+def load_config(path: Path | None = None, overlay: Path | None = None) -> Config:
+    """config.yaml, with an optional overlay deep-merged on top
+    (SCALABILITY.md Step 1).
+
+    The overlay is `overlay`, else the file named by $PILGRIM_CONFIG_OVERLAY
+    (unset or empty = none). It lets a container change binds, ports and data
+    paths without a second copy of config.yaml. It is the same schema, not a
+    second one: overlay keys must exist on `Config` (pydantic would silently
+    ignore extras) and the merged mapping is validated by that one model
+    (RADIO §12).
+    """
     path = path or (ROOT / "config.yaml")
     raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
+    overlay = overlay or _overlay_path()
+    if overlay is not None:
+        extra = yaml.safe_load(overlay.read_text()) or {}
+        if not isinstance(extra, Mapping):
+            raise ValueError(f"config overlay {overlay} must be a mapping")
+        unknown = _unknown_overlay_keys(Config, extra)
+        if unknown:
+            raise ValueError(f"config overlay {overlay} has unknown keys: "
+                             + ", ".join(unknown))
+        raw = _deep_merge(raw, extra)
     return Config(**raw)
 
 

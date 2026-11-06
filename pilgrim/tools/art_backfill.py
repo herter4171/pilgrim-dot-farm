@@ -31,6 +31,7 @@ from datetime import datetime
 
 from pilgrim.album_art import LEASE_KEY, LEASE_STALE_S, ArtWorker, scene_texts
 from pilgrim.config import ROOT, Config, load_config
+from pilgrim.db import open_store
 from pilgrim.logging_setup import setup_logging
 from pilgrim.pipelines.art import FluxClient
 from pilgrim.pipelines.llm import LLM
@@ -135,7 +136,7 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = load_config()
     setup_logging(cfg)
-    store = Store(ROOT / cfg.library.db)
+    store = open_store(cfg)
 
     if args.scene and not args.item:
         print("--scene requires --item (targeted re-render only)", file=sys.stderr)

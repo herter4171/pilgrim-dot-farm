@@ -32,8 +32,8 @@ def test_classify_keeps_everything_anyone_asked_for() -> None:
     assert classify(songs, set(), set())[0] == [1, 5, 6]
 
 
-def test_plan_and_apply_delete_stock_songs_only(tmp_env) -> None:
-    cfg, store, tmp = tmp_env
+def test_plan_and_apply_delete_stock_songs_only(sqlite_env) -> None:
+    cfg, store, tmp = sqlite_env
     lib = Path(cfg.library.dir)
 
     def song(name: str, **meta) -> tuple[int, Path]:
@@ -72,8 +72,8 @@ def test_plan_and_apply_delete_stock_songs_only(tmp_env) -> None:
     assert plan(Path(cfg.library.db))["purge"] == []
 
 
-def test_apply_purge_never_touches_files_outside_the_library(tmp_env) -> None:
-    cfg, store, tmp = tmp_env
+def test_apply_purge_never_touches_files_outside_the_library(sqlite_env) -> None:
+    cfg, store, tmp = sqlite_env
     lib = Path(cfg.library.dir)
     outside = tmp / "elsewhere.flac"
     outside.write_bytes(b"keep me")
@@ -85,8 +85,8 @@ def test_apply_purge_never_touches_files_outside_the_library(tmp_env) -> None:
     assert outside.exists() and store.get_item(item) is None
 
 
-def test_intro_ids_matches_only_the_purged_song(tmp_env) -> None:
-    cfg, store, tmp = tmp_env
+def test_intro_ids_matches_only_the_purged_song(sqlite_env) -> None:
+    cfg, store, tmp = sqlite_env
     a = store.add_item(type_="song", media_path="/a.flac", duration_s=60.0)
     b = store.add_item(type_="song", media_path="/b.flac", duration_s=60.0)
     ia = store.add_item(type_="intro", media_path="/ia.flac", duration_s=5.0,

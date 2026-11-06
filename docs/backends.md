@@ -744,3 +744,20 @@ Error shape (observed in the Brave docs, not triggered live): non-200 with
    `content`; ship a failing-LLM discard path (RADIO.md §6.3/§5).
 3. **Real seed run** — `make seed` against live backends still to be
    validated end-to-end (M10).
+
+
+## 12. ElastiCache Valkey Serverless (SCALABILITY.md Step 3)
+
+Probed 2026-11-05 from the Mac over the bastion's tailnet route with redis-py
+8.1.0 (`redis.Redis.from_url("rediss://pg-cache-....serverless.usw1.cache.amazonaws.com:6379")`):
+
+- TLS only (`rediss://`), no AUTH. `INFO server` reports `redis_version 7.2`.
+- First `PING` ~770 ms (TLS handshake over the tailnet); a steady-state
+  publish tick (one non-transactional pipeline of 5 SETs + SCAN + GETDEL)
+  ~240–360 ms from the Mac. Inside the VPC it will be a few ms.
+- **Cluster mode behind one endpoint:** `DEL k1 k2` with keys in different
+  slots → `ClusterCrossSlotError: Keys in request don't hash to the same slot`.
+  Use single-key commands; a non-transactional pipeline is fine (each command
+  routes on its own). `SCAN`, `GETDEL`, `SET ... EX` all work.
+- The plain `redis.Redis` client (not `RedisCluster`) is the right one: the
+  serverless endpoint proxies routing.

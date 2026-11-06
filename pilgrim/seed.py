@@ -20,6 +20,7 @@ from pilgrim.config import (  # noqa: E402
     load_brave_key,
     load_config,
 )
+from pilgrim.db import open_store  # noqa: E402
 from pilgrim.logging_setup import err_text, setup_logging  # noqa: E402
 from pilgrim.pipelines.brave import BraveSearch  # noqa: E402
 from pilgrim.pipelines.llm import LLM  # noqa: E402
@@ -28,7 +29,6 @@ from pilgrim.pipelines.sfx import SfxClient, SfxPipeline  # noqa: E402
 from pilgrim.pipelines.songs import SongPipeline  # noqa: E402
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline  # noqa: E402
 from pilgrim.producer import Producer  # noqa: E402
-from pilgrim.store import Store  # noqa: E402
 
 
 def _prompts(cfg: Config) -> dict:
@@ -41,7 +41,7 @@ def _prompts(cfg: Config) -> dict:
 async def seed(cfg: Config, api_key: str) -> int:
     ensure_dirs(cfg)
     media_dir = ROOT / cfg.library.dir
-    db = Store(ROOT / cfg.library.db)
+    db = open_store(cfg)
     llm = LLM(cfg, api_key)
     rng = RNG(cfg.station.rng_seed)
     kokoro = KokoroClient(cfg)

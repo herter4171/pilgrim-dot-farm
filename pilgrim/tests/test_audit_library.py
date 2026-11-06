@@ -42,7 +42,7 @@ def test_audit_main_dry_run_changes_nothing_apply_retires(cfg, tmp_env, capsys):
                           meta={"text": " ".join(["word"] * 60)})
     import pilgrim.tools.audit_library as mod
     mod.load_config = lambda *a, **k: cfg
-    mod.Store = lambda path: store
+    mod.open_store = lambda cfg, **k: store  # never the live station.db
 
     main(["--apply"])
     out = capsys.readouterr().out

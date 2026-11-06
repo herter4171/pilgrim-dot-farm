@@ -116,7 +116,11 @@ rows are dropped, song-after-song gaps are bridged with words, the revision
 bumps, and the same response returns a full playable window. `/api/health`,
 `/api/station/state`, `/api/requests`, `/api/visitors` and media never wake it
 (idle pages, bots and smoke checks poll those). `idle.enabled: false` restores
-the always-running behaviour exactly.
+the always-running behaviour exactly. Through the web tier (SCALABILITY.md
+Step 3, §14 "Hot state") the same two signals arrive as the `wake` key and
+`player:*` heartbeat keys: the station takes them on its next publish tick, so
+a wake lands within `cache.publish_s` (1 s) rather than inside the waking
+response, and the frozen window the web tier served meanwhile was playable.
 
 ---
 
@@ -1092,7 +1096,7 @@ refill target.
 | GET | `/api/station/program?after_seq=N` | Committed items after `N`: `{seq, media_id, url, art_url, type, duration_s, sfx, title, artist}`. `art_url` is the song's cover on CloudFront (`public_base_url + "/" + art_s3_key`) once uploaded, else `""` — there is no origin art fallback (ALBUM_ART.md Step 7); non-song items always send `""`. `url` is where the audio lives: the CloudFront URL once the item is in S3, else `/api/media/<id>` (§8.4). `sfx` is a list (usually empty) of overlays to play over that item: `{media_id, url, cue, kind, offset_s, duration_s, gain, duck}`. `title`/`artist` come from the referenced inventory item on both initial and incremental responses, normalized to empty strings when absent (song label, COSMETIC_PATCHING §3). |
 | POST | `/api/station/heartbeat` | `{seq, media_id, position, type, player_id}`; records airplay (item_id = media_id, the inventory id, NOT the program seq) + playhead; also accepts `underrun` events. Optional playback telemetry (§9.2): `platform` (`ios`\|`android`\|`other`), `ctx_state` (`running`\|`suspended`\|`interrupted`\|`closed`), `hidden` (page in background / device locked), `sink` (`element`\|`direct`), `resumed` (interruption recoveries this session). Kept per live player (pruned with the listener map, bounded by `visitors.max_listeners`), summarised on the admin `/api/health` as `listeners: {count, reporting, by_platform, hidden, not_running, sink_element, resumed_total}`, and logged as `listener.telemetry` on change. Reported, never acted on |
 | GET | `/api/media/<id>` | Transitional fallback (§8.4): the item's file from the origin library (`audio/mpeg` for MP3, `audio/flac` for a not-yet-migrated FLAC). Browsers use it only for items without an `s3_key` |
-| GET | `/api/health` | Admin: backend status (incl. `sfx`; `search` = Brave, true until a real call degrades, false without a key, with `search_last: {status, at, kind, error}` — no metered probe), inventory levels vs. targets (incl. `field_report`, `promo` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate, `art` = `{backend: ok\|down\|busy\|disabled, with_art, without_art}`, and `idle` = `{idle, since, wakes}` (IDLE.md: the frozen playhead, when it began, and how many wakes this process has served). Public listener: `{on_air, art: {backend}, time}` only — no DB read, no FLUX probe, and **no `idle` field** (the browser's OFF AIR logic must not see idle; `on_air` stays true while frozen) (ALBUM_ART.md Step 5) |
+| GET | `/api/health` | Admin: backend status (incl. `sfx`; `search` = Brave, true until a real call degrades, false without a key, with `search_last: {status, at, kind, error}` — no metered probe), inventory levels vs. targets (incl. `field_report`, `promo` and `sfx` = evergreen stinger stock vs. approved evergreen cues) (`inventory`: what the producer refills), `rotation` (what can air now: all non-retired songs/commercials/liners, unaired unexpired DJ talk/news), song generation rate, `art` = `{backend: ok\|down\|busy\|disabled, with_art, without_art}`, `db` = `{engine, host}` (`sqlite`\|`postgres` and the Postgres host, §14; no credentials), `cache` = the hot-state publisher summary (§14; `{enabled: false}` without `REDIS_URL`), and `idle` = `{idle, since, wakes}` (IDLE.md: the frozen playhead, when it began, and how many wakes this process has served). Public listener: `{on_air, art: {backend}, time}` only — no DB read, no FLUX probe, and **no `idle` field** (the browser's OFF AIR logic must not see idle; `on_air` stays true while frozen) (ALBUM_ART.md Step 5) |
 | POST | `/api/requests` | Submit a request `{text}`: pre-filter (4.1) -> rate limit (4.3) -> LLM moderation (4.2). Returns `{board}` plus `ok/rejected/reason/request`. |
 | GET | `/api/requests` | Request board: `{queue: [{id, text, status, paid, stage, song_title, score, votable, buried}], recent: [{text, song_title, song_artist, paid, wait_s}], cap, voting_enabled}` — queue = queued+producing+ready in queue order (≤ `queue_cap`), `song_title` set from `ready` on; `stage` is set only on `producing` rows: `waiting` until its turn at the brief LLM (briefs run one at a time), `writing` while the lyrics/brief are written, `generating` once the song model runs, `rendered` once the song exists but its intro is being made or it waits for the requests ahead of it (ready order is air order) (the board shows "in line" / "being written" / "being generated" / "generated, in line"; `queued` also shows "in line"); `score` is the vote sum, `votable` false for paid rows or when `voting.enabled` is false, `buried` true for a free queued row at/below `voting.bury_threshold` (VOTING.md §1); recent = **last 5** aired, never scored (no retrospective voting). The page renders both as Prompt / Title / Prep Time tables (queue scrolls, header pinned). `wait_s` (Prep Time) is whole seconds from `prep_started_at` — the moment lyrics/brief writing began — to the **earlier of `aired_at` and `due_at`**. `due_at` is the wall time the song was scheduled to air when it was teed up (committed or spliced into the programme, §5.2); with listeners present it agrees with `aired_at` to within seconds, but with nobody listening the playhead is frozen (§3, IDLE.md D3) and `aired_at` only lands on the next PLAY, hours later: that wait is capped at when the song would have aired. Time spent in line or waiting for the station to come back is not prep, and a row with no recorded writing start (aired before that column existed) sends `null`, which the page renders as an em dash (`—`) — measured-or-nothing, never queue idle dressed up as prep. Rows that aired before `due_at` existed are recovered from the station log by `make due-backfill` (tee-up line + frozen spans; dry run unless `DUE_ARGS="--apply"`). `POST` answers `line_full: true` when the free line is at `free_queue_max` |
 | POST | `/api/requests/{id}/vote` | VOTING.md: `{voter_id, value}` where `voter_id` is the browser's 32-hex id and `value` ∈ {−1, 0, +1} (0 retracts). Upsert per `(request_id, voter_id)`; only free rows in `queued/producing/ready` are votable. `200 {ok, score, mine, open}`; `404 not_found`; `409 {code: voting_closed\|not_votable, score}`; `422` bad body/id; `429` rate limit or `too_many_voters` (max distinct ids per IP per request); `404` when `voting.enabled` is false. `no-store` |
@@ -1355,6 +1359,13 @@ idle:                      # IDLE.md: freeze playout + pause production with no 
   check_s: 5               # how often the station checks (wake is immediate, on request)
   producer_poll_s: 30      # paused producer loops look again this often
 
+cache:                     # SCALABILITY.md Step 3: hot state in Valkey; REDIS_URL (env) enables it
+  key_prefix: "pilgrim:"
+  publish_s: 1             # publish tick = wake latency via the web tier
+  alive_ttl_s: 15          # liveness/snapshot TTL (>= 3 ticks)
+  wake_ttl_s: 60
+  timeout_s: 2             # per-call socket timeout; own task, never playout
+
 voting:                    # VOTING.md: request-queue votes
   enabled: true
   per_client_per_10min: 60   # vote POSTs per canonical client IP
@@ -1533,6 +1544,29 @@ dj:                            # DJ console (TUI.md §7)
   # voice calibration (seconds_per_word, per-voice QC bounds) measured at setup
 ```
 
+**Database (SCALABILITY.md Step 2).** Engine selection is by environment, not
+by `config.yaml`: `DATABASE_URL` (`postgresql://user@host:5432/db`, no
+password) selects Postgres and the password comes from `DATABASE_PASSWORD`
+or, normally, the Secrets Manager secret `DB_PASS_SECRET_ARN` (JSON
+`username`/`password`), read with `media.aws_profile` when that profile
+exists, else the default credential chain (a task role). Unset, the store is
+the SQLite file `library.db`. Tests always blank these (conftest) and
+`make pg-test` points them at a local container. §14 has the engine rules.
+
+**Cache (SCALABILITY.md Step 3).** `REDIS_URL` (`rediss://host:6379`,
+TLS, no password; Valkey Serverless is TLS-only) enables the hot-state
+publisher described in §14; unset, the station behaves exactly as before
+(in-memory listener map, no publication). `cache:` above tunes it.
+
+**Overlay (SCALABILITY.md Step 1).** `load_config()` deep-merges an optional
+second YAML over `config.yaml`: the file named by `PILGRIM_CONFIG_OVERLAY`
+(unset or empty = none), or `load_config(overlay=...)`. Overlay keys must
+exist on the `Config` model (unknown keys are an error, since pydantic would
+ignore them silently) and the merged mapping is validated by that same model:
+an overlay changes values, it is not a second schema. A container ships
+`pilgrim/deploy/container/overlay.yaml` (binds, ports, `data/` paths) and
+leaves hosts, models, weights and targets to `config.yaml` (AGENTS §1.4).
+
 ---
 
 ## 13. Cold start — `seed.py`
@@ -1549,6 +1583,61 @@ but below minimums the station leans heavily on filler.
 ---
 
 ## 14. Storage
+
+**Engine (SCALABILITY.md Step 2).** The schema below is one schema on two
+engines. `pilgrim/store.py` writes every statement once, in SQLite's flavour
+(`?` placeholders, INTEGER flags, TEXT ISO timestamps, REAL epochs,
+`RETURNING` for new ids, `ON CONFLICT` upserts, `LOWER()` for
+case-insensitive search), and `pilgrim/db.py` runs it on either engine:
+**SQLite** (`library.db`, the file `station.db`) for `make test`, `make sim`
+and the single-host dev run, or **PostgreSQL** (RDS) when `DATABASE_URL` is
+set (§12). Postgres differences are confined to `pilgrim/db.py`: `?`→`%s`,
+`%` literals doubled, `REAL`→`DOUBLE PRECISION`, `AUTOINCREMENT`→identity
+(`GENERATED BY DEFAULT`, so the program splice and the migration can insert
+explicit ids), and the seq high-water mark kept on the identity sequence
+instead of `sqlite_sequence`. Ids keep their meaning across engines:
+`items.id` is in file names, S3 keys and `requests.song_item_id`;
+`program.seq` is never reused (§5.3). A read-only transaction is rolled back
+when the store lock is released so the Postgres connection never idles in a
+transaction; writes commit explicitly as before. `make pg-test` runs the
+whole unit suite against a throwaway Postgres container so the two engines
+cannot drift. `tools/pg_migrate.py` (`make pg-migrate`) copies `station.db`
+into Postgres once: ids preserved, sequences set from SQLite's high-water
+marks, counts verified, dry run by default (the copy runs in a transaction
+and rolls back). `airplay` keeps one row per heartbeat on both engines
+(operator decision 2026-11-05: the 5 s precision is wanted and 20 GB is
+plenty); on the split, the web tier writes those rows.
+
+**Hot state (SCALABILITY.md Step 3; `pilgrim/hotstate.py`).** With
+`REDIS_URL` set the station publishes, every `cache.publish_s` from its own
+task (hard rule 1: never on the playout path), the documents a browser polls,
+so the web tier serves them without the origin or Postgres:
+
+| key | value (JSON) | TTL |
+|-----|--------------|-----|
+| `<prefix>alive` | `{epoch, pid, host, at}` | `cache.alive_ttl_s` |
+| `<prefix>program` | the `GET /api/station/program` body with no cursor (full window, URLs, epoch, revision, `start_offset_s`, `server_time`) | `cache.alive_ttl_s` |
+| `<prefix>state` | the `GET /api/station/state` body | `cache.alive_ttl_s` |
+| `<prefix>health` | the public `GET /api/health` body | `cache.alive_ttl_s` |
+| `<prefix>player:<player_id>` | `{at, platform, ctx_state, hidden, sink, resumed}`: the last heartbeat, written by whichever tier received it | `visitors.listener_timeout_s` |
+| `<prefix>wake` | reason string, set by the web tier when a programme fetch or heartbeat reaches a frozen station; taken (`GETDEL`) by the station | `cache.wake_ttl_s` |
+
+Heartbeats received by the station are queued in memory and written in the
+same pipeline as the next publish (one round trip per tick, no per-heartbeat
+call). The live listener count and the idle policy use the **union** of the
+in-memory map and the `player:*` keys, so listeners on the web tier keep the
+station awake. A missing `alive` key is what the web tier reads as off-air;
+a cache failure marks the publisher unhealthy (admin `/api/health`
+`cache: {enabled, healthy, ticks, failures, last_error, last_publish_at,
+pending_players}`), keeps the queued heartbeats for the next attempt, and
+otherwise changes nothing: playout and the in-memory map continue. Values
+hold no credentials and no IPs. Valkey Serverless is cluster-mode behind one
+endpoint, so only single-key commands and non-transactional pipelines are
+used; a multi-key `DEL`/`MGET`/`MULTI` across slots is refused (CROSSSLOT),
+and `pilgrim/tests/fakes/fake_redis.py` enforces the same. The browser-facing
+shapes are unchanged (§11); the only behavioural change is that a wake through
+the web tier lands within `cache.publish_s` instead of inside the waking
+response (§3).
 
 Songs are kept (recycled), delivered as MP3 (§8.2): roughly 4.3 MB per
 3-min song at 192 kbps (speech at 96 kbps, ~0.7 MB/min). Every delivered

@@ -13,6 +13,8 @@ dependencies = [
     "PyYAML>=6.0",
     "textual==8.2.8",
     "boto3==1.43.123",
+    "psycopg[binary]==3.3.8",
+    "redis==8.1.0",
 ]
 
 [project.optional-dependencies]

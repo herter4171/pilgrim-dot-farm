@@ -43,6 +43,18 @@ The public listener serves the site and the edge-facing API; the admin listener
 (loopback by default) serves the full API and the DJ console. Binds and ports
 come from the `station` block in `pilgrim/config.yaml`.
 
+## Containers
+
+`SCALABILITY.md` moves the public side into the VPC (ECS Fargate behind the
+ALB, RDS Postgres, ElastiCache Valkey) while the Mac stays the origin. Step 1
+is the image: `make image` builds `pilgrim:web` (the front-end; the station
+stays native on the M5) from the `Dockerfile`; `make image-smoke` runs the
+fakes-only e2e server from a test-only stage and checks health, programme and
+site. In a
+container, `PILGRIM_CONFIG_OVERLAY` names a small YAML deep-merged over
+`pilgrim/config.yaml` (binds, ports, data paths; same schema); see
+[pilgrim/deploy/container/README.md](pilgrim/deploy/container/README.md).
+
 Seeding generates real audio and can take a while. The server also refills
 inventory in the background. The station keeps its media in `pilgrim/library/`
 and its inventory and airplay history in `pilgrim/station.db`.
@@ -154,6 +166,18 @@ disables it (the test suite does this so a live `.env` can never leak in).
   (endpoint → Signing secret → Reveal), or the value `stripe listen` prints.
   Server only; used to verify `Stripe-Signature`.
 
+- `DATABASE_URL` — Postgres store (SCALABILITY.md Step 2, RADIO §12/§14):
+  `postgresql://pilgrim@<rds-host>:5432/pilgrim?sslmode=require`, no password
+  in it. Unset = the SQLite file. The password comes from
+  `DB_PASS_SECRET_ARN` (Secrets Manager JSON `{username, password}`, read with
+  the `media.aws_profile` profile or the task role) or, for a local Postgres,
+  `DATABASE_PASSWORD`. `make pg-test` runs the unit suite against a throwaway
+  Postgres container; `make pg-migrate` copies `station.db` in (dry run
+  unless `PG_MIGRATE_ARGS="--apply"`).
+- `REDIS_URL` — Valkey hot state (SCALABILITY.md Step 3, RADIO §14):
+  `rediss://<cache-host>:6379` (TLS, no password). Set, the station publishes
+  programme/state/health/liveness every second and counts the web tier's
+  heartbeat keys; unset, nothing changes. Tuned by `cache:` in config.yaml.
 - `PAID_OVERRIDE_TOKEN` — operator comp for paid requests (PAYMENT.md Step
   12b). A paid prompt whose **first line** is exactly this value skips Stripe
   (moderation and the copyright screen still run) and joins the priority queue

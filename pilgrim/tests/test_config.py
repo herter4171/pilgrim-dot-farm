@@ -59,3 +59,63 @@ def test_ratings_limits():
     with pytest.raises(ValidationError):
         Ratings(rotation_min_votes=0)
     assert Ratings(rotation_weight=True).rotation_weight is True
+
+
+# --- config overlay (SCALABILITY.md Step 1) -------------------------------
+
+def test_overlay_deep_merges_and_keeps_the_rest(tmp_path, monkeypatch):
+    monkeypatch.delenv("PILGRIM_CONFIG_OVERLAY", raising=False)
+    base = load_config()
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text("station:\n  host: 0.0.0.0\n  port: 8080\nlibrary:\n  db: data/station.db\n")
+    cfg = load_config(overlay=overlay)
+    assert cfg.station.host == "0.0.0.0"
+    assert cfg.station.port == 8080
+    assert cfg.library.db == "data/station.db"
+    # untouched siblings keep config.yaml's values
+    assert cfg.station.admin_port == base.station.admin_port
+    assert cfg.station.name == base.station.name
+    assert cfg.library.dir == base.library.dir
+    assert cfg.hosts == base.hosts
+
+
+def test_overlay_from_env_and_empty_env_means_none(tmp_path, monkeypatch):
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text("station:\n  port: 8081\n")
+    monkeypatch.setenv("PILGRIM_CONFIG_OVERLAY", str(overlay))
+    assert load_config().station.port == 8081
+    monkeypatch.setenv("PILGRIM_CONFIG_OVERLAY", "")
+    assert load_config().station.port == load_config(overlay=None).station.port != 8081
+
+
+def test_overlay_cannot_add_unknown_keys(tmp_path, monkeypatch):
+    monkeypatch.delenv("PILGRIM_CONFIG_OVERLAY", raising=False)
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text("station:\n  bogus: 1\n")
+    with pytest.raises(ValueError, match="unknown keys: station.bogus"):
+        load_config(overlay=overlay)
+    overlay.write_text("nonsense:\n  x: 1\n")
+    with pytest.raises(ValueError, match="unknown keys: nonsense"):
+        load_config(overlay=overlay)
+
+
+def test_overlay_must_be_a_mapping(tmp_path, monkeypatch):
+    monkeypatch.delenv("PILGRIM_CONFIG_OVERLAY", raising=False)
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text("- not\n- a\n- mapping\n")
+    with pytest.raises(ValueError):
+        load_config(overlay=overlay)
+
+
+def test_shipped_container_overlay_loads():
+    """pilgrim/deploy/container/overlay.yaml must always validate against the
+    live schema, or the image starts and dies."""
+    from pilgrim.config import ROOT
+    cfg = load_config(overlay=ROOT / "deploy" / "container" / "overlay.yaml")
+    assert cfg.station.host == "0.0.0.0"
+    assert cfg.station.port == 8080
+    assert cfg.station.admin_host == "127.0.0.1"
+    assert cfg.station.serve_web is True
+    assert cfg.library.dir.startswith("data/")
+    assert cfg.library.db.startswith("data/")
+    assert cfg.logging.dir.startswith("data/")

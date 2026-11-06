@@ -47,7 +47,11 @@ from pilgrim.config import (
     load_secret,
     stripe_env,
 )
+from pilgrim.db import env_summary as db_env_summary
+from pilgrim.db import open_store
 from pilgrim.dj_security import require_dj
+from pilgrim.hotstate import REDIS_URL_ENV, HotState
+from pilgrim.hotstate import connect as cache_connect
 from pilgrim.logging_setup import setup_logging
 from pilgrim.media_publish import MediaPublisher, S3ObjectStore, art_url, public_url
 from pilgrim.payments import (
@@ -70,7 +74,6 @@ from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
 from pilgrim.producer import Producer
 from pilgrim.scheduler import Scheduler
 from pilgrim.selector import RandomSelector
-from pilgrim.store import Store
 
 log = logging.getLogger("radio.server")
 
@@ -82,7 +85,7 @@ class Station:
         self._auth = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         ensure_dirs(cfg)
         self.media_dir = ROOT / cfg.library.dir
-        self.db = Store(ROOT / cfg.library.db)
+        self.db = open_store(cfg)
         self.db.reset_producing_to_queued()  # crash mid-generation mustn't strand (4.4)
         self.rng = RNG(cfg.station.rng_seed)
         self.llm = LLM(cfg, api_key)
@@ -133,6 +136,19 @@ class Station:
             self.clock, prompts=_load_prompts(cfg), media_dir=self.media_dir,
             api_key=api_key, rng=self.rng, news_pipeline=self.news, sfx=self.sfx,
             idle=self.is_idle)
+        # Hot state in Valkey (SCALABILITY.md Step 3; RADIO §14). Enabled by
+        # REDIS_URL; the client connects lazily so construction never fails.
+        # Published from hot_loop() (own task, hard rule 1), never from playout.
+        self.hot: HotState | None = None
+        self._remote_listeners: set[str] = set()
+        cache_url = load_secret(REDIS_URL_ENV)
+        if cache_url:
+            try:
+                self.hot = HotState(cfg, cache_connect(cache_url, cfg), epoch=self.epoch,
+                                    now=self.clock.wall)
+                log.info("hotstate.enabled", extra={"publish_s": cfg.cache.publish_s})
+            except Exception as e:  # noqa: BLE001 - no redis lib / bad URL: degrade
+                log.warning("hotstate.disabled", extra={"error": str(e)[:300]})
         # Paid priority requests (PAYMENT.md). Off unless config + keys agree.
         # The keys come from the environment or the repo-root .env fallback
         # (config.stripe_env), so a plain `python -m pilgrim.server` restart
@@ -288,6 +304,10 @@ class Station:
             "time": time.time(),
             # IDLE.md D10: operator visibility. `on_air` stays true while frozen
             # (coverage > 0), so PLAY is never disabled by idle.
+            # SCALABILITY.md Step 2: which store engine this process opened (RADIO §14)
+            "db": {**db_env_summary(), "engine": self.db.dialect},
+            # SCALABILITY.md Step 3: the hot-state publisher (RADIO §14)
+            "cache": self.hot.summary() if self.hot is not None else {"enabled": False},
             "idle": {"idle": self.is_idle(),
                      "since": self._idle_since,
                      "wakes": self.idle_wakes},
@@ -413,6 +433,48 @@ class Station:
                 log.warning("idle check failed: %s", e)
             await asyncio.sleep(self.cfg.idle.check_s)
 
+    def hot_tick(self) -> dict | None:
+        """One hot-state publish (sync; tests call it directly). Snapshots the
+        documents on the event loop thread, then the network round trip is the
+        caller's business (hot_loop runs it in a worker thread). Applies the
+        results: remote listeners for the idle policy, and a wake flag set by
+        the web tier thaws the station (RADIO §3, §14)."""
+        if self.hot is None:
+            return None
+        snapshot = self._hot_snapshot()
+        result = self.hot.tick(**snapshot)
+        self._apply_hot_result(result)
+        return result
+
+    def _hot_snapshot(self) -> dict:
+        return {"program": self.program_response(None),
+                "state": self.public_state(),
+                "health": {"on_air": self.on_air,
+                           "art": {"backend": self.art_worker.backend
+                                   if self.art_worker else "disabled"},
+                           "time": time.time()}}
+
+    def _apply_hot_result(self, result: dict) -> None:
+        self._remote_listeners = set(result.get("players") or ())
+        if self._remote_listeners:
+            self._last_listener_at = self.clock.now()
+        if result.get("wake"):
+            self.wake(f"cache:{result['wake']}")
+
+    async def hot_loop(self) -> None:
+        """Publish hot state every `cache.publish_s` (SCALABILITY.md Step 3).
+        The network call runs in a worker thread so a slow cache never stalls
+        the event loop; a failure is logged by HotState and retried next tick."""
+        assert self.hot is not None
+        while True:
+            try:
+                snapshot = self._hot_snapshot()
+                result = await asyncio.to_thread(self.hot.tick, **snapshot)
+                self._apply_hot_result(result)
+            except Exception as e:  # noqa: BLE001 - the cache must never break radio
+                log.warning("hotstate.tick_failed: %s", e)
+            await asyncio.sleep(self.cfg.cache.publish_s)
+
     def _public_rating(self, seq: int | None) -> dict | None:
         """The on-air item's rating window + lifetime aggregate (VOTING.md V10).
         Zeroes when the on-air row is not a song; null when ratings are off."""
@@ -453,6 +515,8 @@ class Station:
                "resumed": int(payload.resumed or 0)}
         prev = self._player_tel.get(player_id)
         self._player_tel[player_id] = tel
+        if self.hot is not None:
+            self.hot.queue_player(player_id, tel)
         if prev != tel:
             log.info("listener.telemetry", extra={
                 "player_id": player_id[:16], **tel,
@@ -488,13 +552,18 @@ class Station:
                 or len(self._listeners) < self.cfg.visitors.max_listeners):
             self._listeners[player_id] = self.clock.now()
             self._last_listener_at = self.clock.now()
+            if self.hot is not None and player_id not in self.hot._pending_players:
+                self.hot.queue_player(player_id, {})
             # IDLE.md D2: a heartbeat is a listener; wake before the handler
             # reads anything so the response reflects the thawed programme.
             self.wake("heartbeat")
 
     def active_listeners(self) -> int:
+        """Live players: the in-memory map plus the heartbeat keys another tier
+        wrote to the cache (RADIO §14 "Hot state"), as a union so a player seen
+        both ways counts once."""
         self._prune_listeners()
-        return len(self._listeners)
+        return len(set(self._listeners) | self._remote_listeners)
 
     # ---------------------------------------------------------------- DJ (§11)
     def dj_state(self) -> dict:
@@ -647,6 +716,8 @@ class Station:
         self._tasks.append(asyncio.create_task(self.producer.song_loop()))
         self._tasks.append(asyncio.create_task(self.producer.sfx_loop()))
         self._tasks.append(asyncio.create_task(self.idle_loop()))
+        if self.hot is not None:
+            self._tasks.append(asyncio.create_task(self.hot_loop()))
         self._tasks.append(asyncio.create_task(_backfill_paid_summaries(self)))
         if self.publisher is not None:
             self._tasks.append(asyncio.create_task(self.publisher.run()))

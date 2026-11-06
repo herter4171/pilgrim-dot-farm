@@ -33,9 +33,9 @@ from pilgrim.config import (
     load_api_key,
     load_config,
 )
+from pilgrim.db import open_store
 from pilgrim.pipelines.llm import LLM
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
-from pilgrim.store import Store
 
 log = logging.getLogger("radio.import")
 
@@ -65,7 +65,7 @@ async def import_song(src: Path, title: str | None, artist: str | None,
         print(f"unsupported type: {src.suffix} (try {sorted(AUDIO_EXTS)})")
         return 2
     cfg: Config = load_config()
-    db = Store(ROOT / cfg.library.db)
+    db = open_store(cfg)
     media_dir = ROOT / cfg.library.dir
 
     # 1) Decode + QC (§8.1) with the same bounds as generated songs.

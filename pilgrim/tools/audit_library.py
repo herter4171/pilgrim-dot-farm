@@ -19,8 +19,8 @@ from __future__ import annotations
 import argparse
 import json
 
-from pilgrim.config import ROOT, load_config
-from pilgrim.store import Store
+from pilgrim.config import load_config
+from pilgrim.db import open_store
 
 _VOICE_TYPES = ("commercial", "liner", "dj_talk", "field_report", "news")
 
@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     cfg = load_config()
-    store = Store(ROOT / cfg.library.db)
+    store = open_store(cfg)
     rows = store.list_items()  # already excludes retired rows
     to_retire, abrupt = classify(rows, cfg)
     by_type: dict[str, int] = {}

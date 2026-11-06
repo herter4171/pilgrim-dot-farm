@@ -175,6 +175,17 @@ idle:
   check_s: 5               # how often the station checks (wake is immediate, on request)
   producer_poll_s: 30      # paused producer loops look again this often
 
+# Hot state in Valkey (SCALABILITY.md Step 3, RADIO §14 "Hot state"). Enabled by
+# REDIS_URL in the environment/.env (rediss://, TLS, no password); these only
+# tune it. The station publishes program/state/health/alive every publish_s
+# from its own task and counts heartbeat keys the web tier writes.
+cache:
+  key_prefix: "pilgrim:"
+  publish_s: 1             # publish tick = wake latency when the web tier flags a wake
+  alive_ttl_s: 15          # liveness/snapshot TTL (>= 3 ticks); web tier shows off-air after it
+  wake_ttl_s: 60
+  timeout_s: 2             # per-call socket timeout; a slow cache degrades, never blocks playout
+
 # Community request-queue votes (VOTING.md). Votes decide which FREE request is
 # written next; paid requests stay ahead of every free one; work already in
 # flight is never reordered; a free queued request at/below `bury_threshold` is

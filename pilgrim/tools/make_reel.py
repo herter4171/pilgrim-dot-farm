@@ -20,7 +20,7 @@ from pathlib import Path
 import httpx
 
 from pilgrim.config import ROOT, Config, load_config
-from pilgrim.store import Store
+from pilgrim.db import open_store
 
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
 
@@ -153,7 +153,7 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     cfg = load_config()
-    item = Store(ROOT / cfg.library.db).get_item(args.item)
+    item = open_store(cfg).get_item(args.item)
     if not item or item["type"] != "song":
         print(f"no song {args.item}", file=sys.stderr)
         raise SystemExit(2)

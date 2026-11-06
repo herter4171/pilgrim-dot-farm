@@ -6,6 +6,8 @@ soundfile>=0.12
 numpy>=1.26
 PyYAML>=6.0
 boto3==1.43.123  # S3 media publishing (RADIO §8.4); pinned, tested version
+psycopg[binary]==3.3.8  # Postgres store (SCALABILITY.md Step 2); 3.3 has py3.14 wheels
+redis==8.1.0  # Valkey hot state (SCALABILITY.md Step 3); rediss:// TLS
 textual==8.2.8  # operator console (TUI.md §3); pinned, tested version
 pytest>=8.0
 pytest-asyncio>=0.23

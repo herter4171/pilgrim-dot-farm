@@ -3,7 +3,7 @@ PY := $(VENV)/bin/python
 BIN := $(VENV)/bin
 FFMPEG := $(HOME)/bin/ffmpeg
 
-.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status media-smoke mp3-migrate art-backfill art-smoke reel due-backfill
+.PHONY: setup venv test sim lint run seed smoke e2e clean install-ffmpeg logs audit audit-apply deploy-check e2e-split split-smoke edge-up edge-down edge-status media-smoke mp3-migrate art-backfill art-smoke reel due-backfill image image-smoke pg-test pg-migrate
 
 # --- setup ---------------------------------------------------------------
 venv:
@@ -42,6 +42,39 @@ e2e-split:
 
 split-smoke:
 	bash pilgrim/deploy/local/smoke.sh
+
+# --- containers (SCALABILITY.md Step 1). `image` builds the one deployable
+# image, the Fargate web tier (pilgrim:web). The station stays native on the
+# M5. Fargate runs ARM64 (SCALABILITY.md §6), native on the M5; an x86 host
+# needs buildx + QEMU; PLATFORM= (empty) builds for the host. `image-smoke`
+# builds the test-only `smoke` stage (web + ffmpeg) and runs the FAKES-ONLY e2e
+# server from it, checking health/programme/site (no real backends).
+# DOCKER= the CLI when it is not on PATH (Docker Desktop on macOS:
+# /Applications/Docker.app/Contents/Resources/bin/docker).
+IMAGE ?= pilgrim
+PLATFORM ?= linux/arm64
+DOCKER ?= docker
+DOCKER_PLATFORM := $(if $(PLATFORM),--platform $(PLATFORM),)
+image:
+	$(DOCKER) build $(DOCKER_PLATFORM) --target web -t $(IMAGE):web .
+
+image-smoke:
+	$(DOCKER) build $(DOCKER_PLATFORM) --target smoke -t $(IMAGE):smoke .
+	IMAGE=$(IMAGE) DOCKER=$(DOCKER) bash pilgrim/deploy/container/smoke.sh
+
+# --- Postgres store (SCALABILITY.md Step 2). pg-test runs the WHOLE unit suite
+# against a throwaway postgres container (fakes only; the DB is local), so the
+# engine-neutral store is proven on both engines. Extra pytest args pass through:
+#   make pg-test PG_TEST_ARGS="pilgrim/tests/test_requests.py -x"
+pg-test:
+	DOCKER=$(DOCKER) PY=$(PY) bash pilgrim/deploy/local/pg_test.sh $(PG_TEST_ARGS)
+
+# One-shot station.db -> Postgres copy (ids preserved, sequences set, counts
+# verified). Dry run (copies inside a transaction, then rolls back) unless
+# MIGRATE_ARGS="--apply". Needs DATABASE_URL (+ DB_PASS_SECRET_ARN or
+# DATABASE_PASSWORD) in the environment or .env.
+pg-migrate:
+	PATH="$(HOME)/bin:$(PATH)" $(PY) -m pilgrim.tools.pg_migrate $(PG_MIGRATE_ARGS)
 
 # --- EC2 stateless half (edge :8080 behind the ALB). Production runs with
 # LOCAL_GATEWAY=0 and the M5's tailnet name as ORIGIN_HOST (pilgrim/deploy/

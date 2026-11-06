@@ -156,7 +156,7 @@ def test_lease_check_refuses_apply(tmp_env, monkeypatch):
     import datetime
     store.meta_set(LEASE_KEY, datetime.datetime.now(datetime.UTC).isoformat())
     monkeypatch.setattr(art_backfill, "load_config", lambda: cfg)
-    monkeypatch.setattr(art_backfill, "Store", lambda path: store)
+    monkeypatch.setattr(art_backfill, "open_store", lambda cfg, **k: store)
     monkeypatch.setattr(art_backfill, "setup_logging", lambda cfg: None)
     with pytest.raises(SystemExit) as ei:
         art_backfill.main(["--apply", "--limit", "1"])

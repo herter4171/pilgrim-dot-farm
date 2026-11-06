@@ -1,0 +1,53 @@
+# Build context for Dockerfile: application code only (SCALABILITY.md Step 1).
+.git
+.venv
+.env
+.mcp.json
+.agents
+.llm-wiki
+.pi
+.playwright-mcp
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+build
+dist
+
+# Station state never ships in an image (AGENTS §1.5): it is mounted or lives on the M5.
+station.db*
+pilgrim/station.db*
+*.bak
+*.bak-shm
+*.bak-wal
+pilgrim/library
+pilgrim/logs
+library
+server.log
+*_song_tmp.wav
+*_render_tmp.wav
+
+# Browser test dependencies and artifacts
+pilgrim/tests/e2e/node_modules
+pilgrim/tests/e2e/test-results
+pilgrim/tests/e2e/playwright-report
+node_modules
+test-results
+playwright-report
+sfx_test
+
+# Repo-level docs and media (not read at run time)
+*.md
+docs
+future_plans
+voice-samples
+image.png
+pay*.jpeg
+skills-lock.json
+Makefile
+
+# Rendered deploy configs
+pilgrim/deploy/gateway/nginx.conf
+pilgrim/deploy/edge/nginx.conf
