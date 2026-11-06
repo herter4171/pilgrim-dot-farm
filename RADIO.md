@@ -911,14 +911,23 @@ the station name.
   thin visible scrollbar and a bottom gradient while there is more below
   (`has-more`). On phones the Status column folds under the request text (two
   visual columns) and nothing scrolls horizontally down to 320 px.
-- **RATE THIS SONG** (VOTING.md): a row above the cover art with five turkey
-  buttons (44 px targets, outlined → filled) and the on-air song's lifetime
-  aggregate (`avg · n`). It is open only while that song is audible: the
-  server decides (`POST /api/station/rating` 409s otherwise) and the client
-  hides it from the same audio-clock `pd:nowplaying` signal as the label
-  (§9.2). The row keeps its min-height when disabled, so the art, PLAY row
-  and meter never move. A stored vote is restored per airing; hover/focus
-  previews the level; arrow keys move between turkeys.
+- **RATE THIS SONG** (VOTING.md, FIX_RATINGS.md): a row above the cover art
+  with five turkey buttons (44 px targets, outlined → filled) and the on-air
+  song's lifetime aggregate (`avg · n`, or `NO RATINGS YET`). The aggregate is
+  shown the whole time a song is audible: first from the programme row's
+  `rating_count`/`rating_avg` (§11), then refreshed by the state poll while
+  the window is open. Clicking is open only while the server says so
+  (`POST /api/station/rating` 409s otherwise); the client enables/disables
+  from the same audio-clock `pd:nowplaying` signal as the label (§9.2) and
+  disables the turkeys, keeping the paint and the aggregate, once the state
+  poll shows the server has moved **past** the song (a snapshot a tick behind
+  the playhead never closes it). The row keeps its min-height when disabled,
+  so the art, PLAY row and meter never move. Colours: **magenta** = the
+  community average rounded to the nearest turkey, shown until this browser
+  rates the airing (nothing when the song has no ratings); **cyan** = this
+  browser's own rating of this airing, which replaces the magenta and is
+  restored per airing from `pd_rating:<epoch>:<seq>`. Hover/focus previews
+  the level in cyan; arrow keys move between turkeys.
 - **MODEL CREDITS**: credits the five production/dev models plus Kokoro-82M,
   each model name linking to its Hugging Face model card in a new tab (see
   MODELS.md for the on-air attribution copy; DeepSeek is a development credit
@@ -983,9 +992,11 @@ the station name.
   behaviour needs a real iPhone and Android device (or emulator).
 - **`pd:nowplaying` (VOTING.md).** `player.js` dispatches a `CustomEvent` on
   `document` from the same audio-clock decision as the song label: detail =
-  `{epoch, seq, media_id, title, artist}` for the audible named song, else
-  `null` (also on STOP). `rating.js` listens to it and never touches audio; it
-  polls `/api/station/state` every 5 s only while its row is enabled.
+  `{epoch, seq, media_id, title, artist, rating_count, rating_avg}` for the
+  audible named song, else `null` (also on STOP). `rating.js` listens to it
+  and never touches audio; it polls `/api/station/state` every 5 s only while
+  its row is enabled. The two rating fields are copied from the programme row
+  (§11) so the rating row can show the aggregate without a poll.
 - Fetch the committed program; keep the **next 2 items fetched and decoded**
   ahead of the current one, and keep decoding further (up to 5 ahead) while
   that holds less than 60 s of scheduled audio, so a run of short talk and

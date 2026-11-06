@@ -1,5 +1,7 @@
 # VOTING.md — Community voting: turkey ratings and request votes
 
+> Amended by FIX_RATINGS.md (2026-11-06): programme rows carry the aggregate, the client shows it for the whole song, the community average is drawn as magenta turkeys until the listener rates, and the web tier's grace window is fixed. Where this file and FIX_RATINGS.md differ, FIX_RATINGS.md wins.
+
 Work plan for coding agents. Two listener controls, no accounts, no new
 infrastructure:
 
