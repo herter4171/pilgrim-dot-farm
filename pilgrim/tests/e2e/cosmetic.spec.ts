@@ -220,8 +220,10 @@ test("aired requests table shows up to five with a prep time", async ({ page }) 
   expect(prep.width).toBeGreaterThanOrEqual(3 * prep.ch);
   expect(prep.minOneLine).toBe(true);
   expect(prep.overflow).toBeLessThanOrEqual(1);
-  // the queue table's Status header is still hidden on mobile
-  const queueStatus = await page.$eval("#req-queue thead .c-time",
+  // the queue table's Status header is still hidden on mobile (#req-queue is
+  // the tbody, so the header is found from the table, not from the id)
+  const queueStatus = await page.$eval(
+    ".req-table:not(.req-table-aired) thead .c-time",
                                         el => getComputedStyle(el).display);
   expect(queueStatus).toBe("none");
 });
