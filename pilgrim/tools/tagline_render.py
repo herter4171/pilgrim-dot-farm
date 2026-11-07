@@ -39,7 +39,7 @@ def existing_liner_texts(store: Store) -> set[str]:
         "SELECT meta_json FROM items WHERE type='liner'").fetchall()
     out: set[str] = set()
     for r in rows:
-        m = r["meta_json"] if "meta_json" in r.keys() else r[0]
+        m = r.get("meta_json")
         if m:
             t = json.loads(m).get("text")
             if t:

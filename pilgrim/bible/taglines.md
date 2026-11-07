@@ -86,6 +86,7 @@ liner or station ID.
     by reason and restrained by institutions. We gave everyone two arrows, a
     turkey rating, and access to a generative music model. Gobble gobble.
 55. The problem with Sand Creek is Ohio.
+56. You don't need April showers for us to bring the Mayflower.
 
 ## On-air notes
 
