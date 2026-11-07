@@ -19,14 +19,12 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from pathlib import Path
 
 from pilgrim.config import load_config
+from pilgrim.db import open_store
 from pilgrim.media_publish import MediaPublisher, S3ObjectStore
 from pilgrim.pipelines.voice import KokoroClient, VoicePipeline
 from pilgrim.store import Store
-
-DB_PATH = Path(__file__).resolve().parent.parent / "station.db"
 
 
 def read_lines() -> list[str]:
@@ -40,7 +38,8 @@ def existing_liner_texts(store: Store) -> set[str]:
     rows = store._conn.execute(  # noqa: SLF001 — tool, single query
         "SELECT meta_json FROM items WHERE type='liner'").fetchall()
     out: set[str] = set()
-    for (m,) in rows:
+    for r in rows:
+        m = r["meta_json"] if "meta_json" in r.keys() else r[0]
         if m:
             t = json.loads(m).get("text")
             if t:
@@ -54,7 +53,7 @@ async def main() -> int:
         print("usage: tagline_render.py <line> ...  (or pipe lines on stdin)")
         return 2
     cfg = load_config()
-    store = Store(DB_PATH)
+    store = open_store(cfg)  # live engine: RDS when DATABASE_URL is set, else SQLite
     voice = cfg.voices.liners
     vp = VoicePipeline(cfg, None, KokoroClient(cfg))  # type: ignore[arg-type]  # render-only, no LLM
     publisher = MediaPublisher(cfg, store, S3ObjectStore(cfg))
