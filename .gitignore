@@ -12,7 +12,7 @@ dist/
 .ruff_cache/
 
 # Secrets / local config (never commit)
-.env
+.env*
 .mcp.json
 
 # Agent tool state (not project deliverables)

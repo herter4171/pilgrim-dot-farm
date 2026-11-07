@@ -1426,11 +1426,11 @@ audio:
 
 media:                       # §8.4: S3 + CloudFront media source of truth
   publish: true              # uploader task in the station process (tests force false)
-  bucket: pilgrim-dot-farm-public
-  region: us-west-1
+  bucket: pilgrim-dot-farm-public-2
+  region: us-west-2
   aws_profile: mac-studio    # AWS shared-config profile name (keys live in ~/.aws, never here)
   key_prefix: audio/
-  public_base_url: https://d7gwl8cmdyh0k.cloudfront.net
+  public_base_url: https://dyl45fh67kfm3.cloudfront.net
   poll_s: 5                  # scan interval when idle
   concurrency: 4             # parallel uploads
   timeout_s: 120             # per S3 call

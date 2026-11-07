@@ -1,4 +1,4 @@
-# FIX_RATINGS.md — Song ratings: always show the community rating (pink turkeys + `avg · n`), two bug fixes
+# FIX_RATINGS.md — Song ratings: community average as pink turkeys (fractional) under your cyan vote, `avg · n` always, two bug fixes
 
 Work plan for a coding agent. Five steps, done **in order**, one commit per
 step. Every code block in this file is the exact code to write unless the
@@ -53,7 +53,7 @@ the operator to deploy.
 | # | Decision | Why |
 |---|----------|-----|
 | D1 | **Always show the aggregate.** Every song item in `GET /api/station/program` carries `rating_count` (int) and `rating_avg` (float or null). The client paints `avg · n` the instant the song becomes audible, keeps it while the song is audible even after the server's window closes, and refreshes it from the 5 s state poll while open. With zero ratings it shows `NO RATINGS YET` | The aggregate must not depend on a poll racing the playhead |
-| D2 | **Pink = the community average, shown until you rate.** While this browser has not rated the airing, the turkeys are filled in magenta ("pink") to the community average rounded to the nearest whole turkey (`Math.round(avg)`, clamped 1–5; nothing when `count` is 0), next to the exact `avg · n` text. Casting a rating replaces the pink with this browser's own rating in cyan (the old YouTube stars behaviour). Cyan is restored per airing from `pd_rating:<epoch>:<seq>` as today | "Eyes on the community outlook" (operator, 2026-11-06). Voter-independent, so it needs no new API: `/api/station/state` stays a shared `max-age=1` cache (RADIO §11) |
+| D2 | **Pink = the community average, always; cyan = your vote, on top.** The turkeys are filled in magenta ("pink") to the community average with **fractional fill**: turkey *i* (1-based) shows the fraction `clamp(avg - (i-1), 0, 1)` of its glyph, clipped left to right (3.4 = three full pink turkeys and 40 % of the fourth). Nothing is pink when `count` is 0. The pink is never hidden by the listener's own input. Once this browser rates the airing (or while hovering/focusing a turkey), its own level is drawn in cyan as whole turkeys **over** the pink; pink stays visible wherever the cyan does not reach. The exact `avg · n` text sits beside the turkeys. Cyan is restored per airing from `pd_rating:<epoch>:<seq>` as today | "Eyes on the community outlook"; "when the user votes, their cyan overshadows the pink" (operator, 2026-11-06). Voter-independent data, so no new API: `/api/station/state` stays a shared `max-age=1` cache (RADIO §11) |
 | D3 | **The per-airing rule stays.** `UNIQUE(epoch, seq, voter_id)`, one rating per airing, window = the on-air song + `ratings.grace_s` (VOTING.md V2, V8). No schema change | Already shipped and correct |
 | D4 | **Bug A fix**: `CachedScheduler` gets `_cum` and `position()` with the same meaning as `Scheduler`'s | Make `rating_window` correct over the snapshot instead of special-casing it |
 | D5 | **Bug B fix**: the poll closes the row only when the server has moved **past** the song (`current_seq > seq`), the epoch changed, or ratings are off. A snapshot **behind** the playhead is ignored. A closed row keeps its paint and aggregate until the next `pd:nowplaying` | A one-second-old snapshot must never kill the control |
@@ -70,12 +70,13 @@ the operator to deploy.
 | `pilgrim/server.py` | 2 |
 | `pilgrim/tests/e2e/e2e_server.py` | 2 |
 | `pilgrim/tests/test_voting.py`, `pilgrim/tests/test_server.py` | 2 |
-| `pilgrim/web/player.js`, `pilgrim/web/rating.js`, `pilgrim/web/style.css` | 3 |
+| `pilgrim/web/player.js`, `pilgrim/web/rating.js`, `pilgrim/web/style.css`, `pilgrim/web/index.html` (the five turkey buttons only) | 3 |
 | `pilgrim/tests/e2e/voting.spec.ts` | 3 |
 | `RADIO.md`, `VOTING.md`, `AGENTS.md` | 4 |
 
 Nothing else. In particular: no change to `pilgrim/scheduler.py`,
-`pilgrim/voting.py`, `pilgrim/config.yaml`, `index.html`, or any nginx file.
+`pilgrim/voting.py`, `pilgrim/config.yaml`, `pilgrim/web/img/turkey.svg`, the
+`<symbol id="turkey">` in `index.html`, or any nginx file.
 
 ---
 
@@ -400,7 +401,7 @@ Commit: `Program items carry the song's rating aggregate (FIX_RATINGS.md Step 2;
 
 ---
 
-## 3. Client: aggregate always, community average in pink, no stale-poll close
+## 3. Client: aggregate always, fractional pink average under a cyan vote, no stale-poll close
 
 **RADIO §9.1 (RATE THIS SONG), §9.2 (`pd:nowplaying`); VOTING.md §4, §5.**
 Hard rule AGENTS.md §1.9: `rating.js` never touches audio; `player.js`
@@ -434,22 +435,74 @@ Replace with:
 
 No other change in `player.js`.
 
-### 3.2 `pilgrim/web/style.css`: the pink state
+### 3.2 `pilgrim/web/index.html`: three layers per turkey
 
-Directly after the two `.turkey.filled` rules, add:
+Each of the five turkey buttons currently holds one `<svg>`. Give each
+button three, in this order: the dim outline, the pink community layer, the
+cyan "mine" layer. Replace the five buttons inside `<span class="turkeys">`
+with exactly these (only the `aria-label` and `data-stars` differ):
 
-```css
-/* FIX_RATINGS.md Step 3: until this browser rates the airing, the turkeys
-   show the COMMUNITY average in magenta ("pink"); casting a rating replaces
-   it with the listener's own level in cyan. */
-.turkey.prior { color: var(--magenta); }
-.turkey.prior svg { fill: currentColor;
-  filter: drop-shadow(0 0 4px rgba(255, 47, 214, .45)); }
+```html
+          <button type="button" class="turkey" role="radio" aria-checked="false"
+                  aria-label="1 turkey" data-stars="1"><svg class="t-outline" aria-hidden="true"><use href="#turkey"/></svg><svg class="t-avg" aria-hidden="true"><use href="#turkey"/></svg><svg class="t-mine" aria-hidden="true"><use href="#turkey"/></svg></button>
+          <button type="button" class="turkey" role="radio" aria-checked="false"
+                  aria-label="2 turkeys" data-stars="2"><svg class="t-outline" aria-hidden="true"><use href="#turkey"/></svg><svg class="t-avg" aria-hidden="true"><use href="#turkey"/></svg><svg class="t-mine" aria-hidden="true"><use href="#turkey"/></svg></button>
+          <button type="button" class="turkey" role="radio" aria-checked="false"
+                  aria-label="3 turkeys" data-stars="3"><svg class="t-outline" aria-hidden="true"><use href="#turkey"/></svg><svg class="t-avg" aria-hidden="true"><use href="#turkey"/></svg><svg class="t-mine" aria-hidden="true"><use href="#turkey"/></svg></button>
+          <button type="button" class="turkey" role="radio" aria-checked="false"
+                  aria-label="4 turkeys" data-stars="4"><svg class="t-outline" aria-hidden="true"><use href="#turkey"/></svg><svg class="t-avg" aria-hidden="true"><use href="#turkey"/></svg><svg class="t-mine" aria-hidden="true"><use href="#turkey"/></svg></button>
+          <button type="button" class="turkey" role="radio" aria-checked="false"
+                  aria-label="5 turkeys" data-stars="5"><svg class="t-outline" aria-hidden="true"><use href="#turkey"/></svg><svg class="t-avg" aria-hidden="true"><use href="#turkey"/></svg><svg class="t-mine" aria-hidden="true"><use href="#turkey"/></svg></button>
 ```
 
-`--magenta` already exists in `:root`. Nothing else in the file changes.
+Nothing else in `index.html` changes (the `<symbol id="turkey">` stays as is).
 
-### 3.3 `pilgrim/web/rating.js`: replace the whole file
+### 3.3 `pilgrim/web/style.css`: the layered turkey
+
+In the RATE THIS SONG block, replace everything from the comment line
+`/* Empty turkeys are a dim lavender outline; ...` down to and including the
+rule `.turkey:hover:not(:disabled), .turkey:focus-visible { ... }` (that is:
+the comment, `.turkey {...}`, `.turkey svg {...}`, the `<use>` comment,
+`.turkey.filled {...}`, `.turkey.filled svg {...}`, and the hover rule) with:
+
+```css
+/* Three stacked layers per turkey (FIX_RATINGS.md Step 3, D2). `.t-outline`:
+   the dim lavender outline, always. `.t-avg`: a magenta ("pink") fill for the
+   COMMUNITY average, clipped left-to-right to the fraction this turkey holds
+   (rating.js sets `clip-path` per turkey; 100 % clipped = nothing). `.t-mine`:
+   a cyan fill for THIS listener's own rating (or the hover/focus preview),
+   drawn on top of the pink wherever it reaches. <use> clones the symbol into
+   a shadow tree, so colour and fill are set on each <svg> and inherited; the
+   symbol's group carries no fill attribute of its own. */
+.turkey {
+  position: relative;
+  width: 48px; height: 48px; padding: 0; background: none; border: 0;
+  border-radius: 6px; cursor: pointer; color: var(--dim);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.turkey svg { width: 34px; height: 34px; display: block; fill: none; }
+.turkey .t-avg, .turkey .t-mine {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  fill: currentColor; pointer-events: none;
+}
+.turkey .t-avg { color: var(--magenta); clip-path: inset(0 100% 0 0);
+  filter: drop-shadow(0 0 4px rgba(255, 47, 214, .45)); }
+.turkey .t-mine { color: var(--cyan); display: none;
+  filter: drop-shadow(0 0 4px rgba(36, 224, 255, .45)); }
+.turkey.mine .t-mine { display: block; }
+.turkey:hover:not(:disabled), .turkey:focus-visible {
+  color: var(--cyan);
+  filter: brightness(1.2); outline: 2px solid var(--cyan); outline-offset: -2px;
+}
+```
+
+Keep `.turkey:disabled`, `.rate-row[aria-disabled="true"]`, `.rate-agg` and
+the phone-width rules (`.turkey { width: 44px; ... }`, `.turkey svg { width: 30px; ... }`)
+exactly as they are; they apply to all three layers. `--magenta` and `--cyan`
+already exist in `:root`. The class `filled` is retired; nothing else in the
+file references it.
+
+### 3.4 `pilgrim/web/rating.js`: replace the whole file
 
 ```js
 /* Pilgrim Dot Farm — five-turkey song ratings (VOTING.md Step 5; FIX_RATINGS.md Step 3).
@@ -457,11 +510,11 @@ Directly after the two `.turkey.filled` rules, add:
    decides the window (`rating_window`); this file only enables/disables the
    control and renders what the server says. It never touches audio (§9.2).
 
-   Colours: pink (magenta) = the community average, rounded to the nearest
-   turkey, shown until this browser rates the airing; cyan = the rating this
-   browser gave THIS airing. The exact aggregate (`avg · n`) is always shown
-   for the audible song: first from the programme row, then from the state
-   poll (FIX_RATINGS.md D1/D2). */
+   Colours: pink (magenta) = the community average, always, with the last
+   turkey partly filled left-to-right; cyan = the rating this browser gave
+   THIS airing (or the hover/focus preview), drawn over the pink. The exact
+   aggregate (`avg · n`) is always shown for the audible song: first from the
+   programme row, then from the state poll (FIX_RATINGS.md D1/D2). */
 (() => {
   "use strict";
   const VOTER = window.PD_VOTER;
@@ -470,14 +523,15 @@ Directly after the two `.turkey.filled` rules, add:
   const label = row.querySelector(".rate-label");
   const agg = document.getElementById("rate-agg");
   const turkeys = Array.from(row.querySelectorAll(".turkey"));
+  const avgLayers = turkeys.map((t) => t.querySelector(".t-avg"));
   const LABEL = "RATE THIS SONG";
   const NONE = "NO RATINGS YET";
   const POLL_MS = 5000;
 
   let current = null;   // {epoch, seq, media_id} of the audible song
-  let savedStars = 0;   // this browser's rating for THIS airing (cyan)
-  let communityStars = 0; // the community average, rounded (pink), 0 when unrated
-  let preview = 0;      // hover/focus level
+  let savedStars = 0;   // this browser's rating for THIS airing (cyan, on top)
+  let communityAvg = 0; // the community average (pink, fractional); 0 when unrated
+  let preview = 0;      // hover/focus level (cyan, on top)
   let busy = false;
   let pollTimer = null;
   let labelTimer = null;
@@ -495,30 +549,31 @@ Directly after the two `.turkey.filled` rules, add:
     labelTimer = setTimeout(() => { setLabel(LABEL); labelTimer = null; }, ms);
   }
 
-  /* Priority: hover preview (cyan) > this airing's rating (cyan) >
-     community average (pink) > empty. */
+  /* Two paints per turkey (D2). Pink underneath: the community average,
+     turkey i holding clamp(avg - i, 0, 1) of its glyph, clipped from the
+     right. Cyan on top: the hover preview, else this browser's own rating of
+     this airing, as whole turkeys. The pink stays wherever the cyan does not
+     reach. aria-checked follows the listener's own rating only. */
   function paint() {
-    let level = 0, cls = "filled";
-    if (preview) { level = preview; }
-    else if (savedStars) { level = savedStars; }
-    else if (communityStars) { level = communityStars; cls = "prior"; }
+    const mine = preview || savedStars;
     turkeys.forEach((t, i) => {
-      const on = i < level;
-      t.classList.toggle("filled", on && cls === "filled");
-      t.classList.toggle("prior", on && cls === "prior");
-      t.setAttribute("aria-checked", i === level - 1 ? "true" : "false");
+      const frac = Math.min(1, Math.max(0, communityAvg - i));
+      avgLayers[i].style.clipPath = "inset(0 " + ((1 - frac) * 100).toFixed(1) + "% 0 0)";
+      t.classList.toggle("has-avg", frac > 0);
+      t.classList.toggle("mine", i < mine);
+      t.setAttribute("aria-checked", i === savedStars - 1 ? "true" : "false");
       t.tabIndex = i === 0 ? 0 : -1;
     });
   }
 
-  /* The community view: the exact text, and the rounded pink level (D2). */
+  /* The community view: the exact text, and the fractional pink level (D2). */
   function showAggregate(count, avg) {
     const has = count > 0 && typeof avg === "number";
     agg.textContent = has ? avg.toFixed(1) + " · " + count : NONE;
-    communityStars = has ? Math.min(5, Math.max(1, Math.round(avg))) : 0;
+    communityAvg = has ? Math.min(5, Math.max(0, avg)) : 0;
     paint();
   }
-  function clearAggregate() { agg.textContent = ""; communityStars = 0; }
+  function clearAggregate() { agg.textContent = ""; communityAvg = 0; }
 
   function airingKey(a) { return "pd_rating:" + a.epoch + ":" + a.seq; }
   function recallStars(key) {
@@ -593,7 +648,7 @@ Directly after the two `.turkey.filled` rules, add:
       const d = await r.json().catch(() => ({}));
       if (current !== airing) return;        // the song changed while in flight
       if (r.status === 200) {
-        savedStars = d.mine;                 // cyan now outranks the pink
+        savedStars = d.mine;                 // cyan goes on top of the pink
         preview = 0;
         VOTER.remember(airingKey(airing), d.mine);
         showAggregate(d.count, d.avg);       // repaints
@@ -674,7 +729,7 @@ Directly after the two `.turkey.filled` rules, add:
 })();
 ```
 
-### 3.4 `pilgrim/tests/e2e/voting.spec.ts`
+### 3.5 `pilgrim/tests/e2e/voting.spec.ts`
 
 (a) The `announce` helper passes a fake detail. Change its object from
 `{ ...airing, media_id: 1, title: "T", artist: "A" }` to
@@ -682,7 +737,12 @@ Directly after the two `.turkey.filled` rules, add:
 The reload test builds the same object inline in `page.evaluate(...)`; add
 the same two fields there.
 
-(b) In the test `"a turkey click posts, fills the row, and shows the aggregate"`,
+(b) The class for the listener's own level is now `mine` (it was `filled`).
+In `voting.spec.ts` replace every `toHaveClass(/filled/)` with
+`toHaveClass(/mine/)` and `classList.contains("filled")` with
+`classList.contains("mine")` (the click test and the reload test).
+
+In the test `"a turkey click posts, fills the row, and shows the aggregate"`,
 directly after `await announce(page, airing);` insert:
 
 ```ts
@@ -690,12 +750,13 @@ directly after `await announce(page, airing);` insert:
   await expect(page.locator("#rate-agg")).not.toHaveText("");
 ```
 
-and directly after `await expect(page.locator(".turkey[data-stars='4']")).toHaveClass(/filled/);`
+and directly after the (now) `await expect(page.locator(".turkey[data-stars='4']")).toHaveClass(/mine/);`
 insert:
 
 ```ts
-  // D2: once rated, the pink community level is gone; cyan is the listener's own
-  await expect(page.locator(".turkey.prior")).toHaveCount(0);
+  // D2: the listener's own level is four cyan turkeys on top; the fifth is not theirs
+  await expect(page.locator(".turkey.mine")).toHaveCount(4);
+  await expect(page.locator(".turkey[data-stars='5']")).not.toHaveClass(/mine/);
 ```
 
 (c) Append this test before the `"queue votes: ..."` test. It is
@@ -703,31 +764,66 @@ synchronous on purpose: the paint happens inside the event handler, before
 the state poll can replace the announced aggregate with the real one.
 
 ```ts
-test("the community average shows as pink turkeys until the listener rates", async ({ page }) => {
-  // FIX_RATINGS.md Step 3 (D2): rating_avg 3.4 rounds to 3 pink turkeys and the
-  // exact text is beside them; with no ratings nothing is pink and the text
-  // says NO RATINGS YET. Both are read in the same evaluate as the dispatch.
+/* The pink layer's clip: rating.js writes `inset(0 X% 0 0)`; X is how much of
+   the glyph is hidden from the right (0 = full turkey, 100 = none). */
+function hiddenPct(el: Element | null): number {
+  const m = /([\d.]+)%/.exec((el as HTMLElement)?.style.clipPath || "");
+  return m ? parseFloat(m[1]) : NaN;
+}
+
+test("the community average is pink with a fractional turkey; a vote paints cyan over it", async ({ page }) => {
+  // FIX_RATINGS.md Step 3 (D2): rating_avg 3.4 = three full pink turkeys, 40 %
+  // of the fourth, none of the fifth, exact text beside them, no cyan yet.
   await page.goto("/");
   const airing = await waitForSong(page);
   const shown = await page.evaluate((detail) => {
     document.dispatchEvent(new CustomEvent("pd:nowplaying", { detail }));
-    const cls = (n: number) => document.querySelector(`.turkey[data-stars='${n}']`)!.className;
-    return { t3: cls(3), t4: cls(4), agg: document.getElementById("rate-agg")!.textContent };
+    const t = (n: number) => document.querySelector(`.turkey[data-stars='${n}']`)!;
+    const clip = (n: number) => (t(n).querySelector(".t-avg") as HTMLElement).style.clipPath;
+    return { c1: clip(1), c3: clip(3), c4: clip(4), c5: clip(5),
+             hasAvg: [1, 2, 3, 4, 5].map((n) => t(n).classList.contains("has-avg")),
+             mine: document.querySelectorAll(".turkey.mine").length,
+             agg: document.getElementById("rate-agg")!.textContent };
   }, { ...airing, media_id: 1, title: "T", artist: "A", rating_count: 2, rating_avg: 3.4 });
-  expect(shown.t3).toMatch(/prior/);
-  expect(shown.t3).not.toMatch(/filled/);
-  expect(shown.t4).not.toMatch(/prior/);
+  const pct = (clip: string) => parseFloat(/([\d.]+)%/.exec(clip)![1]);
+  expect(pct(shown.c1)).toBeCloseTo(0, 0);
+  expect(pct(shown.c3)).toBeCloseTo(0, 0);
+  expect(pct(shown.c4)).toBeCloseTo(60, 0);
+  expect(pct(shown.c5)).toBeCloseTo(100, 0);
+  expect(shown.hasAvg).toEqual([true, true, true, true, false]);
+  expect(shown.mine).toBe(0);
   expect(shown.agg).toBe("3.4 · 2");
+  // no ratings: nothing pink, NO RATINGS YET
   await announce(page, null);
   const empty = await page.evaluate((detail) => {
     document.dispatchEvent(new CustomEvent("pd:nowplaying", { detail }));
-    return { prior: document.querySelectorAll(".turkey.prior").length,
+    return { hasAvg: document.querySelectorAll(".turkey.has-avg").length,
              agg: document.getElementById("rate-agg")!.textContent };
   }, { ...airing, seq: airing.seq + 1000, media_id: 1, title: "T", artist: "A",
        rating_count: 0, rating_avg: null });
-  expect(empty.prior).toBe(0);
+  expect(empty.hasAvg).toBe(0);
   expect(empty.agg).toBe("NO RATINGS YET");
   await announce(page, null);
+});
+
+test("a vote keeps the pink average visible under the cyan", async ({ page }) => {
+  // D2: after a 200, the listener's cyan sits on top and the pink layer is
+  // still painted from the server's aggregate (count >= 1 after the vote).
+  let rated = false;
+  for (let attempt = 0; attempt < 6 && !rated; attempt++) {
+    await page.goto("/");
+    const airing = await waitForSong(page);
+    await announce(page, airing);
+    const [resp] = await Promise.all([
+      page.waitForResponse((r) => r.url().includes("/api/station/rating")),
+      page.click(".turkey[data-stars='2']"),
+    ]);
+    rated = resp.status() === 200;
+  }
+  expect(rated, "no click landed inside a rating window").toBeTruthy();
+  await expect(page.locator(".turkey.mine")).toHaveCount(2);
+  await expect(page.locator(".turkey[data-stars='1']")).toHaveClass(/has-avg/);
+  expect(hiddenPct(await page.$(".turkey[data-stars='1'] .t-avg"))).toBeCloseTo(0, 0);
 });
 ```
 
@@ -735,13 +831,13 @@ test("the community average shows as pink turkeys until the listener rates", asy
 everything; the final `announce(page, null)` → `aria-disabled="true"`
 assertion still holds (`reset()`).
 
-### 3.5 Checks and commit
+### 3.6 Checks and commit
 
 `make lint`, `make test`, `make sim`, `make e2e`. If `make e2e` fails with a
 missing browser, run `cd pilgrim/tests/e2e && npx playwright install chromium`
 once and rerun. All must pass.
 
-Commit: `Rating row: community average as pink turkeys + text, no stale-poll close (FIX_RATINGS.md Step 3; RADIO §9.1, §9.2; VOTING.md §4, §5)`.
+Commit: `Rating row: fractional pink average under a cyan vote, aggregate always, no stale-poll close (FIX_RATINGS.md Step 3; RADIO §9.1, §9.2; VOTING.md §4, §5)`.
 
 ---
 
@@ -767,12 +863,15 @@ Replace the bullet with:
   disables the turkeys, keeping the paint and the aggregate, once the state
   poll shows the server has moved **past** the song (a snapshot a tick behind
   the playhead never closes it). The row keeps its min-height when disabled,
-  so the art, PLAY row and meter never move. Colours: **magenta** = the
-  community average rounded to the nearest turkey, shown until this browser
-  rates the airing (nothing when the song has no ratings); **cyan** = this
-  browser's own rating of this airing, which replaces the magenta and is
-  restored per airing from `pd_rating:<epoch>:<seq>`. Hover/focus previews
-  the level in cyan; arrow keys move between turkeys.
+  so the art, PLAY row and meter never move. Each turkey is three stacked
+  `<svg>` layers of the one symbol: a dim outline; a **magenta** fill for the
+  community average, clipped left-to-right so turkey *i* shows
+  `clamp(avg − (i−1), 0, 1)` of its glyph (3.4 = three full turkeys and 40 %
+  of the fourth; nothing when the song has no ratings), always visible; and a
+  **cyan** fill for this browser's own rating of this airing (whole turkeys,
+  restored per airing from `pd_rating:<epoch>:<seq>`), drawn over the magenta
+  wherever it reaches. Hover/focus previews the listener's level in cyan;
+  arrow keys move between turkeys.
 ```
 
 ### 4.2 RADIO.md §9.2, the **`pd:nowplaying`** bullet
@@ -794,12 +893,12 @@ false. One batch query per response (`Store.song_ratings_for`).
 ### 4.4 VOTING.md and AGENTS.md
 
 - `VOTING.md`: directly under the title line add:
-  `> Amended by FIX_RATINGS.md (2026-11-06): programme rows carry the aggregate, the client shows it for the whole song, the community average is drawn as magenta turkeys until the listener rates, and the web tier's grace window is fixed. Where this file and FIX_RATINGS.md differ, FIX_RATINGS.md wins.`
+  `> Amended by FIX_RATINGS.md (2026-11-06): programme rows carry the aggregate, the client shows it for the whole song, the community average is always drawn as magenta turkeys with fractional fill under the listener's cyan vote, and the web tier's grace window is fixed. Where this file and FIX_RATINGS.md differ, FIX_RATINGS.md wins.`
 - `AGENTS.md`: in the first paragraph ("Active work plans: ..."), after the
   VOTING.md sentence add: `FIX_RATINGS.md (Steps 1–5) amends VOTING.md's
   rating UI and the web tier's rating window.`
 
-Commit (if separate): `Docs: rating aggregate on programme rows, community average as pink turkeys (FIX_RATINGS.md Step 4; RADIO §9.1, §9.2, §11)`.
+Commit (if separate): `Docs: rating aggregate on programme rows, fractional pink average under the cyan vote (FIX_RATINGS.md Step 4; RADIO §9.1, §9.2, §11)`.
 
 ---
 
@@ -822,22 +921,23 @@ the report and wait:
    ignore the extra fields; the new client treats a missing field as `0`/`null`.
 4. After both: open the site, PLAY, and check that `NO RATINGS YET` or
    `avg · n` appears the moment a song's title does, that a song with
-   ratings shows magenta turkeys at the rounded average, and that rating it
-   replaces the magenta with cyan at your level (the e2e covers the same
+   ratings shows magenta turkeys with the last one partly filled to match
+   the average, and that rating it paints cyan turkeys over the magenta up to
+   your level while the magenta beyond it stays (the e2e covers the same
    three things).
 
 ---
 
 ## 6. Open questions for the operator (defaults in force until answered)
 
-1. **Fractional fill.** D2 rounds the average to a whole turkey (3.4 → 3,
-   3.5 → 4); the exact value is in the text beside it. A half-filled turkey
-   would need a clipped second `<svg>` per button and is not in this plan.
-   Want it?
-2. **Your own earlier rating.** After rating a song, the next airing shows
-   the community pink again, not your earlier cyan (one rating per airing,
-   VOTING.md V2). Showing *your* past rating across airings or devices would
-   need a per-voter route and is not in this plan. Want it?
+1. **Your own earlier rating.** After rating a song, its next airing shows
+   only the community pink (your vote is inside the average), not your
+   earlier cyan (one rating per airing, VOTING.md V2). Showing *your* past
+   rating across airings or devices would need a per-voter route and is not
+   in this plan. Want it?
+2. **Pink glow.** The magenta layer has the same soft drop-shadow glow as the
+   cyan one. If the two glows blur together at phone size, drop the glow on
+   the magenta layer (one CSS line in §3.3).
 3. **Possibly lost ratings on the evening of 2026-11-05.** Between the
    Fargate web tier going live and the Mac's Postgres cutover (~22:14 EST),
    ratings posted through the web tier went to Postgres while the Mac's

@@ -174,10 +174,10 @@ format against that release's docs:
 ## Bastion subnet router (SCALABILITY.md Step 8)
 
 The Fargate web tier reads Valkey and RDS Postgres inside the VPC; the Mac
-must write to them. The old edge host (`ssh pf`, `172.31.25.15`, security
-groups `pg-ec2` + `pg-cache` + `pg-db`) is the bastion: a Tailscale **subnet
+must write to them. The bastion EC2 (`ssh pf2`, `172.31.35.80`, security
+groups `pg-ec2` + `pg-cache` + `pg-db`) runs a Tailscale **subnet
 router** for the VPC CIDR, so the Mac's tailnet carries `172.31.0.0/16`.
-Done on 2026-11-05:
+Done on 2026-11-05 on the old edge host `pf`; redone on `pf2` in the new account (2026-11-06):
 
 ```sh
 # on pf (keeps tag:radio-relay; `set` changes only this pref)
@@ -205,8 +205,8 @@ anywhere; only the route makes them reachable):
 
 ```sh
 tailscale status --json | python3 -c 'import sys,json; print([p["PrimaryRoutes"] for p in json.load(sys.stdin)["Peer"].values()])'
-nc -z -w 5 pg-db.c782eceqccmf.us-west-1.rds.amazonaws.com 5432 && echo postgres tcp ok
-printf 'PING\r\n' | openssl s_client -quiet -connect pg-cache-3pmtqp.serverless.usw1.cache.amazonaws.com:6379 2>/dev/null | head -1   # +PONG
+nc -z -w 5 pg-db.chg6qwekyier.us-west-2.rds.amazonaws.com 5432 && echo postgres tcp ok
+printf 'PING\r\n' | openssl s_client -quiet -connect pg-cache-dwusn7.serverless.usw2.cache.amazonaws.com:6379 2>/dev/null | head -1   # +PONG
 ```
 
 Verified 2026-11-05 from the Mac: route present, Postgres offers TLS, Valkey

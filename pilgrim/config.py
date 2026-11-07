@@ -694,7 +694,7 @@ class Media(BaseModel):
     (`aws_profile`; null = the default chain), never from this file."""
     publish: bool = False            # run the uploader in the station process
     bucket: str = ""
-    region: str = "us-west-1"
+    region: str = "us-west-2"
     aws_profile: str | None = None
     key_prefix: str = "audio/"
     public_base_url: str = ""        # CloudFront origin, no trailing slash

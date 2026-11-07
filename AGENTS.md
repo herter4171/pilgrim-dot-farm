@@ -90,7 +90,7 @@ If a task cannot be done without breaking one, stop and report.
 | Kokoro TTS | `192.168.68.89:8001` | `/tts`, `/voices`, `/health`; 16-bit mono 24 kHz |
 | SFX (MOSS-SoundEffect v2.0) | `192.168.68.88:8000` | `/health` |
 | Brave Search API | `hosts.brave` = `https://api.search.brave.com` | News bulletin + copied-lyrics screen (BRAVE.md); key `BRAVE_SEARCH_KEY` in `.env`. Metered: never add a health probe, never call it from tests |
-| Media (S3 + CloudFront) | `media.*` in config | Public bucket `pilgrim-dot-farm-public` (us-west-1), read only by CloudFront `E2FWAKQQO45U1V`; station uploads with AWS profile `mac-studio` (RADIO §8.4, docs/backends.md §9) |
+| Media (S3 + CloudFront) | `media.*` in config | Public bucket `pilgrim-dot-farm-public-2` (us-west-2, account 477688903218 since 2026-11-06), read only by CloudFront `E2J4EQA5VW0HUG`; station uploads with AWS profile `mac-studio` (RADIO §8.4, docs/backends.md §9) |
 | RDS Postgres + ElastiCache Valkey | VPC `172.31.0.0/16`, via the bastion's tailnet route (SCALABILITY.md Step 8) | `DATABASE_URL` + `DB_PASS_SECRET_ARN`, `REDIS_URL` (TLS, no password) in `.env` on the M5 and in the ECS task env; the web tier is `pilgrimdotfarm/front-end` on Fargate |
 | Stripe | `payments.api_base` in config | Checkout Sessions + webhooks; keys in `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` (PAYMENT.md Step 0) |
 

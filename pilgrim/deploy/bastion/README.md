@@ -1,4 +1,4 @@
-# Bastion (`pf`) — tailnet subnet router + LiteLLM relay
+# Bastion (`pf2`, was `pf`) — tailnet subnet router + LiteLLM relay
 
 The old EC2 edge host. Two jobs now (SCALABILITY.md Step 8 and the Step 5
 addendum); the edge nginx and `make edge-up` are retired.

@@ -498,6 +498,14 @@ client side is verified against the real page in Step 8.
 
 ## 9. Media delivery — S3 + CloudFront, and browser MP3 decoding (observed 2026-11-01)
 
+**Account move (2026-11-06).** Everything below was observed in account
+821856822529 (us-west-1). Production now runs in account 477688903218
+(us-west-2): buckets `pilgrim-dot-farm-public-2` / `pilgrim-dot-farm-private-2`,
+distribution `E2J4EQA5VW0HUG` at `https://dyl45fh67kfm3.cloudfront.net`, the same
+`pilgrim-media-cors` function (created by hand, LIVE), bastion `pf2`
+(`172.31.35.80`). The old public bucket was synced server-side (7,223 objects,
+2.39 GB); keys are content-addressed so `items.s3_key` did not change.
+
 **Buckets (us-west-1, account 821856822529).** `pilgrim-dot-farm-public` and
 `pilgrim-dot-farm-private`: Block Public Access on (all four), SSE-S3
 (AES256, SSE-C blocked), versioning off, no lifecycle, no S3 CORS. Bucket
