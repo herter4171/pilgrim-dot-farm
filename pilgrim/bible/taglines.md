@@ -87,6 +87,7 @@ liner or station ID.
     turkey rating, and access to a generative music model. Gobble gobble.
 55. The problem with Sand Creek is Ohio.
 56. You don't need April showers for us to bring the Mayflower.
+57. We don't have influencers. Our employees are fueled by electrons and compensated with airflow.
 
 ## On-air notes
 
