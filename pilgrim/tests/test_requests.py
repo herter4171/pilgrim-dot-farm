@@ -704,3 +704,20 @@ def test_mark_request_due_stamps_iso_wall_time(cfg):
     assert s.get_request(rid)["due_at"] is None
     s.mark_request_due(rid, 1793786339.0)        # 2026-11-04T09:58:59Z
     assert s.get_request(rid)["due_at"] == "2026-11-04T09:58:59+00:00"
+
+
+def test_moderation_prompt_policy_wording():
+    """The published policy is 'explicit, hateful, or illegal' (RADIO §7). The
+    prompt must not add a stricter standard of its own (operator decision,
+    2026-11-07): group insults and crude-but-common words are allowed; only
+    protected-class hate, slurs, threats and real-person harassment reject."""
+    from pilgrim.config import ROOT
+    text = (ROOT / "prompts" / "moderation.md").read_text()
+    allow, reject = text.split("REJECT (allowed=false)", 1)
+    assert "protected class" in reject
+    assert "NOT a protected class" in allow
+    assert "insults aimed at a person or group" not in reject
+    for word in ("slut", "whore", "hoor"):
+        assert word in allow and word not in reject
+    assert "Lemon Stealing Hoors" in allow
+    assert "An insult is not hate" in text

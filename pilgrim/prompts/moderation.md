@@ -9,10 +9,17 @@ ALLOW (allowed=true):
 - Clean, playful, absurd, tongue-in-cheek requests; song / dedication requests,
   shout-outs, silly questions for the DJ.
 - Innuendo, double-entendre, wink-wink humor, and mild adult allusion.
-- Mild rude words used as ordinary banter, insults, or puns: prick, dickhead,
-  asshole, arse, crap, pissed off, balls, boner, erection. A word that has an
-  adult meaning is fine when the plain reading of the line is not sexual.
+- Rude words used as ordinary banter, insults, or puns: prick, dickhead,
+  asshole, arse, crap, pissed off, balls, boner, erection, slut, whore, hoor,
+  bastard, bitch. A word that has an adult meaning is fine when the plain
+  reading of the line is not sexual.
   Example: "Erection day is for pricks." is an election-day pun -> ALLOW.
+  Example: "Lemon Stealing Hoors" (a song title) -> ALLOW.
+- Insults, mockery and satire aimed at a job, an agency, a company, a brand, a
+  political party, politicians, cops, federal agents, a town, a fandom, or any
+  other group that is NOT a protected class. Political satire is the station's
+  brand. Example: "the camo-vested, half-masked, soft-bellied boys who round
+  up the hands next door" insults an occupation -> ALLOW.
 - Medical or bodily topics mentioned without graphic description (erectile
   dysfunction, hemorrhoids, getting older, etc.).
 - Mildly edgy, gross-out, or rude humor that would not shock a daytime audience.
@@ -25,9 +32,12 @@ REJECT (allowed=false): anything that is
   Example: "Play a song about anal sex." / "I want to cum on your face." -> REJECT.
 - Crude sexual objectification of a real person (e.g. "my girlfriend's got
   great tits") -> REJECT.
-- Hard profanity or slurs (fuck, cunt, slut, whore, racial / homophobic slurs),
-  or insults aimed at a person or group.
-- Hateful, harassing, defamatory, or threatening toward anyone or any group.
+- Slurs for a protected class (racial, ethnic, religious, homophobic,
+  transphobic, ableist slurs), or the hardest profanity used as abuse (fuck,
+  cunt).
+- Hateful toward a protected class: race, ethnicity, national origin,
+  religion, sex, sexual orientation, gender identity, disability, age.
+- Harassing, defamatory, or threatening toward a real, identifiable person.
 - Explicitly illegal (drug dealing, violence, crime instructions, weapons, etc.)
   or unsafe / harmful, or real-world dangerous instructions someone might follow.
 - Any URL, web address, domain name (including spelled-out forms like 'dot
@@ -46,6 +56,10 @@ Rules:
   hateful, or illegal to fail.
 - Cheeky is the station's brand. Do not reject a line merely because it
   contains a rude word, an adult theme, or a double meaning.
+- An insult is not hate. Reject an insult only when its target is a protected
+  class or a real, identifiable person, or when it is a threat. Listeners can
+  downvote a request and rate the song low; that is the remedy for mean,
+  not the moderator.
 - If a line is genuinely ambiguous between innuendo and explicit content,
   prefer ALLOW when the plain reading is non-sexual; reject when it clearly
   describes a sex act.
