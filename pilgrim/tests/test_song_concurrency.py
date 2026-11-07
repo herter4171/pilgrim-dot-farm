@@ -757,3 +757,159 @@ def test_in_stream_backend_error_is_a_retryable_cut(cfg):
     llm = LLM(cfg, "tok", client=_h.AsyncClient(transport=_h.MockTransport(handler)))
     with pytest.raises(LLMTruncated, match="admission"):
         asyncio.run(llm.chat_json("qwen38", "s", "u"))
+
+
+# --------------------------------------------------------------------------- #
+# slots: auto — the pool counts the generators behind the proxy (RADIO §6.2,
+# 2026-11-07). Fakes only: a scripted discover callable / a mock transport.
+# --------------------------------------------------------------------------- #
+class _Discover:
+    """Scripted discovery: each call pops the next answer; the last repeats."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.calls = 0
+
+    async def __call__(self, backend):
+        self.calls += 1
+        return self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+
+
+def _auto_pool(disc, interval=300.0):
+    t = _T()
+    pool = MusicPool([MusicBackend(name="litellm", slots="auto", auth="litellm")],
+                     120.0, 0.0, now=t.now, sleep=t.sleep,
+                     discover=disc, discover_interval_s=interval)
+    return pool, t
+
+
+def test_config_auto_slots_need_litellm(base_config):
+    data = base_config.model_dump()
+    data["songs"]["gen_backends"] = [{"name": "litellm", "slots": "auto", "auth": "litellm"}]
+    assert Config.model_validate(data).songs.gen_backends[0].slots == "auto"
+    data["songs"]["gen_backends"] = [{"name": "m5", "slots": "auto",
+                                      "url": "http://127.0.0.1:11234"}]
+    with pytest.raises(ValueError, match="auto"):
+        Config.model_validate(data)
+    data = base_config.model_dump()
+    data["songs"]["discover_interval_s"] = 0
+    with pytest.raises(ValueError, match="discover_interval_s"):
+        Config.model_validate(data)
+
+
+def test_auto_slots_start_at_one_then_follow_discovery():
+    disc = _Discover(3, None, 0, 2)
+    pool, t = _auto_pool(disc)
+    assert pool.capacity() == 1 and pool.slots() == {"litellm": 1}
+
+    async def main():
+        await pool.refresh()
+        assert pool.capacity() == 3 and disc.calls == 1
+        t.t = 100.0
+        await pool.refresh()                 # inside the interval: no recount
+        assert disc.calls == 1
+        t.t = 301.0
+        await pool.refresh()                 # None = proxy unreadable: keep 3
+        assert disc.calls == 2 and pool.capacity() == 3
+        t.t = 700.0
+        await pool.refresh()                 # 0 healthy floors at 1
+        assert pool.capacity() == 1
+        pool.mark_down("litellm")            # a failure forces the next recount
+        t.t = 700.0 + 120.0
+        async with pool.lease("fast") as b:  # lease refreshes before picking
+            assert b.name == "litellm"
+        assert disc.calls == 4 and pool.capacity() == 2
+    asyncio.run(main())
+
+
+def test_fixed_slots_never_call_discovery():
+    disc = _Discover(5)
+    t = _T()
+    pool = MusicPool([MusicBackend(name="a", url="http://a", slots=2)], 120.0, 0.0,
+                     now=t.now, sleep=t.sleep, discover=disc)
+
+    async def main():
+        await pool.refresh(force=True)
+        async with pool.lease():
+            pass
+        assert disc.calls == 0 and pool.capacity() == 2
+    asyncio.run(main())
+
+
+def test_discovery_failure_keeps_the_last_count():
+    async def boom(backend):
+        raise RuntimeError("proxy exploded")
+    pool, t = _auto_pool(_Discover(2))
+
+    async def main():
+        await pool.refresh()
+        assert pool.capacity() == 2
+        pool._discover = boom
+        await pool.refresh(force=True)
+        assert pool.capacity() == 2
+    asyncio.run(main())
+
+
+def test_lease_never_exceeds_the_discovered_slots():
+    pool, _ = _auto_pool(_Discover(1))
+
+    async def main():
+        cm = pool.lease()
+        await cm.__aenter__()                # discovers 1 slot, takes it
+        assert pool.capacity() == 1 and pool.busy() == 1
+        second = asyncio.ensure_future(pool.lease().__aenter__())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not second.done()             # waits for the one slot
+        await cm.__aexit__(None, None, None)
+        b = await asyncio.wait_for(second, 1.0)
+        assert b.name == "litellm" and pool.busy() == 1
+    asyncio.run(main())
+
+
+async def test_discover_counts_live_deployments_from_model_info(cfg):
+    from pilgrim.pipelines.songs import discover_litellm_deployments
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/model/info":
+            assert request.headers.get("authorization") == "Bearer tok"
+            return httpx.Response(200, json={"data": [
+                {"model_name": cfg.models.music,
+                 "litellm_params": {"api_base": "http://box-a:8080"}},
+                {"model_name": cfg.models.music,
+                 "litellm_params": {"api_base": "http://box-b:8080"}},
+                {"model_name": cfg.models.music,
+                 "litellm_params": {"api_base": "http://m5:11234"}},
+                {"model_name": cfg.models.music,
+                 "litellm_params": {"api_base": "http://m5:11234"}},   # duplicate row
+                {"model_name": "qwen38",
+                 "litellm_params": {"api_base": "http://llm:8000"}},
+            ]})
+        host = request.url.host
+        if host == "box-a":
+            return httpx.Response(404)          # live box without a /health route
+        if host == "box-b":
+            raise httpx.ConnectError("refused")  # audiocpp down
+        if host == "m5":
+            return httpx.Response(200)
+        raise AssertionError(f"unexpected probe {request.url}")
+
+    backend = MusicBackend(name="litellm", slots="auto", auth="litellm")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert await discover_litellm_deployments(cfg, client, "tok", backend) == 2
+    root = cfg.hosts.litellm.rstrip("/").removesuffix("/v1")
+    assert seen[0] == root + "/model/info"
+    assert not any("llm:8000" in u for u in seen)      # other models are not probed
+    assert sum("m5:11234" in u for u in seen) == 1     # duplicates probed once
+
+    def down(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("proxy down")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(down))
+    assert await discover_litellm_deployments(cfg, client, "tok", backend) is None
+
+    def empty(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": []})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(empty))
+    assert await discover_litellm_deployments(cfg, client, "tok", backend) == 0

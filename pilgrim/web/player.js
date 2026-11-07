@@ -132,6 +132,7 @@
   /* ---------------- health / OFF AIR ---------------- */
   function showOffAir() {
     btn.disabled = true; offairEl.classList.remove("hidden"); setState("idle");
+    setStatus("");   // the banner is the message; no stale wait line beside it
   }
   async function pollHealth() {
     try {
@@ -578,6 +579,9 @@
       rejoinGap = REJOIN_GAP_MIN_MS;   // audio flowed again: watchdog backoff resets
       sendHeartbeat(it.seq, it._offset + ctx.currentTime - it._when);
       setState("onair");
+      // The status line describes a moment, not a state: audio flowing again
+      // makes any "waiting for audio" / refresh-failure line stale.
+      setStatus("");
     } else if (playing && !(it && it._scheduled)) {
       // nothing scheduled at the playhead (a fetch/decode still pending): say
       // so instead of leaving "onair" lit over silence
@@ -604,7 +608,7 @@
     const pending = items[scheduleCursor] || it;
     if (pending) sendHeartbeat(pending.seq, 0, true);  // dead air is recorded, never hidden
     setStatus("waiting for audio: rejoining live");
-    void resetProgram();
+    void resetProgram();   // advancePlayhead clears the line once audio flows
   }
 
   /* The audio clock advances the decode window as clips finish. Keep current
@@ -653,10 +657,14 @@
           advancePlayhead();
         }
         dryFailSince = null;   // a full pass succeeded
+        setStatus("");         // ...and the last failure line is stale
       } catch (e) {
         if (!playing || token !== session || ptoken !== programToken) return;
-        setStatus("waiting for audio: " + e.message);
+        // Only claim "waiting for audio" when nothing is scheduled at the
+        // playhead. While buffered audio plays, a failed fetch is invisible
+        // (RADIO §9.1: production health never interrupts committed audio).
         if (ctx.currentTime >= nextWhen - 0.05) {
+          setStatus("waiting for audio: " + e.message);
           // Buffer is dry. Off air is definitive; anything else gets a grace
           // window so one blip / 404 / bad decode never ends the session.
           const now = performance.now();

@@ -283,6 +283,8 @@ class GeneratorUnavailable(httpx.TransportError):
 
 
 GEN_PATH = "/v1/audio/music-generations"
+# `slots: auto`: (backend) -> healthy deployment count, or None = unknown
+Discover = Callable[[MusicBackend], Awaitable[int | None]]
 # 500 included: through the proxy a 500 is the proxy/backend failing (the
 # /vllm pass-through 500'd every render, 2026-11-01), never the request
 _UNAVAILABLE = {429, 500, 502, 503, 504}
@@ -300,7 +302,9 @@ class MusicPool:
 
     def __init__(self, backends: list[MusicBackend], cooldown_s: float,
                  stagger_s: float, now: Callable[[], float] = time.monotonic,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 discover: Discover | None = None,
+                 discover_interval_s: float = 300.0) -> None:
         self.backends = list(backends)
         self._cooldown_s = cooldown_s
         self._stagger_s = stagger_s
@@ -311,20 +315,60 @@ class MusicPool:
         self._fails = {b.name: 0 for b in self.backends}
         self._rtf = {b.name: float(b.rtf_hint or 0.0) for b in self.backends}
         self._next_submit = float("-inf")
+        # Effective slots. A `slots: auto` backend starts at 1 (never 0: a
+        # proxy blip must not stall the station) until `refresh` counts its
+        # healthy deployments (FIX: 2026-11-07, RADIO §6.2).
+        self._slots = {b.name: (1 if b.slots == "auto" else int(b.slots))
+                       for b in self.backends}
+        self._auto = [b for b in self.backends if b.slots == "auto"]
+        self._discover = discover
+        self._discover_interval_s = discover_interval_s
+        self._discover_due = float("-inf")
 
     def _up(self, b: MusicBackend) -> bool:
         return self._now() >= self._down_until[b.name]
 
     def capacity(self) -> int:
         """Render slots on backends not in cooldown."""
-        return sum(b.slots for b in self.backends if self._up(b))
+        return sum(self._slots[b.name] for b in self.backends if self._up(b))
+
+    def slots(self) -> dict[str, int]:
+        """Effective slots per backend (config, or discovered for `auto`)."""
+        return dict(self._slots)
 
     def busy(self) -> int:
         return sum(self._busy.values())
 
+    async def refresh(self, force: bool = False) -> None:
+        """Recount the healthy deployments behind every `slots: auto` backend.
+        Runs at most every `discover_interval_s` unless forced; a count that
+        cannot be taken (proxy unreachable, None) keeps the last one, and a
+        count of 0 floors at 1 so one render can still probe the pool."""
+        if not self._auto or self._discover is None:
+            return
+        now = self._now()
+        if not force and now < self._discover_due:
+            return
+        self._discover_due = now + self._discover_interval_s
+        for b in self._auto:
+            try:
+                n = await self._discover(b)
+            except Exception as e:  # noqa: BLE001 - discovery must never break a render
+                log.warning("song.pool.discover_failed",
+                            extra={"backend": b.name, "error": str(e)[:200]})
+                continue
+            if n is None:
+                continue
+            slots = max(1, int(n))
+            if slots != self._slots[b.name]:
+                log.info("song.pool.discovered", extra={
+                    "backend": b.name, "healthy": int(n), "slots": slots,
+                    "was": self._slots[b.name]})
+            self._slots[b.name] = slots
+
     def _pick(self, prefer: str) -> MusicBackend | None:
         free = [b for b in self.backends
-                if self._up(b) and self._busy[b.name] < b.slots]
+                if self._up(b) and self._busy[b.name] < self._slots[b.name]]
         if not free:
             return None
         # fast = highest measured real-time factor; slow = lowest. Ties keep
@@ -339,6 +383,7 @@ class MusicPool:
         Waits (polling) only when every slot is taken or down; the producer
         never spawns more jobs than capacity(), so in normal operation this
         returns at once (after the submit stagger)."""
+        await self.refresh()
         while (b := self._pick(prefer)) is None:
             await self._sleep(1.0)
         self._busy[b.name] += 1
@@ -359,6 +404,7 @@ class MusicPool:
         self._fails[name] += 1
         cool = min(self._cooldown_s * 2 ** (self._fails[name] - 1), 600.0)
         self._down_until[name] = self._now() + cool
+        self._discover_due = float("-inf")   # recount before the next lease
         log.warning("song.backend.down", extra={"backend": name, "cooldown_s": cool})
         return cool
 
@@ -378,6 +424,52 @@ class MusicPool:
 
     def rtf(self) -> dict[str, float]:
         return {k: round(v, 3) for k, v in self._rtf.items()}
+
+
+async def discover_litellm_deployments(cfg: Config, client: httpx.AsyncClient,
+                                       api_key: str, backend: MusicBackend) -> int | None:
+    """How many generators stand behind a `auth: litellm` backend right now
+    (RADIO §6.2 `slots: auto`). `GET /model/info` on the proxy (read-only,
+    docs/backends.md §2b) lists the deployments of `models.music` with their
+    `api_base`; each is probed with `GET {api_base}/health` (3 s). A box that
+    answers at all counts as up (audiocpp may not serve /health: a 404 is a
+    live box); a refused connection, a timeout or a 5xx is down. Returns
+    None when the proxy itself cannot be read, so the pool keeps its last
+    count. Never starts a render (hard rule 6): the proxy's own /health does."""
+    base = cfg.hosts.litellm.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        r = await client.get(base + "/model/info", headers=headers, timeout=10.0)
+        if r.status_code != 200:
+            log.warning("song.pool.model_info_failed",
+                        extra={"backend": backend.name, "status": r.status_code})
+            return None
+        rows = r.json().get("data", [])
+    except Exception as e:  # noqa: BLE001 - reported, never raised into a render
+        log.warning("song.pool.model_info_failed",
+                    extra={"backend": backend.name, "error": str(e)[:200]})
+        return None
+    bases: list[str] = []
+    for m in rows:
+        if m.get("model_name") != cfg.models.music:
+            continue
+        api_base = (m.get("litellm_params") or {}).get("api_base")
+        if api_base and api_base not in bases:
+            bases.append(str(api_base))
+    healthy: list[str] = []
+    for api_base in bases:
+        try:
+            h = await client.get(api_base.rstrip("/") + "/health", timeout=3.0)
+            if h.status_code < 500:
+                healthy.append(api_base)
+        except Exception:  # noqa: BLE001 - down is the answer, not an error
+            continue
+    log.info("song.pool.deployments", extra={
+        "backend": backend.name, "listed": len(bases), "healthy": len(healthy),
+        "up": healthy})
+    return len(healthy)
 
 
 async def song_backend_health(cfg: Config, client: httpx.AsyncClient,
@@ -415,8 +507,16 @@ class SongPipeline:
         self.api_key = api_key  # LITELLM_TOKEN, sent only to `auth: litellm` backends
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(1800.0, connect=10.0))
         self.generation_s: list[tuple[float, float]] = []  # (duration_s, wall_clock_s)
-        self.pool = MusicPool(cfg.songs.gen_backends, cfg.songs.backend_cooldown_s,
-                              cfg.songs.submit_stagger_s)
+        self.pool = MusicPool(
+            cfg.songs.gen_backends, cfg.songs.backend_cooldown_s,
+            cfg.songs.submit_stagger_s,
+            discover=self._discover,
+            discover_interval_s=cfg.songs.discover_interval_s)
+
+    async def _discover(self, backend: MusicBackend) -> int | None:
+        """`slots: auto`: healthy deployments behind the proxy (RADIO §6.2)."""
+        return await discover_litellm_deployments(
+            self.cfg, self._client, self.api_key, backend)
 
     def capacity(self) -> int:
         """Concurrent renders the producer may run now (RADIO §6.1)."""

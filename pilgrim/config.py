@@ -275,7 +275,11 @@ class MusicBackend(BaseModel):
     # empty for `auth: litellm` = derived from hosts.litellm (its base without
     # /v1, plus /vllm: the proxy's vLLM pass-through)
     url: str = ""
-    slots: int = 1             # concurrent renders this backend takes
+    # concurrent renders this backend takes. "auto" (auth: litellm only) =
+    # discovered: the number of deployments LiteLLM lists for models.music
+    # that answer a /health probe, refreshed every songs.discover_interval_s
+    # and after a transport failure; 1 until the first discovery (§6.2)
+    slots: int | Literal["auto"] = 1
     # none = direct generator box; litellm = through the proxy (Bearer
     # LITELLM_TOKEN + models.music in the payload)
     auth: Literal["none", "litellm"] = "none"
@@ -283,7 +287,12 @@ class MusicBackend(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self) -> MusicBackend:
-        if self.slots < 1:
+        if self.slots == "auto":
+            if self.auth != "litellm":
+                raise ValueError(
+                    f"songs.gen_backends[{self.name}].slots: auto needs auth: litellm "
+                    "(deployments are discovered from the proxy's /model/info)")
+        elif self.slots < 1:
             raise ValueError(f"songs.gen_backends[{self.name}].slots must be >= 1")
         if self.url and not self.url.startswith(("http://", "https://")):
             raise ValueError(f"songs.gen_backends[{self.name}].url must be http(s)")
@@ -318,6 +327,9 @@ class Songs(BaseModel):
     submit_stagger_s: float = 5.0
     # a backend that fails at transport level sits out this long (doubling to 600 s)
     backend_cooldown_s: float = 120.0
+    # how often a `slots: auto` backend re-counts its healthy deployments while
+    # renders keep leasing it; a transport failure forces a recount at once
+    discover_interval_s: float = 300.0
 
     @model_validator(mode="after")
     def _known_families(self) -> Songs:
@@ -334,6 +346,8 @@ class Songs(BaseModel):
             raise ValueError("songs.free_request_slots must be >= 1")
         if self.submit_stagger_s < 0 or self.backend_cooldown_s <= 0:
             raise ValueError("songs.submit_stagger_s >= 0 and backend_cooldown_s > 0")
+        if self.discover_interval_s <= 0:
+            raise ValueError("songs.discover_interval_s must be > 0")
         return self
 
 

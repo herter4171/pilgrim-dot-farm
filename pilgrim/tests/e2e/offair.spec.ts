@@ -95,6 +95,44 @@ test.describe("off air while playing", () => {
     expect(errors).toEqual([]);
   });
 
+  /* A transient 503 {off_air:true} from the web tier (its `alive` key lapsed
+     for a tick) while the station plays and media still arrives from
+     CloudFront: audio continues, so the page must not leave a stale
+     "waiting for audio: program: off air" line under the meter. */
+  test("a transient off-air while audio plays leaves no stale status", async ({ page }) => {
+    await page.goto("/");
+    // Trim the first snapshot to seven short items (~12 s of audio) so the
+    // client schedules its decode window first and only then asks for more
+    // program rows, while it still has audio to play (a full 5-minute window
+    // would not refetch for minutes). Every later fetch gets the web tier's
+    // 503 {off_air:true}.
+    let first = true, offAirs = 0;
+    await page.route("**/api/station/program**", async route => {
+      if (first) {
+        first = false;
+        const res = await route.fetch();
+        const body = await res.json();
+        body.items = body.items.slice(0, 7);
+        await route.fulfill({ response: res, json: body });
+        return;
+      }
+      offAirs++;
+      await route.fulfill(OFF_AIR_503);
+    });
+
+    await page.click("#btn-play");
+    await expect(page.locator("#indicator")).toHaveClass(/onair/, { timeout: 15_000 });
+    // Wait until the off-air fetch actually happened; only then is the
+    // failure path (and its status line) exercised.
+    await expect.poll(() => offAirs, { timeout: 10_000 }).toBeGreaterThan(0);
+    await page.waitForTimeout(1_000);
+    // Audio is still scheduled at the playhead, so the failed fetch must stay
+    // invisible (RADIO §9.1: production health never interrupts audio).
+    await expect(page.locator("#indicator")).toHaveClass(/onair/);
+    await expect(page.locator("#offair")).toBeHidden();
+    await expect(page.locator("#status")).toHaveText("");
+  });
+
   /* Definitive off air (edge/gateway 503 {off_air:true}): buffered audio
      plays to its end, then OFF AIR shows and PLAY is disabled. */
   test("buffered audio plays out, then OFF AIR", async ({ page }) => {

@@ -351,6 +351,9 @@ class Station(PublicSurface):
         st["music_backends"] = await song_backend_health(
             self.cfg, self._http, self.api_key)
         st["music"] = any(st["music_backends"].values())
+        # effective render slots per backend (discovered for `slots: auto`)
+        pool = getattr(self.songs, "pool", None)
+        st["music_slots"] = pool.slots() if pool is not None else {}
         # Brave is metered: report the last real search instead of probing
         # (BRAVE.md Step 6). True until a call degrades, False without a key.
         st["search"] = self.search.healthy

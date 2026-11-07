@@ -101,10 +101,14 @@ songs:
     # every render; it was back by 13:19 (10 s probe: 200, audiocpp). If it
     # fails again, fall back to the direct M5 tunnel (1 slot):
     #   - {name: m5, url: "http://127.0.0.1:11234", rtf_hint: 0.6}
-    - {name: litellm, slots: 3, auth: litellm}   # url derived: hosts.litellm minus /v1, plus /vllm
+    # slots: auto (2026-11-07) = count the deployments LiteLLM lists for
+    # models.music that answer /health, so a box that is down or removed from
+    # the proxy stops being a slot; 1 until the first count.
+    - {name: litellm, slots: auto, auth: litellm}   # url derived: hosts.litellm minus /v1, plus /vllm
   free_request_slots: 2   # free requests rendering at once; the last slot always stays open for a paid one
   submit_stagger_s: 5     # min seconds between render submissions: LiteLLM only fans them out across the boxes with a delay
   backend_cooldown_s: 120 # unreachable generator sits out this long (doubling to 600 s)
+  discover_interval_s: 300 # slots: auto recount cadence while renders keep leasing; a failure recounts at once
   genres:
     # MiniMax Music 3 style families (prompting guide §5). Ids must exist in
     # pilgrim/genres.py; values are selection weights. Genre is family-level:

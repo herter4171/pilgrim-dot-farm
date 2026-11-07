@@ -640,7 +640,14 @@ Workers:
    `LITELLM_TOKEN`; the proxy's least-busy router spreads renders over the
    three deployments when they arrive at least `songs.submit_stagger_s` apart.
    The pool never runs more than a backend's `slots` renders (nothing upstream
-   refuses extras: a box would take a 2nd render and halve both). Requests
+   refuses extras: a box would take a 2nd render and halve both). A
+   `auth: litellm` backend may set `slots: auto`: the pool then counts the
+   deployments the proxy lists for `models.music` (`GET /model/info`,
+   read-only) that answer `GET {api_base}/health` (any HTTP answer below 500
+   is up; refused, timed out or 5xx is down), floors the count at 1, and
+   recounts every `songs.discover_interval_s` and at once after a transport
+   failure. Until the first count the backend has 1 slot. The admin
+   `/api/health` reports the effective slots as `music_slots`. Requests
    lease the fastest idle backend (EWMA real-time factor), stock the slowest.
    A backend that fails at transport level sits out `songs.backend_cooldown_s`
    (doubling to 600 s). The song's `meta` records `backend` and `generator`
@@ -1309,11 +1316,13 @@ songs:
   stock_max_library: 100     # pause stock generation once the library holds this many songs;
                              # listener requests still produce. 0 = no ceiling
   gen_backends:              # song generator pool (§6.2); C = sum of healthy slots
-    - {name: litellm, slots: 3, auth: litellm}   # url: hosts.litellm minus /v1, plus /vllm
+    - {name: litellm, slots: auto, auth: litellm}   # url: hosts.litellm minus /v1, plus /vllm;
+                             # auto = healthy deployments behind the proxy (int = fixed)
     # direct mode: one entry per box, e.g. {name: m5, url: "http://127.0.0.1:11234"}
   free_request_slots: 2      # free requests rendering at once; last slot stays open for paid
   submit_stagger_s: 5        # min gap between render submissions (LiteLLM only fans out with a delay)
   backend_cooldown_s: 120    # transport-failed backend sits out (doubling to 600 s)
+  discover_interval_s: 300   # slots: auto recount cadence; a transport failure recounts at once
   genres: {country-americana: 3, jazz-swing-big-band: 3, contemporary-folk-acoustic: 2,
            roots-traditional-global: 2, soul-blues-gospel: 2, dance-pop-disco-funk: 2,
            general-pop-ballad: 2, pop-alternative-rock: 2, traditional-vocal-stage: 2,
